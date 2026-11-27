@@ -85,7 +85,6 @@ class NemotronTranscribePipelineConfig(PipelineConfig):
                 max_new_tokens=16384,
                 context_length=DECODER_CONTEXT_TOKENS,
                 max_audio_seconds=float(MAX_AUDIO_SECONDS),
-                mm_embedding_cache_size_bytes=0,
                 chunked_prefill_size=4096,
                 encoder_max_batch_size=8,
                 enable_pre_lm_encoder=True,

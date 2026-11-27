@@ -238,7 +238,9 @@ func TestReleaseCheckMergeBetas(t *testing.T) {
 func newReleaseApp(t *testing.T, srv *ghServer) (*app, *ui.Tester) {
 	t.Helper()
 	a, _, tt := newTestApp(t)
-	a.upd = newReleaseUpdates(a.settings, srv.start(t), "2.0.3", a.checkReleasesNow)
+	r := newReleaseUpdates(a.settings, srv.start(t), "2.0.3", a.checkReleasesNow)
+	r.bgCheck = func() { a.post(a.checkReleasesBackground) }
+	a.upd = r
 	a.connectUpdates()
 	return a, tt
 }
@@ -323,11 +325,12 @@ func TestReleaseDialog(t *testing.T) {
 	}
 }
 
-// TestReleaseAutoCheck: the background check, a day after the last, makes
-// one card and no window; Download opens the disk image; the card
-// dismissed stays away for that version, after a restart too, and a newer
-// version gets one. Up to date withdraws it, a failure says nothing, and
-// it waits a day between checks and does nothing when turned off.
+// TestReleaseAutoCheck: the background check, a day after the last, surfaces
+// the sidebar footer Update button and tray menu item without opening a
+// window or sidebar notice card; clicking the button opens the release
+// dialog with Download; legacy persisted cards clear after installing a
+// newer version; failures say nothing; and it waits a day between checks
+// and does nothing when off.
 func TestReleaseAutoCheck(t *testing.T) {
 	srv := &ghServer{list: newerReleases}
 	dir := t.TempDir()
@@ -341,56 +344,98 @@ func TestReleaseAutoCheck(t *testing.T) {
 
 	a.autoCheckReleases()
 	a.autoCheckReleases() // a day has not passed: no second request
-	if c := cards(a); len(c) != 1 || c[0].Title != "Voxt 2.0.4 is available" || a.updUI.relOpen || len(srv.requests) != 1 {
-		t.Fatalf("cards %+v, dialog %v, requests %d", c, a.updUI.relOpen, len(srv.requests))
+	if len(cards(a)) != 0 || a.updUI.relOpen || len(srv.requests) != 1 || a.updPrefs.AvailableVersion != "2.0.4" {
+		t.Fatalf("cards %+v, dialog %v, requests %d, avail %q", cards(a), a.updUI.relOpen, len(srv.requests), a.updPrefs.AvailableVersion)
 	}
 	a.navigate("/home")
-	if !has(tt, "Voxt 2.0.4 is available") || !has(tt, "Download") {
-		t.Fatalf("card: %q", firstTexts(tt))
+	if !has(tt, "Update 2.0.4") {
+		t.Fatalf("sidebar update button: %q", firstTexts(tt))
+	}
+	if top := a.trayItems()[0].Label; top != "Update available (2.0.4)…" {
+		t.Fatalf("tray top: %q", top)
+	}
+	click(t, tt, "Update 2.0.4")
+	if !a.updUI.relOpen || !has(tt, "Voxt 2.0.4 is available") {
+		t.Fatalf("dialog: open=%v texts=%q", a.updUI.relOpen, firstTexts(tt))
 	}
 	click(t, tt, "Download")
-	if !slices.Equal(*got, []string{"https://dl/dmg-2.0.4"}) || len(cards(a)) != 0 {
-		t.Errorf("Download: opened %v, cards %+v", *got, cards(a))
-	}
-	if d := a.settings.Get().Updates.Dismissed; d != "2.0.4" {
-		t.Errorf("dismissed %q", d)
+	if !slices.Equal(*got, []string{"https://dl/dmg-2.0.4"}) {
+		t.Errorf("Download: opened %v", *got)
 	}
 
-	// The same version a day later, after a restart: no card.
+	// A restart within 24 hours keeps the sidebar button and tray item
+	// from persisted settings without needing another network request.
+	beforeRestart := len(srv.requests)
 	a.quit()
 	a.lib.close()
 	a, _, tt = newTestAppIn(t, dir)
 	a.upd = newReleaseUpdates(a.settings, srv.url(), "2.0.3", a.checkReleasesNow)
 	a.connectUpdates()
-	a.settings.Update(context.Background(), func(s *settings.Settings) { s.Updates.LastCheck = time.Now().Add(-25 * time.Hour) })
-	a.autoCheckReleases()
-	if len(cards(a)) != 0 || len(srv.requests) != 2 {
-		t.Fatalf("dismissed version: cards %+v, requests %d", cards(a), len(srv.requests))
+	a.loadUpdates()
+	a.autoCheckReleases() // still within 24 hours: no new request
+	if len(srv.requests) != beforeRestart || a.updPrefs.AvailableVersion != "2.0.4" {
+		t.Fatalf("after restart: requests=%d (want %d) avail=%q", len(srv.requests), beforeRestart, a.updPrefs.AvailableVersion)
+	}
+	a.navigate("/home")
+	if !has(tt, "Update 2.0.4") || a.trayItems()[0].Label != "Update available (2.0.4)…" {
+		t.Fatalf("after restart UI: tray=%q texts=%q", a.trayItems()[0].Label, firstTexts(tt))
 	}
 
-	// A newer one: a card, which × dismisses.
+	// A newer version updates the button.
 	srv.set(func(s *ghServer) { s.list = ghList([]string{"voxt-v2.0.5"}) })
 	a.settings.Update(context.Background(), func(s *settings.Settings) { s.Updates.LastCheck = time.Time{} })
 	a.autoCheckReleases()
-	if c := cards(a); len(c) != 1 || c[0].Version != "2.0.5" {
-		t.Fatalf("newer: %+v", c)
+	if a.updPrefs.AvailableVersion != "2.0.5" || !has(tt, "Update 2.0.5") {
+		t.Fatalf("newer: avail=%q texts=%q", a.updPrefs.AvailableVersion, firstTexts(tt))
 	}
 
-	// After the restart into 2.0.5, the kept card goes.
+	// Legacy persisted release card and Available version clear once updated.
+	a.setProblem(problemRelease, "2.0.5", &core.Notification{Title: "Voxt 2.0.5 is available", Version: "2.0.5", Link: linkDownload + "https://dl/dmg-2.0.5"})
 	a.quit()
 	a.lib.close()
 	a, _, _ = newTestAppIn(t, dir)
 	a.keepReleaseCard("2.0.4")
-	if len(cards(a)) != 1 {
-		t.Fatalf("the card was not kept: %+v", a.notices)
+	if len(cards(a)) != 1 || a.prefs.Updates.Available != "2.0.5" {
+		t.Fatalf("still older: cards=%+v avail=%q", a.notices, a.prefs.Updates.Available)
 	}
 	a.keepReleaseCard("2.0.5")
-	if len(cards(a)) != 0 {
-		t.Errorf("the installed version's card stayed: %+v", cards(a))
+	if len(cards(a)) != 0 || a.prefs.Updates.Available != "" {
+		t.Errorf("the installed version's state stayed: cards=%+v avail=%q", cards(a), a.prefs.Updates.Available)
 	}
+
+	// Turning Beta updates on finds a beta; turning it off re-checks and clears
+	// the beta from the sidebar, tray and persisted settings (and hides it even
+	// if the follow-up check fails offline).
+	r := newReleaseUpdates(a.settings, srv.url(), "2.0.3", a.checkReleasesNow)
+	r.bgCheck = func() { a.post(a.checkReleasesBackground) }
+	a.upd = r
+	a.connectUpdates()
+	srv.set(func(s *ghServer) {
+		s.list = ghList([]string{"voxt-v2.0.4-beta.1", "pre"}, []string{"voxt-v2.0.3"})
+	})
+	a.setBeta(true)
+	if a.updPrefs.AvailableVersion != "2.0.4-beta.1" || a.settings.Get().Updates.Available != "2.0.4-beta.1" {
+		t.Fatalf("beta on: avail=%q saved=%q", a.updPrefs.AvailableVersion, a.settings.Get().Updates.Available)
+	}
+	a.setBeta(false)
+	if a.updPrefs.AvailableVersion != "" || a.settings.Get().Updates.Available != "" {
+		t.Fatalf("beta off: avail=%q saved=%q", a.updPrefs.AvailableVersion, a.settings.Get().Updates.Available)
+	}
+	// Turning Beta off while offline still hides the stale beta immediately.
+	a.setBeta(true)
+	if a.updPrefs.AvailableVersion != "2.0.4-beta.1" {
+		t.Fatalf("beta on again: avail=%q", a.updPrefs.AvailableVersion)
+	}
+	srv.set(func(s *ghServer) { s.status = http.StatusBadGateway })
+	a.setBeta(false)
+	if a.updPrefs.AvailableVersion != "" {
+		t.Fatalf("beta off offline: avail=%q, want empty", a.updPrefs.AvailableVersion)
+	}
+	srv.set(func(s *ghServer) { s.status = 0 })
 
 	// Back on 2.0.3: failures say nothing; off, nothing is asked.
 	a.upd = newReleaseUpdates(a.settings, srv.url(), "2.0.3", a.checkReleasesNow)
+	a.connectUpdates()
 	srv.set(func(s *ghServer) { s.status = http.StatusBadGateway })
 	a.settings.Update(context.Background(), func(s *settings.Settings) { s.Updates.LastCheck = time.Time{} })
 	n := len(a.notices)
@@ -427,7 +472,7 @@ func TestReleaseAbout(t *testing.T) {
 	srv := &ghServer{list: todayReleases}
 	a, tt := newReleaseApp(t, srv)
 	a.navigate("/settings/about")
-	for _, s := range []string{"Check for updates", "Not checked yet.", "Check automatically", "Once a day. A card says when a new version is out.", "Beta updates"} {
+	for _, s := range []string{"Check for updates", "Not checked yet.", "Check automatically", "Once a day. An Update button shows when a new version is out.", "Beta updates"} {
 		if !has(tt, s) {
 			t.Errorf("about lacks %q: %q", s, firstTexts(tt))
 		}

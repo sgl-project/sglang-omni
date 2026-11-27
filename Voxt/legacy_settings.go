@@ -24,6 +24,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/sgl-project/sglang-omni/Voxt/internal/hotkey"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/llm"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/models"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/providers"
@@ -563,7 +564,7 @@ func (l legacySettings) apply(s *settings.Settings, voxtDir string) (llmAdded, s
 		prompts++
 	}
 	if len(s.Features.Meeting.Hotkeys) == 0 {
-		if hks := parseLegacyMeetingHotkeys(voxtDir); len(hks) > 0 {
+		if hks := hotkey.ParseLegacyMeetingHotkeys(voxtDir, legacyPreference); len(hks) > 0 {
 			s.Features.Meeting.Hotkeys = hks
 		}
 	}

@@ -43,9 +43,16 @@ type oaMessage struct {
 }
 
 type oaUsage struct {
-	PromptTokens     int `json:"prompt_tokens"`
-	CompletionTokens int `json:"completion_tokens"`
-	TotalTokens      int `json:"total_tokens"`
+	PromptTokens     int           `json:"prompt_tokens"`
+	CompletionTokens int           `json:"completion_tokens"`
+	TotalTokens      int           `json:"total_tokens"`
+	PromptDetails    *tokenDetails `json:"prompt_tokens_details"`
+}
+
+// note (luojiaxuan): tokenDetails is a usage's breakdown of the prompt: the part read from
+// the service's prompt cache.
+type tokenDetails struct {
+	CachedTokens int `json:"cached_tokens"`
 }
 
 func (u *oaUsage) usage() Usage {
@@ -56,7 +63,11 @@ func (u *oaUsage) usage() Usage {
 	if t == 0 {
 		t = u.PromptTokens + u.CompletionTokens
 	}
-	return Usage{PromptTokens: u.PromptTokens, CompletionTokens: u.CompletionTokens, TotalTokens: t}
+	cached := 0
+	if u.PromptDetails != nil {
+		cached = u.PromptDetails.CachedTokens
+	}
+	return Usage{PromptTokens: u.PromptTokens, CompletionTokens: u.CompletionTokens, TotalTokens: t, CachedTokens: cached}
 }
 
 func (o *OpenAI) body(req Request, model string, stream, streamUsage, extra bool) map[string]any {
@@ -185,13 +196,16 @@ func (o *OpenAI) chat(ctx context.Context, req Request) (Response, error) {
 	if o.preset.SignIn && !stream { // that service only streams
 		stream, req.OnDelta = true, func(string) {}
 	}
-	streamUsage, extra, sampling := true, len(o.preset.ExtraBody) > 0, true
+	streamUsage, extra, sampling, effort := true, len(o.preset.ExtraBody) > 0, true, true
 	url := o.preset.BaseURL + o.path()
 	build := func() map[string]any {
 		b := o.body(req, model, stream, streamUsage, extra)
 		if !sampling { // after applyGeneration: its values and Extra Body win over the request's
 			delete(b, "temperature")
 			delete(b, "top_p")
+		}
+		if !effort { // a server without the reasoning_effort field
+			delete(b, "reasoning_effort")
 		}
 		return b
 	}
@@ -214,6 +228,8 @@ relax:
 			streamUsage = false
 		case (sent["temperature"] != nil || sent["top_p"] != nil) && (strings.Contains(detail, "temperature") || strings.Contains(detail, "top_p")):
 			sampling = false
+		case effort && strings.Contains(detail, "reasoning_effort"):
+			effort = false
 		case extra && o.mentionsExtra(detail):
 			extra = false
 		case req.Images != nil && !req.ImagesRequired: // a model that takes no images

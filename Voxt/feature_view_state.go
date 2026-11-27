@@ -33,9 +33,10 @@ type featureModelNoticeViewState struct {
 }
 
 type featureCleanupViewState struct {
-	Enhance   bool `json:"enhance"`
-	Cleanup   bool `json:"cleanup"`
-	Structure bool `json:"structure"`
+	Enhance       bool `json:"enhance"`
+	Cleanup       bool `json:"cleanup"`
+	Structure     bool `json:"structure"`
+	WhileSpeaking bool `json:"while_speaking"`
 }
 
 type featureModelsViewState struct {
@@ -81,6 +82,11 @@ type featureModelStatusInput struct {
 	Model   *models.Model
 	Status  models.Status
 	Service *remoteServiceStateInput
+	// PackLeft is what the recommended pack still has to download, set
+	// when the row is the guide's recommendation: the click downloads the
+	// speech model and its draft, so the label counts both, as the
+	// guide's and Home's do.
+	PackLeft string
 }
 
 type featureModelsStateInput struct {
@@ -108,7 +114,8 @@ func buildFeatureModelsViewState(translator *i18n.Translator, input featureModel
 		LLM:    featureModelSelect(optionsL, input.ReadyLLM, modelLabel(input.ReadyLLM, f.LLM, automaticL), len(input.ReadyLLM) == 0 || !enhance),
 		Cleanup: featureCleanupViewState{
 			Enhance: input.Settings.Features.Transcribe.Enhance, Cleanup: input.Settings.Features.Transcribe.Cleanup,
-			Structure: input.Settings.Features.Transcribe.Structure,
+			Structure:     input.Settings.Features.Transcribe.Structure,
+			WhileSpeaking: !input.Settings.Features.Transcribe.CleanAfterStop,
 		},
 	}
 	state.ASRStatus = buildFeatureModelStatus(translator, state.Prefix+"-asr", input.ASRStatus, input.ModelDeciding)
@@ -168,9 +175,13 @@ func buildFeatureModelsViewState(translator *i18n.Translator, input featureModel
 func buildFeatureModelStatus(translator *i18n.Translator, key string, input featureModelStatusInput, deciding string) *featureModelStatusViewState {
 	if model := input.Model; model != nil {
 		status := input.Status
+		sizeText := modelSizeTextFor(translator, *model, status)
+		if input.PackLeft != "" && !status.Downloading && !status.Installed && !status.OnDisk && status.Done == 0 {
+			sizeText = translator.T("%s download", input.PackLeft)
+		}
 		state := &featureModelStatusViewState{
 			Key: key + "-model", ModelID: model.ID,
-			Text:     uitext.ModelNameFor(translator, model.ID) + " · " + modelSizeTextFor(translator, *model, status),
+			Text:     uitext.ModelNameFor(translator, model.ID) + " · " + sizeText,
 			Actions:  buildModelActions(translator, modelsViewStateInput{ModelDeciding: deciding}, *model, status),
 			Progress: buildModelProgress(translator, *model, status),
 		}

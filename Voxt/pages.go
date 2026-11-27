@@ -1,10 +1,9 @@
 package main
 
 // The pages of the sidebar: Home (home_page.go), History
-// (history_page.go), Transcribe, Translate and Rewrite
-// (feature_page.go), App enhancement (appenhance_page.go), Dictionary
-// (dictionary_page.go) and Logs (shell_logs.go). Permissions and the
-// model resources are sections of the settings dialog.
+// (history_page.go), App enhancement (appenhance_page.go), Dictionary
+// (dictionary_page.go) and Logs (shell_logs.go). Permissions, the model
+// resources and the three features are sections of the settings dialog.
 
 import (
 	"time"
@@ -42,8 +41,7 @@ func (a *app) pageShown(path string) {
 	}
 	switch path {
 	case "/home":
-		a.homeUI.tryOn = false // a new visit (homeShowsTry)
-		a.loadHome()           // home_controller.go
+		a.loadHome() // home_controller.go
 	case "/history":
 		a.historyShown() // history_page.go
 	case "/app-enhancement":
@@ -65,28 +63,12 @@ func (a *app) page(c *uiContext, p navPage) {
 	case "/home":
 		a.prepareHomePage()
 		model := a.homePageModel(time.Now())
-		homePage(c, &model, a, &a.histUI, func(c *uiContext) {
-			a.tryCard(c, tryOpts{
-				prefix: "home", feature: hotkey.Transcribe, mine: a.homeTrySession(),
-				intro: a.tryIntro(hotkey.Transcribe), block: &a.homeUI.block,
-				start: func() *sessionNotice { _, n := a.startTry(featureKind(hotkey.Transcribe)); return n },
-			})
-		})
-		historyDeleteDialog(c, &a.histUI, a)
+		homePage(c, &model, a)
 		a.shareDialog(c)    // share_controller.go
 		a.insightsDialog(c) // insights_controller.go
 		return
 	case "/logs":
 		logsPage(c, a.logsModel(), a, a.logsLocal())
-		return
-	case "/transcribe":
-		a.transcribePage(c) // feature_page.go
-		return
-	case "/translate":
-		a.translatePage(c) // feature_page.go
-		return
-	case "/rewrite":
-		a.rewritePage(c) // feature_page.go
 		return
 	case "/history":
 		a.prepareHistoryPage()
@@ -134,15 +116,6 @@ func (a *app) featureShortcuts(c *uiContext, feature string) {
 	state := a.featureShortcutsModel(feature)
 	featureShortcuts(c, feature, &state, a, a.fui(feature))
 }
-
-func (a *app) featurePage(c *uiContext, feature string) {
-	state, tryActions := a.featurePageModel(feature)
-	featurePage(c, &state, a, a.fui(feature), tryActions)
-}
-
-func (a *app) transcribePage(c *uiContext) { a.featurePage(c, hotkey.Transcribe) }
-func (a *app) translatePage(c *uiContext)  { a.featurePage(c, hotkey.Translate) }
-func (a *app) rewritePage(c *uiContext)    { a.featurePage(c, hotkey.Rewrite) }
 
 func (a *app) tryCard(c *uiContext, options tryOpts) {
 	state, actions := a.tryCardState(options)

@@ -10,7 +10,7 @@ import signal
 import subprocess
 import sys
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Generator
 from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
@@ -28,7 +28,10 @@ from sglang_omni.pipeline.stage_workers import (
 from sglang_omni.platforms.cuda import CUDAOmniPlatform
 from sglang_omni.platforms.musa import MUSAOmniPlatform
 from sglang_omni.platforms.rocm import ROCMOmniPlatform
-from sglang_omni.utils.gpu_memory import get_gpu_startup_lock_path
+from sglang_omni.utils.gpu_memory import (
+    StartupLockWaitCallback,
+    get_gpu_startup_lock_path,
+)
 from tests.unit_test.fixtures import affinity_probe
 from tests.unit_test.fixtures.pipeline_fakes import FakeScheduler, fake_factory_path
 
@@ -685,7 +688,9 @@ def test_scheduler_applies_child_defaults_without_overriding_explicit_args(
     seen_gpu_ids: list[int] = []
 
     @contextmanager
-    def fake_lock(gpu_id: int):
+    def fake_lock(
+        gpu_id: int, startup_lock_wait_callback: StartupLockWaitCallback | None
+    ):
         seen_gpu_ids.append(gpu_id)
         yield Path("/tmp/test.lock")
 
@@ -742,7 +747,9 @@ def test_construct_stage_uses_placement_gpu_id_for_device_and_startup_lock(
     seen_gpu_ids: list[int] = []
 
     @contextmanager
-    def fake_lock(gpu_id: int):
+    def fake_lock(
+        gpu_id: int, startup_lock_wait_callback: StartupLockWaitCallback | None
+    ):
         seen_gpu_ids.append(gpu_id)
         yield Path("/tmp/test.lock")
 
@@ -786,7 +793,9 @@ def test_construct_stage_skips_device_pinning_for_child_process_engines(
     set_device_calls: list[int] = []
 
     @contextmanager
-    def _fake_lock(gpu_id: int):
+    def _fake_lock(
+        gpu_id: int, startup_lock_wait_callback: StartupLockWaitCallback | None
+    ):
         yield Path("/tmp/test.lock")
 
     monkeypatch.setattr(
@@ -824,7 +833,9 @@ def test_narrowed_tp_child_locks_its_local_device(monkeypatch) -> None:
     seen_gpu_ids: list[int] = []
 
     @contextmanager
-    def fake_lock(gpu_id: int):
+    def fake_lock(
+        gpu_id: int, startup_lock_wait_callback: StartupLockWaitCallback | None
+    ):
         seen_gpu_ids.append(gpu_id)
         yield get_gpu_startup_lock_path(gpu_id)
 
@@ -860,6 +871,65 @@ def test_cpu_scheduler_construction_skips_startup_lock(monkeypatch) -> None:
     scheduler = stage_workers.construct_scheduler(spec, None, RecordingLog())
 
     assert isinstance(scheduler, FakeScheduler)
+
+
+def test_waiting_for_the_gpu_startup_lock_counts_as_startup_progress(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A replica queued behind another one on its GPU's startup lock reported no startup progress, so a long queue timed out the serve."""
+    progress = multiprocessing.get_context("spawn").Value("q", 0)
+    progress_after_waits: list[int] = []
+
+    @contextmanager
+    def contended_lock(
+        gpu_id: int, startup_lock_wait_callback: StartupLockWaitCallback | None
+    ) -> Generator[Path, None, None]:
+        for _ in range(3):
+            startup_lock_wait_callback()
+        progress_after_waits.append(progress.value)
+        yield get_gpu_startup_lock_path(gpu_id)
+
+    class StartedStage:
+        running = False
+
+        def __init__(self, **kwargs) -> None:
+            self.name = kwargs["name"]
+
+        async def start(self) -> None:
+            pass
+
+        async def run(self) -> None:
+            pass
+
+    monkeypatch.setattr(
+        torch.get_device_module(platforms.current_platform.device_type),
+        "set_device",
+        lambda gpu_id: None,
+    )
+    monkeypatch.setattr(stage_workers, "current_platform", cuda_platform)
+    monkeypatch.setattr(
+        stage_workers, "prewarm_cuda_ipc_export", lambda spec, log: None
+    )
+    monkeypatch.setattr(stage_workers, "gpu_startup_lock", contended_lock)
+    monkeypatch.setattr(stage_workers, "Stage", StartedStage)
+    spec = StageWorkerProcessSpec(
+        process_name="asr@r1",
+        stage_specs=[
+            StageLaunchConfig(
+                stage_name="asr@r1",
+                factory=fake_factory_path("make_scheduler_accepting_gpu_id"),
+                factory_arg_defaults={"gpu_id": 0},
+                gpu_id=0,
+            )
+        ],
+        startup_progress=progress,
+    )
+
+    stage_workers.run_process(
+        spec, multiprocessing.get_context("spawn").Event(), stage_workers.logger
+    )
+
+    assert progress_after_waits == [3]
 
 
 @pytest.mark.parametrize(

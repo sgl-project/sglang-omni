@@ -131,7 +131,7 @@ func TestRetrySnippets(t *testing.T) {
 // none of their triggers is cleaned up as without them: the same
 // request, the same text, long speech in pieces too.
 func TestSnippetsChangeNothingElse(t *testing.T) {
-	long := strings.Repeat("this is a long sentence without a trigger and ", 12) + "the end"
+	long := strings.Repeat("this is a long sentence without a trigger and ", 40) + "the end"
 	for _, said := range []string{"hello aura link", "请把文件发给我，谢谢", long} {
 		run := func(cfg func(*Config, *settings.Settings)) (string, []string) {
 			model := &fakeLLM{text: "Cleaned ⟦up⟧."}

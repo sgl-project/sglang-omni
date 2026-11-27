@@ -39,6 +39,13 @@ class TranscribeDiarizeWorkload:
 
 
 @dataclass(frozen=True, kw_only=True)
+class OmniWorkload:
+    client: str
+    results_file: str
+    speed_field: Literal["speed", "speed_metrics"]
+
+
+@dataclass(frozen=True, kw_only=True)
 class TtsWorkload:
     """SeedTTS synthesis followed by transcription after the TTS server stops."""
 
@@ -47,7 +54,19 @@ class TtsWorkload:
     error_rate: Literal["WER", "CER"]
 
 
-WORKLOADS: dict[str, AsrWorkload | TranscribeDiarizeWorkload | TtsWorkload] = {
+WORKLOADS: dict[
+    str, AsrWorkload | TranscribeDiarizeWorkload | TtsWorkload | OmniWorkload
+] = {
+    "omni-mmmu": OmniWorkload(
+        client="benchmarks.eval.benchmark_omni_mmmu",
+        results_file="mmmu_results.json",
+        speed_field="speed",
+    ),
+    "omni-mmsu": OmniWorkload(
+        client="benchmarks.eval.benchmark_omni_mmsu",
+        results_file="mmsu_results.json",
+        speed_field="speed_metrics",
+    ),
     "tts-seedtts-en": TtsWorkload(
         client=TTS_CLIENT,
         client_arguments=("--lang", "en"),

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"github.com/sgl-project/sglang-omni/Voxt/internal/datadir"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/uitext"
 )
@@ -24,6 +25,7 @@ type settingsStorageUsageViewState struct {
 }
 
 type settingsStorageViewState struct {
+	ImportKeptName       string                          // the replaced library's file name after an import
 	DataDirectory        string                          `json:"data_directory"`
 	DataPath             string                          `json:"data_path"`
 	RecordingsPath       string                          `json:"recordings_path"`
@@ -83,7 +85,8 @@ type settingsStorageStateInput struct {
 
 func buildSettingsStorageViewState(translator *i18n.Translator, input settingsStorageStateInput) settingsStorageViewState {
 	state := settingsStorageViewState{
-		DataDirectory: input.DataDirectory, DataPath: uitext.ShortPathAt(input.DataDirectory, input.HomeDir),
+		ImportKeptName: datadir.BeforeImport,
+		DataDirectory:  input.DataDirectory, DataPath: uitext.ShortPathAt(input.DataDirectory, input.HomeDir),
 		PreviousPath: uitext.ShortPathAt(input.PreviousDirectory, input.HomeDir),
 		FailedMove:   input.FailedMove, CanOpen: input.CanOpen, MoveError: input.MoveError,
 		Moving: input.Moving, MovePath: uitext.ShortPathAt(input.MoveTo, input.HomeDir),

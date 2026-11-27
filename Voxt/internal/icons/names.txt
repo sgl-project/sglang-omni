@@ -80,6 +80,7 @@ window-frame             # the app in front (preview)
 pen-2                    # edit a term
 import                   # import terms
 export                   # export terms
+upload-minimalistic      # the Snippets import dialog's drop area
 
 # Home and the setup guide (home_page.go, onboarding.go).
 compass                  # open the setup guide

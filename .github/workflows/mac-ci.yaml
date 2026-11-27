@@ -3,16 +3,18 @@ name: Mac CI
 # Builds the native MLX runtime (sglang_omni_mlx/native) on GitHub's macOS
 # runners, then checks what the app relies on without running a model: the
 # supervisor protocol, the transcription, speech, chat and realtime APIs (served by
-# the stub server around stand-in models) and each server's startup checks; and
-# Voxt's Swift helper. No
+# the stub server around stand-in models) and each server's startup checks;
+# Voxt's Swift helper; and the helper's headless end-to-end tests
+# (Voxt/scripts/mac-e2e.sh's Go steps). No
 # checkpoint is downloaded. Model outputs are checked by hand per model PR with
 # the tools in sglang_omni_mlx/native/ci. Voxt Nightly runs it before its build.
 # Omni CI skips a pull request that changes only the MLX path, so this gate
-# fails such a pull request without a CI label. A pull request that changes
-# only Voxt's app (Voxt/** outside the helper's code and vendored MyGo) runs no
-# Mac job here, so it passes without a label, draft or not; Voxt CI tests it. A
-# pull request runs only the job whose side it changes, Markdown aside, and
-# both when it changes this file.
+# fails such a pull request without a CI label; a pull request that changes
+# Voxt's code runs the Voxt helper tests job, the headless end-to-end tests
+# included, and needs the same label. A pull request that changes only Voxt's
+# documentation runs no Mac job and passes without one. A pull request runs
+# only the job whose side it changes, Markdown aside, and both when it changes
+# this file.
 
 on:
   pull_request:
@@ -79,22 +81,16 @@ jobs:
             const hasChangesUnder = (directory) =>
               hasWorkflowChanges || changedPaths.some((path) => path.startsWith(directory) && !path.endsWith(".md"));
             core.setOutput("has_native_runtime_changes", hasChangesUnder("sglang_omni_mlx/"));
-            core.setOutput("has_voxt_helper_changes",
-              hasChangesUnder("Voxt/helper/") ||
-              hasChangesUnder("Voxt/third_party/mygo-patches/") ||
-              changedPaths.includes("Voxt/scripts/vendor-mygo.sh")
-            );
-            // App-only: every path under Voxt/, none an input of the helper job above.
-            const isVoxtHelperInput = (path) =>
-              (path.startsWith("Voxt/helper/") || path.startsWith("Voxt/third_party/mygo-patches/")) && !path.endsWith(".md") ||
-              path === "Voxt/scripts/vendor-mygo.sh";
+            // Every Voxt code change runs the helper job, the headless end-to-end tests included.
+            core.setOutput("has_voxt_helper_changes", hasChangesUnder("Voxt/"));
+            // Documentation only: every path under Voxt/, all Markdown. No Mac job runs, as before.
             core.setOutput(
-              "voxt_app_only",
-              changedPaths.every((path) => path.startsWith("Voxt/") && !isVoxtHelperInput(path))
+              "voxt_docs_only",
+              changedPaths.every((path) => path.startsWith("Voxt/") && path.endsWith(".md"))
             );
 
       - name: Block draft PR
-        if: ${{ steps.pr.outputs.is_selected == 'true' && fromJson(steps.pr.outputs.draft) && steps.pr.outputs.voxt_app_only != 'true' }}
+        if: ${{ steps.pr.outputs.is_selected == 'true' && fromJson(steps.pr.outputs.draft) && steps.pr.outputs.voxt_docs_only != 'true' }}
         run: |
           echo "PR is draft. Blocking Mac CI."
           exit 1
@@ -109,7 +105,7 @@ jobs:
         id: plan
         env:
           LABELS_JSON: ${{ steps.pr.outputs.labels }}
-          VOXT_APP_ONLY: ${{ steps.pr.outputs.voxt_app_only }}
+          VOXT_DOCS_ONLY: ${{ steps.pr.outputs.voxt_docs_only }}
         run: |
           if resolved=$(python .github/scripts/resolve_ci_labels.py resolve \
             --labels-json "${LABELS_JSON}" \
@@ -118,11 +114,11 @@ jobs:
             echo "${resolved}"
             exit 0
           fi
-          if [ "${VOXT_APP_ONLY}" != "true" ]; then
+          if [ "${VOXT_DOCS_ONLY}" != "true" ]; then
             echo "${resolved}"
             exit 1
           fi
-          echo "::notice::Only Voxt's app changed: no Mac job runs, so no CI label is needed. Voxt CI tests it."
+          echo "::notice::Only Voxt's documentation changed: no Mac job runs, so no CI label is needed. Voxt CI tests it."
           echo "run_mac=false" >> "${GITHUB_OUTPUT}"
 
       - name: Check PR lint and mergeability
@@ -173,8 +169,11 @@ jobs:
         run: |
           ccache --zero-stats > /dev/null
           sglang_omni_mlx/native/scripts/build_runtime.sh "$RUNNER_TEMP/runtime" "$RUNNER_TEMP/runtime-build"
-          "$RUNNER_TEMP/runtime-build/venv/bin/cmake" --build "$RUNNER_TEMP/runtime-build/cmake" --target stub_server audio_chunk_test ming3_mtp_probe
+          "$RUNNER_TEMP/runtime-build/venv/bin/cmake" --build "$RUNNER_TEMP/runtime-build/cmake" --target stub_server audio_chunk_test ming3_mtp_probe arkasr_probe tokenizer_preference_test moss_model_test moss_realtime_test
           "$RUNNER_TEMP/runtime-build/cmake/audio_chunk_test"
+          "$RUNNER_TEMP/runtime-build/cmake/tokenizer_preference_test"
+          "$RUNNER_TEMP/runtime-build/cmake/moss_model_test"
+          "$RUNNER_TEMP/runtime-build/cmake/moss_realtime_test"
           ccache --show-stats
 
       - name: Set up the test Python
@@ -186,6 +185,7 @@ jobs:
         env:
           NATIVE_STUB_SERVER: ${{ runner.temp }}/runtime-build/cmake/stub_server
           NATIVE_MING3_MTP_PROBE: ${{ runner.temp }}/runtime-build/cmake/ming3_mtp_probe
+          NATIVE_ARKASR_PROBE: ${{ runner.temp }}/runtime-build/cmake/arkasr_probe
           NATIVE_RUNTIME_BIN: ${{ runner.temp }}/runtime/bin
         run: |
           "$RUNNER_TEMP/test-venv/bin/python" -m pytest -q sglang_omni_mlx/native/tests
@@ -196,6 +196,14 @@ jobs:
     if: needs.preflight.outputs.run_mac == 'true' && needs.preflight.outputs.run_voxt_helper == 'true'
     runs-on: macos-26
     timeout-minutes: 45
+    env:
+      # The headless end-to-end tests (Voxt/mac_e2e_test.go) run the job's one
+      # helper build through the real supervisor. VOXTNEW_MIN_FREE=0:
+      # mac-e2e.sh's free-memory guard is for a Mac shared with other work; a
+      # CI runner is dedicated, so the guard must not stop these steps.
+      VOXTNEW_MAC_E2E: "1"
+      VOXTNEW_HELPER: /tmp/voxtnew-mac-ci-helper/voxtnew-helper
+      VOXTNEW_MIN_FREE: "0"
     steps:
       - uses: actions/checkout@v4
 
@@ -214,9 +222,76 @@ jobs:
           go-version-file: Voxt/go.mod
           cache-dependency-path: Voxt/go.sum
 
+      # The end-to-end tests below run this same build, signed as
+      # scripts/build-helper.sh signs it, so the job builds the helper once.
+      - name: Sign the helper for the end-to-end tests
+        run: |
+          bin="$(swift build --package-path Voxt/helper --show-bin-path)/voxtnew-helper"
+          mkdir -p /tmp/voxtnew-mac-ci-helper
+          cp "$bin" /tmp/voxtnew-mac-ci-helper/voxtnew-helper
+          codesign --force --sign - --entitlements Voxt/helper/Support/helper.entitlements --options runtime /tmp/voxtnew-mac-ci-helper/voxtnew-helper
+
       - name: Vendored MyGo and native drop regressions
         working-directory: Voxt
         run: scripts/vendor-mygo.sh --check
 
       - name: Helper tests
         run: swift test --package-path Voxt/helper
+
+      # The MyGo SQLite plugin loads a prebuilt library. The session test
+      # would download it on first use, and its temporary HOME links to the
+      # real cache; CI fetches it once, checks its sha256 against the
+      # plugin's manifest and points the plugin at it (as Voxt CI does).
+      - name: SQLite library for the MyGo plugin
+        id: sqlite
+        working-directory: Voxt
+        run: |
+          dir="$(go list -m -f '{{.Dir}}' github.com/egoist/mygo)/plugins/sqlite"
+          read -r url sum < <(jq -r '.libraries[0].files["darwin-arm64"] | "\(.url) \(.sha256)"' "$dir/mygo-plugin.json")
+          echo "sha=$sum" >> "$GITHUB_OUTPUT"
+          echo "url=$url" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/voxtnew-ci/sqlite
+          key: mygo-sqlite-darwin-${{ steps.sqlite.outputs.sha }}
+
+      - name: Fetch and verify the SQLite library
+        run: |
+          mkdir -p ~/.cache/voxtnew-ci/sqlite
+          lib=~/.cache/voxtnew-ci/sqlite/libmygo-sqlite3.dylib
+          if [ ! -f "$lib" ]; then
+            curl -fsSL --retry 3 -o "$lib" "${{ steps.sqlite.outputs.url }}"
+          else
+            echo "cached: $lib"
+          fi
+          echo "${{ steps.sqlite.outputs.sha }}  $lib" | shasum -a 256 -c -
+          echo "MYGO_SQLITE_LIBRARY=$lib" >> "$GITHUB_ENV"
+
+      # scripts/mac-e2e.sh's Go steps, without the script's limits for a
+      # shared Mac: the real supervisor and helper, no window, key, tap,
+      # clipboard or microphone. A skip must fail the step: a green log
+      # without the test says nothing.
+      - name: The helper, read-only and the file input
+        working-directory: Voxt
+        run: |
+          set -o pipefail
+          go test -count=1 -run 'TestMacHelperReadOnly|TestMacHelperIcons|TestMacHelperCaptureFile' -v . | tee "$RUNNER_TEMP/mac-e2e-helper.txt"
+          ! grep -- '--- SKIP' "$RUNNER_TEMP/mac-e2e-helper.txt"
+
+      - name: Text fit (Core Text)
+        working-directory: Voxt
+        env:
+          VOXTNEW_TEXTFIT_PROBE: "1"
+          VOXTNEW_TEXTFIT_AUDIT: strict
+        run: |
+          set -o pipefail
+          go test -count=1 -run 'TestTextFitsItsOwnWidth|TestTranslationsFit' -v . | tee "$RUNNER_TEMP/mac-e2e-textfit.txt"
+          ! grep -- '--- SKIP' "$RUNNER_TEMP/mac-e2e-textfit.txt"
+
+      - name: A session over the fake local models
+        working-directory: Voxt
+        run: |
+          set -o pipefail
+          go test -count=1 -run 'TestMacE2ESessionLocal' -v . | tee "$RUNNER_TEMP/mac-e2e-session.txt"
+          ! grep -- '--- SKIP' "$RUNNER_TEMP/mac-e2e-session.txt"

@@ -447,6 +447,7 @@ async def run_asr_transcription(
     disable_tqdm: bool = True,
     stream: bool = False,
     fallback_percentage: int = 0,
+    session: aiohttp.ClientSession | None = None,
 ) -> tuple[list[RequestResult], float]:
     """Transcribe samples against a running ASR router at one concurrency.
 
@@ -473,7 +474,7 @@ async def run_asr_transcription(
             timeout_s=request_timeout_s,
         )
     )
-    outputs = await runner.run(samples, send_fn)
+    outputs = await runner.run(samples, send_fn, session=session)
     return outputs, runner.wall_clock_s
 
 

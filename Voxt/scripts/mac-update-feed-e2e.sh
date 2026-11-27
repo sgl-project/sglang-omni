@@ -72,7 +72,8 @@ if [[ -n "$FROM" ]]; then
   gh release download "$FROM" --repo "$REPO" --pattern '*-darwin-arm64.tar.gz' --dir "$WORK"
   tar -xzf "$WORK/"*-darwin-arm64.tar.gz -C "$WORK/out/darwin-arm64"
   bin="$WORK/out/darwin-arm64/Voxt.app/Contents/MacOS/Voxt"
-  if ! grep -aqF -- "--update-beta" "$bin" || ! grep -aqF "$(scripts/release-appcast.sh feed-url beta)" "$bin"; then
+  # A field of the check's report: the flag names are not in the binary as text.
+  if ! grep -aqF 'json:"notPublished"' "$bin" || ! grep -aqF "$(scripts/release-appcast.sh feed-url beta)" "$bin"; then
     echo "== $FROM has no update check or another feed: skipped"
     exit 0
   fi

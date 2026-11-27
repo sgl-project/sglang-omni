@@ -36,7 +36,7 @@ https://github.com/user-attachments/assets/ab31c202-9415-47a1-b1d3-bc91a7285e8b
 - **说过的话不会丢。** 识别失败时录音会保留，在历史里点“重试”就能重新识别。
 - **答案卡片里自由地连续交互。** 结果可以留在浮动的卡片里，接着用语音追问，再复制或插入。
 - **充分的模型生态，数据由你定义。** 语音既能使用本地由 SGLang-Omni MLX Runtime 强力支持的 Qwen3-ASR 或 MOSS-Transcribe-Diarize，也能接入云端 ASR API。语言模型方面，任何提供 OpenAI compatible API 的模型都可以作为强力支持：无论是 SGLang MLX、Ollama，还是我们团队常用的 DeepSeek V4.1 和 Kimi K3.1。数据去哪里，由你决定。
-- **Qwen3-ASR、MOSS-Transcribe-Diarize 和 Whisper Large v3 支持投机解码。** 在模型卡片打开“转录加速”即可下载对应的草稿模型。
+- **Qwen3-ASR、MOSS-Transcribe-Diarize 和 Whisper Large v3 支持投机解码。** 在模型卡片打开“加速模型”即可下载对应的草稿模型。
 - **还有**：ChatGPT 登录（不用填 API Key）、翻译备用模型、自定义提示词，以及 Markdown / JSONL 历史导出。
 
 已经在用 Voxt 1.x？看[从 Voxt 1.x 升级](#从-voxt-1x-升级)。各版本的改动见 [CHANGELOG.md](CHANGELOG.md)。
@@ -65,7 +65,7 @@ https://github.com/user-attachments/assets/ab31c202-9415-47a1-b1d3-bc91a7285e8b
 - **笔记**：单按右 ⌘ 说话，Voxt 把说的话存成笔记，不输入到 App 里。
 - **历史**：每一条结果都在，可以搜索、从录音“重试”、导出。
 
-每个快捷键都可以在对应的功能页里改，“设置 → 快捷键”里还有预设：右 ⌥、fn、⌘ 组合键，或者鼠标中键。⌃⌥V 再次粘贴上一条结果。
+每个快捷键都可以在“设置”里对应的功能分节中修改，“设置 → 快捷键”里还有预设：右 ⌥、fn、⌘ 组合键，或者鼠标中键。⌃⌥V 再次粘贴上一条结果。
 
 ## 安装
 
@@ -73,7 +73,7 @@ https://github.com/user-attachments/assets/ab31c202-9415-47a1-b1d3-bc91a7285e8b
 
 1. **下载** [`Voxt-2.1.3-arm64.dmg`][download]，打开后把 **Voxt** 拖进“应用程序”。
 
-2. **打开 Voxt，跟着设置引导走**：授权麦克风和辅助功能，下载推荐的语音识别模型（Qwen3-ASR 1.7B (8bit)，2.5 GB），再配置一个语言模型用于整理、翻译和改写。
+2. **打开 Voxt，跟着设置引导走**：授权麦克风和辅助功能，下载推荐的语音识别模型（Qwen3-ASR 1.7B (8bit) 及其转录加速草稿，3.2 GB），再配置一个语言模型用于整理、翻译和改写。
 3. 在任意 App 里**单按右 Option**，说话，再按一下。
 
 分步说明：[Install Voxt][install-guide]。
@@ -98,7 +98,7 @@ https://github.com/user-attachments/assets/ab31c202-9415-47a1-b1d3-bc91a7285e8b
 ### 系统要求
 
 - **Apple 芯片**、**macOS 15** 及以上的 Mac。Voxt 2 不能在 Intel Mac 上运行，那里请继续用 Voxt 1.x。
-- app 约 280 MB，推荐的语音识别模型需下载 2.5 GB。
+- app 约 280 MB，推荐的语音识别模型连同草稿需下载 3.2 GB。
 - Voxt 2 有新版本时会提示（“检查更新…”，以及每天一次的自动检查，可以在 设置 → 诊断与关于 里关掉）。带更新源的构建还可以自动安装更新；没有更新源的构建只检查 GitHub Releases，新版本需从 dmg 安装。
 
 ## 你的模型，你的数据
@@ -109,12 +109,13 @@ https://github.com/user-attachments/assets/ab31c202-9415-47a1-b1d3-bc91a7285e8b
 
 | 模型 | 擅长什么 | 下载大小 |
 |---|---|---|
-| **Qwen3-ASR 1.7B (8bit)**，推荐 | 最准确：口音、方言、人名、一句话里夹几种语言。实时显示文字。 | 2.5 GB |
+| **Qwen3-ASR 1.7B (8bit)**，推荐 | 最准确：口音、方言、人名、一句话里夹几种语言。实时显示文字，默认开启转录加速。 | 3.2 GB（含草稿） |
 | **Qwen3-ASR 0.6B (4bit)** | 更快、更省内存，适合在安静环境里清晰地说话。实时显示文字。 | 713 MB |
+| **MOSS-Transcribe-Diarize** | 中文和英语，为多人对话设计。实时显示文字。不用词典和识别上下文，词典仍用于语言模型整理。 | 1.8 GB |
 
-- **更多本地模型**：MOSS-Transcribe-Diarize（中文和英语，实时显示文字）、Nemotron 3.5 ASR 0.6B（28 种语言，实时显示文字）、Qwen3-ASR 1.7B (6bit)、Whisper Large v3 Turbo / Large v3 / Small（约 100 种语言）、Parakeet TDT 0.6B v3（25 种欧洲语言）、SenseVoice Small（中文、粤语、英语、日语、韩语）和 Cohere Transcribe 03-2026（14 种语言）。macOS 自带的系统听写也可以用，无需下载。
+- **更多本地模型**：Nemotron 3.5 ASR 0.6B（28 种语言，实时显示文字）、Qwen3-ASR 1.7B (6bit)、Whisper Large v3 Turbo / Large v3 / Small（约 100 种语言）、Parakeet TDT 0.6B v3（25 种欧洲语言）、SenseVoice Small（中文、粤语、英语、日语、韩语）和 Cohere Transcribe 03-2026（14 种语言）。macOS 自带的系统听写也可以用，无需下载。
 - **Qwen3-ASR** 支持 30 种语言和 22 种中文方言，并且会用到你的词典；其他可下载的模型不用词典。
-- **转录加速**可在 Qwen3-ASR 1.7B (8bit 和 6bit)、Qwen3-ASR 0.6B (4bit)、MOSS-Transcribe-Diarize 和 Whisper Large v3 的卡片上开启。打开开关后，Qwen3-ASR 可下载 DFlash 草稿模型（726 MB，1.7B 的 8bit 和 6bit 共用，下载一次即可；0.6B 为 262 MB），MOSS 为 262 MB，Whisper 可下载 Distil 草稿模型（1.5 GB）。关闭开关后恢复普通解码，草稿模型留在本地。
+- **加速模型**可在 Qwen3-ASR 1.7B (8bit 和 6bit)、Qwen3-ASR 0.6B (4bit)、MOSS-Transcribe-Diarize 和 Whisper Large v3 的卡片上开启。打开开关后，Qwen3-ASR 可下载 DFlash 草稿模型（726 MB，1.7B 的 8bit 和 6bit 共用，下载一次即可；0.6B 为 262 MB），MOSS 为 262 MB，Whisper 可下载 Distil 草稿模型（1.5 GB）。关闭开关后恢复普通解码，草稿模型留在本地。
 - **云端语音 API**，如果你更想用：OpenAI Transcribe、豆包（火山引擎）、智谱 GLM-ASR、阿里云百炼、阶跃星辰、小米 MiMo 和 Google Gemini。
 
 ### 语言模型

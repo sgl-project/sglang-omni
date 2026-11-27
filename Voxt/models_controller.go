@@ -9,9 +9,12 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/dictation"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/hotkey"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/lang"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/local"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/models"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/omni"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/providers"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/session"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/uitext"
 )
@@ -143,6 +146,9 @@ func chooseFeatureModel(prefs settings.Settings, installed []local.Model, kind l
 	}
 	want = strings.TrimSpace(want)
 	ready := local.ForFeature(installed, feature)
+	if kind == local.ASR && want == "" {
+		ready = automaticSpeech(prefs, ready)
+	}
 	selected, ok := local.Choose(ready, want)
 	if kind != local.LLM || !ok || want == "" || selected.ID == want {
 		return selected, ok
@@ -156,6 +162,54 @@ func chooseFeatureModel(prefs settings.Settings, installed []local.Model, kind l
 	}
 	return local.Model{}, false
 }
+
+// automaticSpeech is installed's speech models for a feature left on
+// Automatic: automaticSpeechFor the main language.
+func automaticSpeech(prefs settings.Settings, installed []local.Model) []local.Model {
+	return automaticSpeechFor(session.MainLanguage(prefs, i18n.Locale()), installed)
+}
+
+// automaticSpeechFor is installed's speech models for a feature left on
+// Automatic and spoken to in main: a model whose catalogue spec knows
+// languages main is not among goes, so Automatic never lands on a model
+// that cannot recognise it (MOSS-Transcribe-Diarize knows Chinese and
+// English only, #4067). A model without language data stays, an empty
+// main keeps everything, and an explicit choice never comes here. A
+// remote speech service goes too while any on-device model is installed:
+// Automatic uses one only when the user chose it or no local model is
+// installed (providers.Services' contract), and the gate does not change
+// that by removing the local entries.
+func automaticSpeechFor(main string, installed []local.Model) []local.Model {
+	if main == "" {
+		return installed
+	}
+	out := make([]local.Model, 0, len(installed))
+	for _, m := range installed {
+		spec, ok := omni.Lookup(m.ID)
+		if !ok || len(spec.Languages) == 0 {
+			out = append(out, m)
+			continue
+		}
+		if _, fit := lang.Match(spec.Languages, main); fit {
+			out = append(out, m)
+		}
+	}
+	if slices.ContainsFunc(installed, onDeviceSpeech) {
+		out = slices.DeleteFunc(out, isRemoteSpeech)
+	}
+	return out
+}
+
+// isRemoteSpeech says whether m is a remote speech service; System
+// dictation and the local models are not.
+func isRemoteSpeech(m local.Model) bool {
+	_, remote := providers.LookupSpeech(m.ID)
+	return remote
+}
+
+// onDeviceSpeech says whether m is an on-device speech model (System
+// dictation included), for the remote-services contract.
+func onDeviceSpeech(m local.Model) bool { return !isRemoteSpeech(m) }
 
 // usedBy says which features use model id of kind now, as Voxt 1.x's
 // model list did ("Used by Transcribe · Rewrite"), "" for none. A
@@ -284,8 +338,25 @@ func (a *app) modelsViewStateInput() modelsViewStateInput {
 		ModelAsk: a.modelAsk, ModelAskFree: a.modelAskFree, ModelShared: a.modelShared, ModelDeciding: a.modelDeciding,
 		NetworkOpen: a.netOpen, NetworkForm: a.netForm, FamilyOthers: familyOthers, FamilyReadOnly: readOnly,
 		AdvancedOpen: a.modelAdvanced, HiddenOpen: a.modelHiddenOpen,
-		Assignment: a.assignmentStateInput(),
+		Assignment: a.assignmentStateInput(), SpeechContextUnused: a.speechContextUnused(),
 	}
+}
+
+// speechContextUnused says that Transcribe, Translate and Rewrite all use
+// a local speech model that takes no context (MOSS-Transcribe-Diarize,
+// Whisper…), so a speech context would reach none of them (#4067).
+func (a *app) speechContextUnused() bool {
+	for _, f := range []string{hotkey.Transcribe, hotkey.Translate, hotkey.Rewrite} {
+		m, ok := a.featureModel(local.ASR, f)
+		if !ok {
+			return false
+		}
+		spec, curated := omni.Lookup(m.ID)
+		if !curated || spec.ASR == nil || spec.ASR.ContextTerms > 0 {
+			return false
+		}
+	}
+	return true
 }
 
 // assignmentStateInput is the Apply to dialog's state, nil while it is
