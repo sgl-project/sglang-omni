@@ -612,6 +612,11 @@ def assert_wer_results(
     summary, per_sample = wer_result_sections(results, checks)
     check_wer_per_sample_schema(per_sample, checks)
 
+    checks.check(
+        any(sample.get("wer") is not None for sample in per_sample),
+        "Corpus WER has no evaluated samples",
+    )
+
     if max_per_sample_wer is not None:
         failed_details = [
             f"  sample {s.get('id')}: {s.get('error')}"
