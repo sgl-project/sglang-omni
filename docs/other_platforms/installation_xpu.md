@@ -274,6 +274,8 @@ Decode graphs capture on XPU for this model and stay on by default, as on CUDA. 
 
 Qwen3-TTS automatically selects the `intel_xpu` attention backend when the platform and the engine stage device are both XPU. Setting any of `attention_backend`, `prefill_attention_backend`, or `decode_attention_backend` in `server_args_overrides` takes precedence over this default. CPU stages on an XPU host are unaffected.
 
+On XPU the talker decodes one step ahead of its host bookkeeping by default; pass `--tts_engine.factory.enable_async_decode false` to decode it synchronously. This is separate from the vocoder's `async_decode`, which stays off on XPU.
+
 Qwen3-TTS needs the upstream `qwen-tts` package. The Docker image includes it; in an existing XPU environment,
 install it here, because `pyproject_xpu.toml` deliberately does not pin it.
 `--no-deps` is required on both lines: `qwen-tts` pins Transformers 4.57.3, which

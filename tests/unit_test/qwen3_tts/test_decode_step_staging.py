@@ -161,7 +161,6 @@ def test_lookahead_admits_repetition_penalty_but_not_additive_history_terms():
 
     assert runner.lookahead_eligible(decode_batch(lookahead_request())) is True
     assert runner.lookahead_eligible(decode_batch()) is False
-    assert runner.lookahead_eligible(None) is False
     for blocked in (
         {"frequency_penalty": 0.5},
         {"presence_penalty": 0.5},
@@ -176,7 +175,7 @@ def test_lookahead_admits_repetition_penalty_but_not_additive_history_terms():
 
 @pytest.mark.parametrize(
     "forward_mode",
-    [mode for mode in ForwardMode if not mode.is_decode()] + [None],
+    [mode for mode in ForwardMode if not mode.is_decode()],
 )
 def test_lookahead_rejects_every_batch_that_is_not_a_decode(forward_mode):
     """An async prefill never stages step-ahead inputs, so it must take the synchronous path."""

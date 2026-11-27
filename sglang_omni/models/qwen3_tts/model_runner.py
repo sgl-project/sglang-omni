@@ -199,12 +199,8 @@ class Qwen3TTSModelRunner(ModelRunner):
         del forward_batch, schedule_batch, requests
         return True
 
-    def lookahead_eligible(self, batch: ScheduleBatch | None) -> bool:
-        if (
-            batch is None
-            or batch.forward_mode is None
-            or not batch.forward_mode.is_decode()
-        ):
+    def lookahead_eligible(self, batch: ScheduleBatch) -> bool:
+        if not batch.forward_mode.is_decode():
             return False
         else:
             return bool(batch.reqs) and all(
@@ -232,7 +228,10 @@ class Qwen3TTSModelRunner(ModelRunner):
         for row_idx, sched_req in enumerate(requests):
             sched_req.data.inflight_feedback = feedback_rows[row_idx]
             sched_req.data.inflight_codec_id = codec_id_rows[row_idx]
-        input_rows = self.launch_input_rows or []
+        assert (
+            self.launch_input_rows is not None
+        ), "Qwen3-TTS step-ahead launches only after before_decode staged its rows"
+        input_rows = self.launch_input_rows
         self.launch_input_rows = None
         ids = layer0_codes.reshape(-1)[:batch_size]
         host_ids = self.next_host_staging((batch_size,), ids.dtype)
@@ -362,15 +361,10 @@ class Qwen3TTSModelRunner(ModelRunner):
             return
         else:
             pass
-        layer0_codes = result.next_token_ids
-        if layer0_codes.ndim == 1:
-            layer0_codes = layer0_codes.unsqueeze(1)
-        else:
-            pass
         # note(ratish): the layer 0 id is the step's only host read, staged ahead
         # of the predictor so the finalize wait covers the sample, not the predictor.
         self.stage_token_ids(result, result.next_token_ids)
-        self.run_code_predictor(result, forward_batch, layer0_codes)
+        self.run_code_predictor(result, forward_batch, result.next_token_ids)
         self.has_pending_code_step = True
 
     def run_code_predictor(
