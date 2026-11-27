@@ -482,6 +482,90 @@ class Coordinator(SessionGraphRunner):
             timeout_s=timeout_s,
         )
 
+    async def start_lora_update(
+        self,
+        payload: dict[str, object],
+        *,
+        stages: Sequence[str] | None = None,
+        timeout_s: float = 120.0,
+    ) -> AdminResponse:
+        return await self.admin(
+            "start_lora_update",
+            payload,
+            stages=stages,
+            timeout_s=timeout_s,
+        )
+
+    async def update_lora_weights(
+        self,
+        payload: dict[str, object],
+        *,
+        stages: Sequence[str] | None = None,
+        timeout_s: float = 300.0,
+    ) -> AdminResponse:
+        return await self.admin(
+            "update_lora_weights",
+            payload,
+            stages=stages,
+            timeout_s=timeout_s,
+        )
+
+    async def finish_lora_update(
+        self,
+        payload: dict[str, object],
+        *,
+        stages: Sequence[str] | None = None,
+        timeout_s: float = 120.0,
+    ) -> AdminResponse:
+        return await self.admin(
+            "finish_lora_update",
+            payload,
+            stages=stages,
+            timeout_s=timeout_s,
+        )
+
+    async def abort_lora_update(
+        self,
+        payload: dict[str, object],
+        *,
+        stages: Sequence[str] | None = None,
+        timeout_s: float = 120.0,
+    ) -> AdminResponse:
+        return await self.admin(
+            "abort_lora_update",
+            payload,
+            stages=stages,
+            timeout_s=timeout_s,
+        )
+
+    async def restore_base_weights(
+        self,
+        payload: dict[str, object],
+        *,
+        stages: Sequence[str] | None = None,
+        timeout_s: float = 120.0,
+    ) -> AdminResponse:
+        return await self.admin(
+            "restore_base_weights",
+            payload,
+            stages=stages,
+            timeout_s=timeout_s,
+        )
+
+    async def load_lora_adapter(
+        self,
+        payload: dict[str, object],
+        *,
+        stages: Sequence[str] | None = None,
+        timeout_s: float = 300.0,
+    ) -> AdminResponse:
+        return await self.admin(
+            "load_lora_adapter",
+            payload,
+            stages=stages,
+            timeout_s=timeout_s,
+        )
+
     async def submit(self, request_id: str, request: object) -> object:
         """Submit a request to the pipeline and wait for completion."""
         self.reject_session_metadata(request)

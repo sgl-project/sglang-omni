@@ -95,11 +95,17 @@ from sglang_omni.profiler.event_recorder import (
 )
 from sglang_omni.profiler.event_recorder import get_active_stage as _get_active_stage
 from sglang_omni.proto.admin import (
+    ADMIN_ABORT_LORA_UPDATE,
     ADMIN_CONTINUE_GENERATION,
     ADMIN_DESTROY_WEIGHTS_UPDATE_GROUP,
+    ADMIN_FINISH_LORA_UPDATE,
     ADMIN_INIT_WEIGHTS_UPDATE_GROUP,
+    ADMIN_LOAD_LORA_ADAPTER,
     ADMIN_MODEL_INFO,
     ADMIN_PAUSE_GENERATION,
+    ADMIN_RESTORE_BASE_WEIGHTS,
+    ADMIN_START_LORA_UPDATE,
+    ADMIN_UPDATE_LORA_WEIGHTS,
     ADMIN_UPDATE_WEIGHTS_FROM_DISK,
     ADMIN_UPDATE_WEIGHTS_FROM_DISTRIBUTED,
     ADMIN_UPDATE_WEIGHTS_FROM_TENSOR,
@@ -4125,6 +4131,30 @@ class OmniScheduler(Generic[RequestDataT]):
             return self.admin_weights_checker(payload)
         else:
             pass
+        if action == ADMIN_START_LORA_UPDATE:
+            return self.admin_start_lora_update(payload)
+        else:
+            pass
+        if action == ADMIN_UPDATE_LORA_WEIGHTS:
+            return self.admin_update_lora_weights(payload)
+        else:
+            pass
+        if action == ADMIN_FINISH_LORA_UPDATE:
+            return self.admin_finish_lora_update(payload)
+        else:
+            pass
+        if action == ADMIN_ABORT_LORA_UPDATE:
+            return self.admin_abort_lora_update(payload)
+        else:
+            pass
+        if action == ADMIN_RESTORE_BASE_WEIGHTS:
+            return self.admin_restore_base_weights(payload)
+        else:
+            pass
+        if action == ADMIN_LOAD_LORA_ADAPTER:
+            return self.admin_load_lora_adapter(payload)
+        else:
+            pass
         return {
             "success": True,
             "message": f"unsupported admin action: {action}",
@@ -4406,6 +4436,74 @@ class OmniScheduler(Generic[RequestDataT]):
         with self.admin_lock:
             data = self.model_worker.weights_checker(action)
         return {"success": True, "message": "ok", "data": data}
+
+    def admin_start_lora_update(self, payload: dict[str, object]) -> AdminActionResult:
+        with self.admin_lock:
+            success, message = self.model_worker.start_lora_update(payload)
+        return {
+            "success": bool(success),
+            "message": str(message),
+            "data": {
+                "update_id": payload.get("update_id"),
+                "lora_name": payload.get("lora_name"),
+            },
+            "error": None if success else str(message),
+        }
+
+    def admin_update_lora_weights(
+        self, payload: dict[str, object]
+    ) -> AdminActionResult:
+        with self.admin_lock:
+            success, message = self.model_worker.update_lora_weights(payload)
+        return {
+            "success": bool(success),
+            "message": str(message),
+            "data": {
+                "update_id": payload.get("update_id"),
+                "lora_name": payload.get("lora_name"),
+            },
+            "error": None if success else str(message),
+        }
+
+    def admin_finish_lora_update(self, payload: dict[str, object]) -> AdminActionResult:
+        return self.run_weight_update_with_lifecycle(
+            payload,
+            self.model_worker.finish_lora_update,
+            {
+                "update_id": payload.get("update_id"),
+            },
+            keep_pause_on_failure=True,
+        )
+
+    def admin_abort_lora_update(self, payload: dict[str, object]) -> AdminActionResult:
+        with self.admin_lock:
+            success, message = self.model_worker.abort_lora_update(payload)
+        return {
+            "success": bool(success),
+            "message": str(message),
+            "data": {
+                "update_id": payload.get("update_id"),
+            },
+            "error": None if success else str(message),
+        }
+
+    def admin_restore_base_weights(
+        self, payload: dict[str, object]
+    ) -> AdminActionResult:
+        return self.run_weight_update_with_lifecycle(
+            payload,
+            self.model_worker.restore_base_weights,
+            {},
+            keep_pause_on_failure=True,
+        )
+
+    def admin_load_lora_adapter(self, payload: dict[str, object]) -> AdminActionResult:
+        return self.run_weight_update_with_lifecycle(
+            payload,
+            self.model_worker.load_lora_adapter,
+            {"lora_path": payload.get("lora_path")},
+            keep_pause_on_failure=True,
+        )
 
     def abort_all_requests(self) -> list[str]:
         request_ids = self.active_request_ids()

@@ -8,13 +8,21 @@ import logging
 import math
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from contextlib import nullcontext
 from dataclasses import dataclass, field
 
 import torch
 from torch import Tensor
 
+from sglang_omni.lora import (
+    MergedLoRAManager,
+    MergedLoRAWorkerSession,
+    ODESolverFieldMap,
+    SupportsMergedLoRA,
+    build_attr_solver_controller,
+    build_merged_lora_admin_handler,
+)
 from sglang_omni.models.minimax_music3.serial_offload import (
     get_coordinator,
     torch_memory_saver,
@@ -448,6 +456,31 @@ class AcousticStreamState:
     next_start_frame: int = 0
 
 
+MINIMAX_MUSIC3_SOLVER_FIELD_MAP = ODESolverFieldMap(
+    num_steps="dit_steps",
+    cfg_scale="dit_cfg_scale",
+)
+
+
+def build_minimax_music3_lora_admin_handler(
+    decoder: MiniMaxMusic3AcousticDecoder,
+) -> Callable[[str, dict[str, object]], Mapping[str, object]]:
+    """Build an engine-side merged LoRA + ODE solver admin handler for Music3 DIT."""
+    manager = MergedLoRAManager(
+        decoder.dit,
+        architecture="MiniMaxMusic3ForConditionalGeneration",
+    )
+    solver_controller = build_attr_solver_controller(
+        decoder,
+        MINIMAX_MUSIC3_SOLVER_FIELD_MAP,
+    )
+    session = MergedLoRAWorkerSession(
+        manager,
+        solver_controller=solver_controller,
+    )
+    return build_merged_lora_admin_handler(session)
+
+
 class MiniMaxMusic3AcousticScheduler(StreamingSimpleScheduler):
     """Consumes internal hidden chunks while HTTP remains non-streaming."""
 
@@ -457,7 +490,14 @@ class MiniMaxMusic3AcousticScheduler(StreamingSimpleScheduler):
     ) -> None:
         self.decoder = decoder
         self.stream_states: dict[str, AcousticStreamState] = {}
-        super().__init__(compute_fn=None, max_batch_size=1)
+        dit_module = getattr(decoder, "dit", None)
+        if isinstance(dit_module, torch.nn.Module) and isinstance(
+            dit_module, SupportsMergedLoRA
+        ):
+            admin_handler = build_minimax_music3_lora_admin_handler(decoder)
+        else:
+            admin_handler = None
+        super().__init__(compute_fn=None, max_batch_size=1, admin_handler=admin_handler)
 
     def is_streaming_payload(self, payload: object) -> bool:
         if not isinstance(payload, StagePayload):
@@ -630,8 +670,10 @@ class MiniMaxMusic3AcousticScheduler(StreamingSimpleScheduler):
 
 
 __all__ = [
+    "MINIMAX_MUSIC3_SOLVER_FIELD_MAP",
     "MiniMaxMusic3AcousticDecoder",
     "MiniMaxMusic3AcousticScheduler",
+    "build_minimax_music3_lora_admin_handler",
     "resample_waveform",
     "resolve_acoustic_dtype",
 ]

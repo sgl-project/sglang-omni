@@ -17,7 +17,7 @@ import logging
 import queue as _queue_mod
 import threading
 import time
-from collections.abc import Coroutine, Sequence
+from collections.abc import Coroutine, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from typing import Awaitable, Callable, Generic, Protocol
 
@@ -65,6 +65,13 @@ class SimpleScheduler(Generic[ComputeInput, ComputeResult]):
         abort_callback: Callable[[str], None] | None = None,
         shutdown_callback: Callable[[], None] | None = None,
         request_arrival_hook: RequestArrivalHook | None = None,
+        admin_handler: (
+            Callable[
+                [str, dict[str, object]],
+                Mapping[str, object] | Awaitable[Mapping[str, object]],
+            ]
+            | None
+        ) = None,
     ):
         self.inbox: _queue_mod.Queue[IncomingMessage] = _queue_mod.Queue()
         self.outbox: _queue_mod.Queue[OutgoingMessage] = _queue_mod.Queue()
@@ -93,6 +100,7 @@ class SimpleScheduler(Generic[ComputeInput, ComputeResult]):
         self.abort_callback = abort_callback
         self.shutdown_callback = shutdown_callback
         self.request_arrival_hook = request_arrival_hook
+        self.admin_handler = admin_handler
         self.shutdown_lock = threading.Lock()
         self.aborted: set[str] = set()
         self.abort_lock = threading.Lock()
@@ -427,3 +435,15 @@ class SimpleScheduler(Generic[ComputeInput, ComputeResult]):
             else:
                 pass
         self.cleanup_aborted_request(request_id)
+
+    def admin(
+        self, action: str, payload: dict[str, object] | None = None
+    ) -> Mapping[str, object] | Awaitable[Mapping[str, object]]:
+        if self.admin_handler is None:
+            return {
+                "success": True,
+                "message": "stage does not support admin operations",
+                "data": {"skipped": True, "unsupported": True},
+            }
+        else:
+            return self.admin_handler(action, dict(payload or {}))

@@ -16,6 +16,12 @@ ADMIN_UPDATE_WEIGHTS_FROM_DISTRIBUTED = "update_weights_from_distributed"
 ADMIN_INIT_WEIGHTS_UPDATE_GROUP = "init_weights_update_group"
 ADMIN_DESTROY_WEIGHTS_UPDATE_GROUP = "destroy_weights_update_group"
 ADMIN_WEIGHTS_CHECKER = "weights_checker"
+ADMIN_START_LORA_UPDATE = "start_lora_update"
+ADMIN_UPDATE_LORA_WEIGHTS = "update_lora_weights"
+ADMIN_FINISH_LORA_UPDATE = "finish_lora_update"
+ADMIN_ABORT_LORA_UPDATE = "abort_lora_update"
+ADMIN_RESTORE_BASE_WEIGHTS = "restore_base_weights"
+ADMIN_LOAD_LORA_ADAPTER = "load_lora_adapter"
 
 
 class SerializedAdminResult(TypedDict):
@@ -118,4 +124,10 @@ def is_update_action(action: str) -> bool:
         ADMIN_UPDATE_WEIGHTS_FROM_DISK,
         ADMIN_UPDATE_WEIGHTS_FROM_TENSOR,
         ADMIN_UPDATE_WEIGHTS_FROM_DISTRIBUTED,
+        ADMIN_START_LORA_UPDATE,
+        ADMIN_UPDATE_LORA_WEIGHTS,
+        ADMIN_FINISH_LORA_UPDATE,
+        ADMIN_ABORT_LORA_UPDATE,
+        ADMIN_RESTORE_BASE_WEIGHTS,
+        ADMIN_LOAD_LORA_ADAPTER,
     }

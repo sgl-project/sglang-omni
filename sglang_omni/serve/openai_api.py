@@ -87,6 +87,7 @@ from sglang_omni.serve.diarizations import register_diarizations
 from sglang_omni.serve.openai_errors import generation_error_status_code
 from sglang_omni.serve.protocol import (
     DEFAULT_TTS_BATCH_MAX_ITEMS,
+    AbortLoRAUpdateRequest,
     AdminRequestBase,
     ChatCompletionAudio,
     ChatCompletionChoice,
@@ -98,19 +99,24 @@ from sglang_omni.serve.protocol import (
     ContinueGenerationRequest,
     CreateSpeechBatchRequest,
     DestroyWeightsUpdateGroupRequest,
+    FinishLoRAUpdateRequest,
     GenerateAudio,
     GenerateFinishReason,
     GenerateMetaInfo,
     GenerateResponse,
     ImageGenerationParams,
     InitWeightsUpdateGroupRequest,
+    LoadLoRAAdapterRequest,
     ModelCard,
     ModelList,
     PauseGenerationRequest,
+    RestoreBaseWeightsRequest,
     RolloutGenerateRequest,
     RolloutSamplingParams,
     SpeechBatchResponse,
     SpeechStreamOutcome,
+    StartLoRAUpdateRequest,
+    UpdateLoRAWeightsRequest,
     UpdateWeightFromDiskRequest,
     UpdateWeightsFromDistributedRequest,
     UsageResponse,
@@ -912,6 +918,78 @@ def register_admin(app: FastAPI, admin_api_key: str | None = None) -> None:
         payload = request_payload(req)
         return admin_response(
             await client.update_weights_from_distributed(
+                payload,
+                stages=req.stages,
+                timeout_s=timeout_or_default(req.timeout_s, 300.0),
+            )
+        )
+
+    @app.post("/start_lora_update", dependencies=[Depends(_auth)])
+    async def start_lora_update(req: StartLoRAUpdateRequest) -> JSONResponse:
+        client: Client = app.state.client
+        payload = request_payload(req)
+        return admin_response(
+            await client.start_lora_update(
+                payload,
+                stages=req.stages,
+                timeout_s=timeout_or_default(req.timeout_s, 120.0),
+            )
+        )
+
+    @app.post("/update_lora_weights", dependencies=[Depends(_auth)])
+    async def update_lora_weights(req: UpdateLoRAWeightsRequest) -> JSONResponse:
+        client: Client = app.state.client
+        payload = request_payload(req)
+        return admin_response(
+            await client.update_lora_weights(
+                payload,
+                stages=req.stages,
+                timeout_s=timeout_or_default(req.timeout_s, 300.0),
+            )
+        )
+
+    @app.post("/finish_lora_update", dependencies=[Depends(_auth)])
+    async def finish_lora_update(req: FinishLoRAUpdateRequest) -> JSONResponse:
+        client: Client = app.state.client
+        payload = request_payload(req)
+        return admin_response(
+            await client.finish_lora_update(
+                payload,
+                stages=req.stages,
+                timeout_s=timeout_or_default(req.timeout_s, 120.0),
+            )
+        )
+
+    @app.post("/abort_lora_update", dependencies=[Depends(_auth)])
+    async def abort_lora_update(req: AbortLoRAUpdateRequest) -> JSONResponse:
+        client: Client = app.state.client
+        payload = request_payload(req)
+        return admin_response(
+            await client.abort_lora_update(
+                payload,
+                stages=req.stages,
+                timeout_s=timeout_or_default(req.timeout_s, 120.0),
+            )
+        )
+
+    @app.post("/restore_base_weights", dependencies=[Depends(_auth)])
+    async def restore_base_weights(req: RestoreBaseWeightsRequest) -> JSONResponse:
+        client: Client = app.state.client
+        payload = request_payload(req)
+        return admin_response(
+            await client.restore_base_weights(
+                payload,
+                stages=req.stages,
+                timeout_s=timeout_or_default(req.timeout_s, 120.0),
+            )
+        )
+
+    @app.post("/load_lora_adapter", dependencies=[Depends(_auth)])
+    async def load_lora_adapter(req: LoadLoRAAdapterRequest) -> JSONResponse:
+        client: Client = app.state.client
+        payload = request_payload(req)
+        return admin_response(
+            await client.load_lora_adapter(
                 payload,
                 stages=req.stages,
                 timeout_s=timeout_or_default(req.timeout_s, 300.0),

@@ -18,7 +18,7 @@ import logging
 import queue as queue_mod
 import threading
 import time
-from collections.abc import Coroutine, Sequence
+from collections.abc import Awaitable, Coroutine, Mapping, Sequence
 from typing import Callable
 
 from sglang_omni.pipeline.stage.stream_queue import StreamItem
@@ -67,6 +67,13 @@ class StreamingSimpleScheduler:
         request_cost_fn: Callable[[StagePayload], int] | None = None,
         max_batch_cost: int | None = None,
         abort_callback: Callable[[str], None] | None = None,
+        admin_handler: (
+            Callable[
+                [str, dict[str, object]],
+                Mapping[str, object] | Awaitable[Mapping[str, object]],
+            ]
+            | None
+        ) = None,
     ) -> None:
         self.inbox: queue_mod.Queue[IncomingMessage] = queue_mod.Queue()
         self.outbox: queue_mod.Queue[OutgoingMessage] = queue_mod.Queue()
@@ -81,6 +88,7 @@ class StreamingSimpleScheduler:
             max(int(max_batch_cost), 0) if max_batch_cost is not None else None
         )
         self.abort_callback = abort_callback
+        self.admin_handler = admin_handler
 
         self.running = False
         self.pending_messages: collections.deque[IncomingMessage] = collections.deque()
@@ -702,3 +710,15 @@ class StreamingSimpleScheduler:
                 data=error,
             )
         )
+
+    def admin(
+        self, action: str, payload: dict[str, object] | None = None
+    ) -> Mapping[str, object] | Awaitable[Mapping[str, object]]:
+        if self.admin_handler is None:
+            return {
+                "success": True,
+                "message": "stage does not support admin operations",
+                "data": {"skipped": True, "unsupported": True},
+            }
+        else:
+            return self.admin_handler(action, dict(payload or {}))
