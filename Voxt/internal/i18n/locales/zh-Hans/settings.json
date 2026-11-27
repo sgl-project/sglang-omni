@@ -206,6 +206,7 @@
   "Volume": "音量",
   "Voxt collects no usage data, crash reports or identifiers.": "Voxt 不收集任何使用数据、崩溃报告或标识符。",
   "Voxt is licensed under the Apache License 2.0 and comes with no warranty.": "Voxt 以 Apache License 2.0 授权，不提供任何担保。",
+  "Voxt uses the first connected microphone in the list, or the system default.": "Voxt 用列表里第一个已连接的麦克风，没有就用系统默认输入。",
   "Wait for the downloads to finish, or cancel them, then try again.": "请等下载完成或取消下载后再试。",
   "What leaves this Mac": "哪些内容会离开这台 Mac",
   "What takes up space": "空间占用",

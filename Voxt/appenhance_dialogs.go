@@ -85,6 +85,7 @@ func appEnhancementBrowsersDialogView(c *ui.Context, state *appEnhancementBrowse
 	theme := c.Theme()
 	colors := tok(theme)
 	dialogFrame(c, "ae-browsers-dlg", &local.browsersOpen, i18n.T("Browsers"), "", 520, func() {
+		caption(c, i18n.T("Voxt reads the current tab's address when you press a shortcut."))
 		ui.Column(c.Key("ae-browser-list")).Gap(px(theme, 2)).Children(func() {
 			for _, browser := range state.Rows {
 				ui.Row(c.Key("ae-browser-" + browser.Ref.BundleID)).Gap(px(theme, sp2)).AlignItems(ui.Center).MinHeight(px(theme, 30)).Children(func() {

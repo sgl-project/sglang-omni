@@ -44,6 +44,28 @@ func TestInfoTipClick(t *testing.T) {
 	}
 }
 
+// TestMicrophonesTitleHelp keeps the microphone selection rule on the real
+// Audio page's section title and in settings search.
+func TestMicrophonesTitleHelp(t *testing.T) {
+	a, _, tt := newTestApp(t)
+	a.navigate("/settings/audio")
+	frames(tt)
+	const help = "Voxt uses the first connected microphone in the list, or the system default."
+	if _, ok := tt.Find(help); ok {
+		t.Fatal("the microphone help has a separate control instead of the section title")
+	}
+	hoverTitle(t, tt, "Microphones")
+	if !hasExact(tt, help) {
+		t.Fatalf("the real Audio page has no microphone selection help: %q", firstTexts(tt))
+	}
+	a.settingsForm.search = "first connected"
+	frames(tt)
+	hoverTitle(t, tt, "Microphones")
+	if !hasExact(tt, help) || has(tt, "Nothing in this section matches your search.") {
+		t.Fatalf("settings search cannot find the microphone selection help: %q", firstTexts(tt))
+	}
+}
+
 // TestRecogniseAgainSwitch: Settings → Audio's "Recognise the whole
 // recording again" is on by default; off, the live text is the result
 // (Audio.LiveResult, #3644 FB7).

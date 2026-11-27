@@ -117,6 +117,9 @@ func TestAppEnhancementEdit(t *testing.T) {
 			t.Errorf("no %q", s)
 		}
 	}
+	if !slices.Contains(tt.AccessLabels(), "Translate is off by default, since a scene's tone rarely suits a translation.") {
+		t.Fatalf("no Translate default rationale: %q", tt.AccessLabels())
+	}
 	// Name and prompt: typed, kept, saved.
 	click(t, tt, "Group name")
 	tt.Type(" 2")
@@ -178,6 +181,9 @@ func TestAppEnhancementAutoKey(t *testing.T) {
 	}
 	a.aeUI.keyCustom, a.aeUI.keyText = true, "Shift+Fn"
 	frames(tt)
+	if !has(tt, "Type the keys and press Return: Command+Return, Control+Return, Tab.") {
+		t.Fatalf("no custom-key Return guidance: %q", firstTexts(tt))
+	}
 	click(t, tt, "Custom key after inserting")
 	tt.Key(0, ui.KeyEnter)
 	if !has(tt, "Enter one key, with or without modifiers: Return, Command+Return, Tab.") {
@@ -355,7 +361,7 @@ func TestAppEnhancementBrowsers(t *testing.T) {
 	a.urlReads["com.apple.Safari"] = urlRead{err: "no web area"}
 	frames(tt)
 	click(t, tt, "Browsers")
-	for _, s := range []string{"Microsoft Edge", "Brave Browser", "Arc", "Address read", "No address: app only"} {
+	for _, s := range []string{"Microsoft Edge", "Brave Browser", "Arc", "Address read", "No address: app only", "Voxt reads the current tab's address when you press a shortcut."} {
 		if !has(tt, s) {
 			t.Errorf("no %q", s)
 		}

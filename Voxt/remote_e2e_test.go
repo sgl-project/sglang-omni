@@ -184,6 +184,13 @@ func TestRemotePage(t *testing.T) {
 	a, _, tt := newTestApp(t)
 	a.navigate(remotePath)
 	frames(tt)
+	a.settingsForm.search = "never your audio"
+	frames(tt)
+	if !has(tt, "Voxt sends the language model the recognised or selected text, never your audio.") {
+		t.Fatalf("the Language models page has no text-only privacy notice: %q", firstTexts(tt))
+	}
+	a.settingsForm.search = ""
+	frames(tt)
 	// The groups say where a service runs; their cards carry no label of it.
 	if !has(tt, "On this Mac") || !has(tt, "Online services") || has(tt, "Remote") {
 		t.Errorf("where labels: %q", tt.Texts())
