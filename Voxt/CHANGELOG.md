@@ -2,6 +2,16 @@
 
 All notable changes to Voxt. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [Semantic Versioning](https://semver.org/). Each version's section is its release notes: English first, then the same in Chinese under `### 中文`, with `####` headings below it (docs/release.md §2.1).
 
+## [Unreleased]
+
+### Fixed
+- **The empty session card follows Keep a history immediately**: turning the setting off or on updates the open card's explanation of whether sessions survive a restart, without waiting for a resize.
+
+### 中文
+
+#### 修复
+- **空会话卡片立即跟随「保存历史」设置更新**：关闭或打开该设置时，已打开的卡片会立即更新会话能否在重启后保留的说明，不再需要调整卡片大小。
+
 ## [2.1.4] - 2026-11-26
 
 ### Added

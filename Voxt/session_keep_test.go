@@ -169,6 +169,38 @@ func TestSessionsEndWithHistoryOff(t *testing.T) {
 	}
 }
 
+// TestSessionHistoryToggleRefreshesEmptyCard: the visible empty card
+// redraws when Keep a history changes in either direction.
+func TestSessionHistoryToggleRefreshesEmptyCard(t *testing.T) {
+	for _, test := range []struct {
+		name        string
+		keepHistory bool
+	}{{"off", true}, {"on", false}} {
+		t.Run(test.name, func(t *testing.T) {
+			a, _ := keptApp(t, t.TempDir(), "", &fakeChat{}, "", test.keepHistory)
+			a.newSession()
+			shownText := func() string {
+				card := a.ov.projection.view.Card
+				if card == nil || len(card.Blocks) == 0 {
+					return ""
+				}
+				return card.Blocks[0].Text
+			}
+			const hint = "History is off, so sessions end when Voxt quits."
+			if got := strings.Contains(shownText(), hint); got == test.keepHistory {
+				t.Fatalf("initial empty card: history=%v, text %q", test.keepHistory, shownText())
+			}
+
+			next := !test.keepHistory
+			a.updateSettings(func(s *settings.Settings) { s.Privacy.KeepHistory = next })
+			a.pump("the history setting", func() bool { return (savedDoc(t, a) != "") == next })
+			if got := strings.Contains(shownText(), hint); got == next {
+				t.Fatalf("empty card after history=%v: text %q", next, shownText())
+			}
+		})
+	}
+}
+
 // TestClearHistoryEndsSessions: the other sessions' cards are history,
 // so Clear history leaves only the current session, untitled.
 func TestClearHistoryEndsSessions(t *testing.T) {

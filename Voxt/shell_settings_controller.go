@@ -107,6 +107,7 @@ func (a *app) settingsChanged(old, new settings.Settings) {
 	if old.Privacy.KeepHistory != new.Privacy.KeepHistory {
 		a.loadTrayRecent() // the Reopen card list exists only with history on
 		a.keepSessions()   // history off: the saved sessions go at once
+		a.overlaySync()
 	}
 	if old.Updates.BetaOn(a.version) != new.Updates.BetaOn(a.version) {
 		a.applyBeta() // updates.go
