@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # The Homebrew cask of a stable Voxt release, Casks/voxt.rb of the
 # sgl-project/homebrew-voxt tap (brew install --cask sgl-project/voxt/voxt).
-# .github/workflows/voxt-homebrew.yaml runs it when a release is published
-# and opens a pull request on the tap with the result (docs/release.md).
+# The tap's Bump Voxt workflow (release/homebrew-tap) runs the copy of each
+# stable release's tag and opens a pull request there (docs/release.md).
 #
 #   scripts/homebrew-cask.sh VERSION SHA256_FILE DIGEST
 #

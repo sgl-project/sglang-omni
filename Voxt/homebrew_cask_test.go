@@ -2,7 +2,7 @@ package main
 
 // scripts/homebrew-cask.sh writes the Homebrew cask of a stable release
 // (Casks/voxt.rb of the sgl-project/homebrew-voxt tap), and
-// .github/workflows/voxt-homebrew.yaml runs it when a release is published.
+// the tap's Bump Voxt workflow (release/homebrew-tap) runs it for each stable release.
 // The cask must offer the release's own disk image, follow only stable
 // voxt-v tags and leave updates to the app. Runs on Linux: the script is bash.
 
@@ -87,25 +87,31 @@ func TestHomebrewCaskRefusesWhatIsNotTheRelease(t *testing.T) {
 	}
 }
 
-func TestHomebrewWorkflowFollowsStableReleases(t *testing.T) {
-	data, err := os.ReadFile("../.github/workflows/voxt-homebrew.yaml")
+func TestHomebrewTapBumpsToStableReleases(t *testing.T) {
+	data, err := os.ReadFile("release/homebrew-tap/.github/workflows/bump.yml")
 	if err != nil {
 		t.Fatal(err)
 	}
 	workflow := string(data)
 	for _, want := range []string{
-		"types: [published]",
-		"!github.event.release.prerelease",
-		`Voxt/scripts/homebrew-cask.sh "$version" "$RUNNER_TEMP/$dmg.sha256" "$digest"`,
-		"TAP: sgl-project/homebrew-voxt",
-		"secrets.VOXT_HOMEBREW_TAP_TOKEN",
-		`gh pr create --repo "$TAP"`,
+		"schedule:",
+		"select(.draft == false and .prerelease == false",
+		`test("^voxt-v[0-9]+\\.[0-9]+\\.[0-9]+$")`,
+		"contents/Voxt/scripts/homebrew-cask.sh?ref=$TAG",
+		`bash "$script" "$VERSION" "$RUNNER_TEMP/$dmg.sha256" "$digest" > Casks/voxt.rb`,
+		"brew audit --cask --strict --online sgl-project/voxt/voxt",
+		`gh pr create --head "voxt-$VERSION"`,
 	} {
 		if !strings.Contains(workflow, want) {
-			t.Errorf("voxt-homebrew.yaml has no %q", want)
+			t.Errorf("the tap's bump.yml has no %q", want)
 		}
 	}
-	if strings.Contains(workflow, "git push --force") || strings.Contains(workflow, "git push -f") {
-		t.Error("voxt-homebrew.yaml force-pushes to the tap")
+	if strings.Index(workflow, "brew audit") > strings.Index(workflow, "gh pr create") {
+		t.Error("the tap's bump.yml opens the pull request before brew audit")
+	}
+	for _, banned := range []string{"secrets.", "git push --force", "git push -f", "git push origin main"} {
+		if strings.Contains(workflow, banned) {
+			t.Errorf("the tap's bump.yml has %q", banned)
+		}
 	}
 }
