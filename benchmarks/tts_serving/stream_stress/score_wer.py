@@ -9,11 +9,10 @@ from __future__ import annotations
 import argparse
 import json
 import logging
-import os
 import sys
 from collections.abc import Sequence
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 
 from benchmarks.benchmarker.utils import managed_omni_server
 from benchmarks.tasks.asr import (
@@ -88,10 +87,6 @@ def split_by_language(audio_dir: Path, default_language: str) -> dict[str, Path]
         (audio_dir / "generated.json").read_text(encoding="utf-8")
     )
     entries_by_language: dict[str, list[dict[str, str | float | bool | None]]] = {}
-    if not any(entry["is_success"] for entry in generated):
-        raise ValueError(f"no request in {audio_dir} has saved audio to score")
-    else:
-        pass
     for entry in generated:
         language = str(entry.get("language") or default_language).lower()
         if language not in SCORED_LANGUAGES:
@@ -101,8 +96,22 @@ def split_by_language(audio_dir: Path, default_language: str) -> dict[str, Path]
             )
         else:
             entries_by_language.setdefault(SCORED_LANGUAGES[language], []).append(entry)
+        if entry["wav_path"] is not None:
+            # Note (Jiaxin Deng): the wav sits beside the manifest, so a directory moved to another job or host still scores.
+            entry["wav_path"] = str(
+                audio_dir / PureWindowsPath(str(entry["wav_path"])).name
+            )
+        else:
+            pass
     output_dirs: dict[str, Path] = {}
     for language, entries in entries_by_language.items():
+        if not any(entry["is_success"] for entry in entries):
+            # Note (Jiaxin Deng): the shared metric reports a WER of 0.0 for a set with nothing evaluated, which a threshold would pass.
+            raise ValueError(
+                f"no {language} request in {audio_dir} has saved audio to score"
+            )
+        else:
+            pass
         output_dir = audio_dir / f"wer_{language}"
         output_dir.mkdir(parents=True, exist_ok=True)
         (output_dir / "generated.json").write_text(
@@ -112,9 +121,11 @@ def split_by_language(audio_dir: Path, default_language: str) -> dict[str, Path]
     return output_dirs
 
 
-def score(options: argparse.Namespace, output_dirs: dict[str, Path]) -> None:
+def score(options: argparse.Namespace, output_dirs: dict[str, Path]) -> int:
+    """Score each language; the exit code is 1 when one of them had no transcribed request."""
+    exit_code = 0
     for language, output_dir in output_dirs.items():
-        run_seedtts_transcribe(
+        results = run_seedtts_transcribe(
             StressTranscribeConfig(
                 model=options.model,
                 output_dir=str(output_dir),
@@ -132,6 +143,12 @@ def score(options: argparse.Namespace, output_dirs: dict[str, Path]) -> None:
             generation_mode="streaming",
             asr_router_port=options.port,
         )
+        if results["wer_summary"]["evaluated"] == 0:
+            print(f"no {language} request was transcribed", file=sys.stderr)
+            exit_code = 1
+        else:
+            pass
+    return exit_code
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -143,30 +160,19 @@ def main(argv: Sequence[str] | None = None) -> int:
     except (OSError, ValueError) as exc:
         print(str(exc), file=sys.stderr)
         return 2
-    if (
-        not options.use_existing_server
-        and not os.environ.get("CUDA_VISIBLE_DEVICES")
-        and os.environ.get("GITHUB_ACTIONS") != "true"
-    ):
-        # Note (Jiaxin Deng): the managed server's shutdown waits for the GPUs named there to empty and raises without it, after the scores are written.
-        print(
-            "set CUDA_VISIBLE_DEVICES to the GPU the ASR server uses", file=sys.stderr
-        )
-        return 2
-    else:
-        pass
     if options.use_existing_server:
-        score(options, output_dirs)
+        return score(options, output_dirs)
     else:
+        # Note (Jiaxin Deng): no GPU cleanup on exit. It kills every process on the visible GPUs, and this may run beside other work.
         with managed_omni_server(
             model_path=options.asr_model_path,
             port=options.port,
             host="127.0.0.1",
             log_file=audio_dir / "asr_server.log",
             timeout=options.server_timeout,
+            wait_for_gpu_release=False,
         ):
-            score(options, output_dirs)
-    return 0
+            return score(options, output_dirs)
 
 
 if __name__ == "__main__":

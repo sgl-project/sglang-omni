@@ -51,6 +51,7 @@ def write_generated_metadata(
             "latency_s": round(record.latency_s, 4),
             "audio_duration_s": round(record.audio_duration_s, 4),
             "error": record.error
+            or ", ".join(record.broken_reasons if not record.is_success else [])
             or (None if record.wav_path is not None else "audio was not saved"),
         }
         for record in sorted(records, key=lambda record: record.sequence)

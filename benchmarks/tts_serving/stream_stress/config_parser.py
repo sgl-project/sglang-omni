@@ -104,6 +104,12 @@ class StressConfig:
             payload["language"] = entry.language
         else:
             pass
+        if entry.ref_audio is not None:
+            # Note (Jiaxin Deng): the server adds up references and the flat fields, so a line's reference replaces the run's in either form.
+            for field_name in ("references", "ref_audio", "ref_text"):
+                payload.pop(field_name, None)
+        else:
+            pass
         if self.ref_format == "references" and entry.ref_audio is not None:
             reference = {"audio_path": entry.ref_audio}
             if entry.ref_text is not None:
@@ -782,8 +788,15 @@ def load_corpus(
                     else:
                         overrides[field_name] = override.strip()
                 # Note (Jiaxin Deng): the server cannot read a client file, so a reference that is a local file, relative to the corpus, goes out as a data URI; any other value is a URL, data URI or server path and is sent unchanged.
-                reference_path = path.parent / overrides.get("ref_audio", "")
-                if "ref_audio" in overrides and reference_path.is_file():
+                reference_audio = overrides.get("ref_audio", "")
+                reference_path = path.parent / reference_audio
+                # Note (Jiaxin Deng): an inline data URI is longer than a file name may be, and is_file raises on it.
+                if (
+                    reference_audio
+                    and not reference_audio.startswith("data:")
+                    and "://" not in reference_audio
+                    and reference_path.is_file()
+                ):
                     if reference_path not in inline_audio_by_path:
                         encoded_audio = base64.b64encode(
                             reference_path.read_bytes()

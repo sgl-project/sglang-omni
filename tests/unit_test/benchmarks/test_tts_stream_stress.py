@@ -628,6 +628,38 @@ class TestCorpusLineOverrides:
         assert "ref_audio" not in cloned and "ref_text" not in cloned
         assert "references" not in plain
 
+    @pytest.mark.parametrize(
+        "run_reference, ref_format",
+        [
+            (("--ref-audio", "/server/run.wav", "--ref-text", "run"), "references"),
+            (("--reference", '{"audio_path": "/server/run.wav"}'), "flat"),
+        ],
+    )
+    def test_a_line_reference_replaces_the_run_reference_in_either_format(
+        self, tmp_path: Path, run_reference: tuple[str, ...], ref_format: str
+    ) -> None:
+        """The server adds up references and the flat fields, so both in one request clone from two voices."""
+        write_reference_corpus(tmp_path)
+        config = make_config(tmp_path, *run_reference, "--ref-format", ref_format)
+        cloned, plain, _ = (config.payload_for(entry) for entry in config.corpus)
+
+        sent = {"references", "ref_audio", "ref_text"} & set(cloned)
+        assert sent == (
+            {"references"} if ref_format == "references" else {"ref_audio", "ref_text"}
+        )
+        assert {"references", "ref_audio"} & set(plain) == (
+            {"ref_audio"} if ref_format == "references" else {"references"}
+        )
+
+    def test_an_inline_reference_is_sent_unchanged(self, tmp_path: Path) -> None:
+        """A data URI is longer than a file name may be on Linux, where testing it as a path raised and failed the corpus."""
+        inline_audio = "data:audio/wav;base64," + "A" * 8192
+        (tmp_path / "corpus.jsonl").write_text(
+            json.dumps({"text": "hello", "ref_audio": inline_audio}), encoding="utf-8"
+        )
+        config = make_config(tmp_path)
+        assert config.payload_for(config.corpus[0])["ref_audio"] == inline_audio
+
     def test_a_reference_that_is_not_a_local_file_is_sent_unchanged(
         self, tmp_path: Path
     ) -> None:
@@ -669,6 +701,27 @@ class TestSavedAudio:
             recorder.mark_sent(0.0)
             recorder.add_raw_bytes(pcm(1.0), 0.1)
             assert recorder.audio_payloads == kept
+
+    def test_a_broken_stream_with_saved_audio_is_not_scored_and_keeps_its_reason(
+        self, tmp_path: Path
+    ) -> None:
+        config = make_config(tmp_path, "--save-audio-dir", str(tmp_path / "audio"))
+        recorder = StreamRecorder(
+            config, sequence=0, request_id="r", sample_id="s", text="t", warmup=False
+        )
+        recorder.start_response(200, {})
+        recorder.mark_sent(0.0)
+        recorder.add_raw_bytes(pcm(1.0) + b"\x01", 0.1)
+        recorder.mark_completed(0.2)
+        recorder.save_audio()
+        record = recorder.finalize(load_start=0.0)
+
+        (entry,) = json.loads(
+            write_generated_metadata(config, [record]).read_text("utf-8")
+        )
+        assert entry["wav_path"] is not None
+        assert not entry["is_success"]
+        assert "partial_audio_frame" in entry["error"]
 
     def test_a_save_directory_that_cannot_be_created_is_rejected(
         self, tmp_path: Path
@@ -844,11 +897,16 @@ class TestSavedAudio:
             config, sequence=0, request_id="r", sample_id="s", text="t", warmup=False
         )
         recorder.mark_sent(0.0)
-        for arrival_s, wav_header in ((0.1, b"RIFF" + b"\x00" * 40), (0.2, b"")):
+        speech = bytes(range(256)) * 94
+        for arrival_s, audio in (
+            (0.1, b"RIFF" + b"\x00" * 40),
+            (0.2, speech[:10000]),
+            (0.3, speech[10000:]),
+        ):
             delta = json.dumps(
                 {
                     "type": "speech.audio.delta",
-                    "audio": base64.b64encode(wav_header + pcm(0.5)).decode(),
+                    "audio": base64.b64encode(audio).decode(),
                 }
             )
             sender.handle_sse_frame(recorder, f"data: {delta}".encode(), arrival_s)
@@ -856,7 +914,7 @@ class TestSavedAudio:
         assert recorder.audio_payloads == []
 
         with wave.open(recorder.finalize(load_start=0.0).wav_path, "rb") as wav_file:
-            assert wav_file.getnframes() == 24000
+            assert wav_file.readframes(wav_file.getnframes()) == speech
 
 
 class TestScoreWer:
@@ -879,7 +937,7 @@ class TestScoreWer:
                 "corpus_sample_id": "s",
                 "target_text": target_text,
                 "language": language,
-                "wav_path": str(tmp_path / f"{sample_id}.wav"),
+                "wav_path": f"/another/job/{sample_id}.wav",
                 "is_success": is_success,
                 "latency_s": 1.0,
                 "audio_duration_s": 2.0,
@@ -896,9 +954,11 @@ class TestScoreWer:
             json.dumps(entries, ensure_ascii=False), encoding="utf-8"
         )
         seen_languages: list[str] = []
+        seen_wav_paths: list[str] = []
 
         async def fake_transcription(samples, *, lang, **kwargs):
             seen_languages.append(lang)
+            seen_wav_paths.extend(sample.ref_audio for sample in samples)
             return (
                 [
                     RequestResult(
@@ -919,6 +979,9 @@ class TestScoreWer:
         )
 
         assert sorted(seen_languages) == ["en", "zh"]
+        assert sorted(seen_wav_paths) == [
+            str(tmp_path / f"run-req-00000{index}.wav") for index in (0, 1, 3)
+        ]
         english = json.loads((tmp_path / "wer_en" / "wer_results.json").read_text())
         chinese = json.loads((tmp_path / "wer_zh" / "wer_results.json").read_text())
         assert chinese["summary"]["wer_corpus"] == 0.0
@@ -940,18 +1003,64 @@ class TestScoreWer:
             "benchmarks.tts_serving.stream_stress.score_wer"
         )
         (tmp_path / "generated.json").write_text(
-            json.dumps([{"sample_id": "r", "language": "fr", "is_success": True}]),
+            json.dumps(
+                [
+                    {
+                        "sample_id": "r",
+                        "language": "fr",
+                        "wav_path": None,
+                        "is_success": True,
+                    }
+                ]
+            ),
             encoding="utf-8",
         )
         with pytest.raises(ValueError, match="language 'fr'"):
             score_wer.split_by_language(tmp_path, "en")
+
+    def test_a_language_without_saved_audio_fails_the_run(self, tmp_path: Path) -> None:
+        """The shared metric gives a set with nothing evaluated a WER of 0.0, which a threshold would pass."""
+        score_wer = pytest.importorskip(
+            "benchmarks.tts_serving.stream_stress.score_wer"
+        )
+        (tmp_path / "generated.json").write_text(
+            json.dumps(
+                [
+                    {
+                        "sample_id": "spoken",
+                        "language": "en",
+                        "wav_path": "spoken.wav",
+                        "is_success": True,
+                    },
+                    {
+                        "sample_id": "failed",
+                        "language": "zh",
+                        "wav_path": None,
+                        "is_success": False,
+                    },
+                ]
+            ),
+            encoding="utf-8",
+        )
+        assert (
+            score_wer.main(["--audio-dir", str(tmp_path), "--use-existing-server"]) == 2
+        )
 
     def test_a_run_without_saved_audio_is_not_scored(self, tmp_path: Path) -> None:
         score_wer = pytest.importorskip(
             "benchmarks.tts_serving.stream_stress.score_wer"
         )
         (tmp_path / "generated.json").write_text(
-            json.dumps([{"sample_id": "r", "language": "en", "is_success": False}]),
+            json.dumps(
+                [
+                    {
+                        "sample_id": "r",
+                        "language": "en",
+                        "wav_path": None,
+                        "is_success": False,
+                    }
+                ]
+            ),
             encoding="utf-8",
         )
         assert score_wer.main(["--audio-dir", str(tmp_path)]) == 2
@@ -1013,3 +1122,26 @@ class TestExportSeedttsCorpus:
         assert two["ref_audio"] == first_clip
         assert (three["input"], three["ref_audio"]) == ("说三", second_clip)
         assert three["language"] == "English"
+
+        first_only = tmp_path / "first_only"
+        export_seedtts_corpus.main(
+            [
+                "--meta",
+                str(source / "meta.lst"),
+                "--output-dir",
+                str(first_only),
+                "--max-samples",
+                "1",
+            ]
+        )
+        assert [
+            json.loads(line)
+            for line in (first_only / "corpus.jsonl").read_text("utf-8").splitlines()
+        ] == [
+            {
+                "id": "s1",
+                "text": "say one",
+                "ref_audio": "refs/00000_clip.wav",
+                "ref_text": "first words",
+            }
+        ]
