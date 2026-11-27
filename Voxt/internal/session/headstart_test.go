@@ -1,6 +1,7 @@
 package session
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"slices"
@@ -10,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sgl-project/sglang-omni/Voxt/internal/asr"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/compose"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/llm"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
@@ -352,7 +354,8 @@ func TestHeadStartAsks(t *testing.T) {
 func newHeadRun(t *testing.T, model LLM) *run {
 	r := newEarlyUnitRun(t, model, nil)
 	r.svc.LLMInfo.Remote = true
-	if r.startHead(); !r.head.enabled {
+	r.startHead()
+	if !r.head.enabled.Load() {
 		t.Fatal("no head start")
 	}
 	return r
@@ -609,7 +612,7 @@ func TestHeadStartLateExactFailureRecovery(t *testing.T) {
 		}
 		finished := make(chan cleanupResult, 1)
 		go func() {
-			text, _, err := r.cleanPartsContext(transcript, parts, nil, nil, r.currentLLMContext())
+			text, _, err := r.cleanParts(transcript, parts, nil, cleanupRequest{ctx: r.currentLLMContext()})
 			finished <- cleanupResult{text: text, err: err}
 		}()
 		select {
@@ -727,4 +730,61 @@ func TestNoteRate(t *testing.T) {
 			}
 		})
 	}
+}
+
+func setBlockedRemoteResolvers(h *harness, provider asr.Provider, model LLM) (<-chan struct{}, func()) {
+	started := make(chan struct{}, 1)
+	release, openRelease := controlledRelease(h.t)
+	h.m.cfg.ResolveASR = func(context.Context, Kind, settings.Settings) ASRReadiness {
+		return ASRReadiness{ASR: provider, ASRInfo: Model{ID: "fake-asr"}}
+	}
+	h.m.cfg.ResolveLLM = func(context.Context, Kind, settings.Settings) LLMReadiness {
+		started <- struct{}{}
+		<-release
+		return LLMReadiness{LLM: model, LLMInfo: Model{ID: "fake-llm", Remote: true}, Outcome: LLMAvailable}
+	}
+	return started, openRelease
+}
+
+func waitPauseState(t *testing.T, r *run, want bool) {
+	t.Helper()
+	deadline := time.NewTimer(5 * time.Second)
+	tick := time.NewTicker(time.Millisecond)
+	defer deadline.Stop()
+	defer tick.Stop()
+	for {
+		if r.pauseWatch != nil && r.pauseWatch.quiet.Load() == want {
+			return
+		}
+		select {
+		case <-tick.C:
+		case <-deadline.C:
+			t.Fatalf("pause state did not become %v", want)
+		}
+	}
+}
+
+func waitHeadEnabled(t *testing.T, r *run) {
+	t.Helper()
+	deadline := time.NewTimer(5 * time.Second)
+	tick := time.NewTicker(time.Millisecond)
+	defer deadline.Stop()
+	defer tick.Stop()
+	for !r.head.enabled.Load() {
+		select {
+		case <-tick.C:
+		case <-deadline.C:
+			t.Fatal("Head Start did not become enabled")
+		}
+	}
+}
+
+func sessionRun(t *testing.T, h *harness) *run {
+	t.Helper()
+	h.m.mu.Lock()
+	defer h.m.mu.Unlock()
+	if h.m.cur == nil {
+		t.Fatal("no current session")
+	}
+	return h.m.cur
 }

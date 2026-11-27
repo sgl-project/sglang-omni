@@ -616,6 +616,14 @@ type prefillLLM struct {
 	prefills []llm.Request
 }
 
+type unavailablePrefillLLM struct{ *fakeLLM }
+
+func (m *unavailablePrefillLLM) CanPrefill() bool { return false }
+
+func (m *unavailablePrefillLLM) Prefill(context.Context, llm.Request) error {
+	panic("session submitted Prefill to a backend that does not support it")
+}
+
 func (p *prefillLLM) Prefill(_ context.Context, req llm.Request) error {
 	p.mu.Lock()
 	p.prefills = append(p.prefills, req)
@@ -674,6 +682,19 @@ func TestWarmLLM(t *testing.T) {
 				t.Errorf("prefill %+v\nchat %+v", p, chat)
 			}
 		})
+	}
+}
+
+func TestLLMWithoutPrefillCapabilityStillCleans(t *testing.T) {
+	model := &unavailablePrefillLLM{fakeLLM: &fakeLLM{text: "Cleaned."}}
+	h := newHarness(t, &fakeFile{text: "spoken words"}, model, func(_ *Config, s *settings.Settings) {
+		s.Features.Transcribe.Enhance = true
+	})
+	id := h.start()
+	h.speak(id, 4)
+	end := h.rec.wait(t)
+	if end.State != Done || end.Result != "Cleaned." || len(model.requests()) != 1 || len(h.text.pastes()) != 1 {
+		t.Fatalf("end=%+v requests=%d deliveries=%q", end, len(model.requests()), h.text.pastes())
 	}
 }
 

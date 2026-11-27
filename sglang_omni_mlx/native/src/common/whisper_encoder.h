@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
-// The Whisper audio encoder MOSS-Transcribe-Diarize and ARK-ASR share: the
-// checkpoint's conv weights in MLX's layout, and one encoder layer. Each
-// model keeps its own positions (MOSS's learned table, ARK-ASR's rotary) and
-// adapter.
+// The Whisper audio encoder MOSS-Transcribe-Diarize, ARK-ASR and AuK's
+// Qwen2.5-Omni audio tower share: the checkpoint's conv weights in MLX's
+// layout, and one encoder layer. Each model keeps its own positions (MOSS's
+// learned table, ARK-ASR's rotary, AuK's sinusoids) and adapter.
 #pragma once
 
+#include <optional>
 #include <string>
 
 #include "common/layers.h"
@@ -20,10 +21,11 @@ WeightMap WhisperConvMlxLayout(WeightMap weights, const std::string &prefix);
 // with a residual, under prefix + ".layers.N". With rotary_query_key the
 // queries and keys get rotary positions over the first half of each head in
 // adjacent pairs (ARK-ASR); MOSS adds its learned positions before the layers
-// and passes false.
-mlx::core::array WhisperEncoderLayer(const Checkpoint &checkpoint,
-                                     const mlx::core::array &x,
-                                     const std::string &layer_prefix,
-                                     int head_count, bool rotary_query_key);
+// and passes false. key_mask, when set, is the keys each row attends to,
+// boolean [batch, 1, 1, length], for windows padded to one length.
+mlx::core::array WhisperEncoderLayer(
+    const Checkpoint &checkpoint, const mlx::core::array &x,
+    const std::string &layer_prefix, int head_count, bool rotary_query_key,
+    const std::optional<mlx::core::array> &key_mask = std::nullopt);
 
 } // namespace omni_common

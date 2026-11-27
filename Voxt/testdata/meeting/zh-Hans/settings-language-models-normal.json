@@ -72,6 +72,11 @@
         "english": "Storage disk data folder reset"
       },
       {
+        "id": "experimental",
+        "title": "实验功能",
+        "english": "Experimental sessions session shortcuts history"
+      },
+      {
         "id": "about",
         "title": "诊断与关于",
         "english": "Diagnostics about version bug report"
@@ -177,7 +182,7 @@
                 "id": "anthropic",
                 "account": "llm.anthropic",
                 "name": "Anthropic",
-                "model": "claude-sonnet-4-6",
+                "model": "claude-haiku-5-5",
                 "where": "",
                 "configured": false,
                 "missing": "key",

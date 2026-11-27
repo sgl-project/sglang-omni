@@ -110,7 +110,7 @@ func (a *app) overlayModeNow() overlayMode {
 		return ovNotice
 	case card && a.answer.inserting:
 		return ovHidden
-	case card, live && a.writingAnswer():
+	case card, live && (a.writingAnswer() || a.boxWriting()): // the Rewrite card draws the sent turn
 		return ovAnswer
 	case live && snapshot.State == session.Delivering:
 		return ovHidden
@@ -165,7 +165,7 @@ func (a *app) newOverlayWin(frame mygo.Rectangle, panel bool) *mygo.Window {
 	content := sessionOverlayContent(
 		func() *sessionOverlayViewState {
 			a.refreshSessionOverlay(time.Now())
-			return &a.ov.projection.view
+			return a.ov.projection.drawn()
 		},
 		func() sessionOverlayLayout { return a.currentSessionOverlayLayout() },
 		a,
@@ -259,6 +259,9 @@ func (a *app) overlaySync() {
 		a.saveCardDrag()
 	}
 	if mode == ovHidden {
+		if !a.box.open {
+			a.slotPin = nil // no card left to keep in place
+		}
 		a.ov.mode, a.ov.shown = mode, false
 		a.ov.live.id, a.ov.live.w = "", 0
 		a.ov.dragged.x, a.ov.dragged.y = 0, 0
@@ -272,7 +275,20 @@ func (a *app) overlaySync() {
 		a.ov.area = a.overlayArea()
 	}
 	width, height := a.overlayFace(mode)
-	frame := a.overlayFrame(width, height)
+	frame := a.overlayFrame(mode, width, height)
+	defer a.syncLangMenu()
+	if a.overlayNative() && a.boxHoldsCard(mode) {
+		// Rewrite's card draws its answer itself: one window from the
+		// shortcut to the last follow-up (wall 122). The window is not
+		// shown or resized here, so its fade and frame stay as they are:
+		// a bump would cancel a running fade-out's hide.
+		a.ov.mode, a.ov.w, a.ov.h = mode, width, height
+		a.ov.shown = false
+		if was {
+			a.overlayFadeOut()
+		}
+		return
+	}
 	moved := frame != a.ov.frame
 	a.ov.mode, a.ov.w, a.ov.h, a.ov.frame = mode, width, height, frame
 	a.ov.shown = true
@@ -281,25 +297,15 @@ func (a *app) overlaySync() {
 	if a.ov.epoch.IsZero() {
 		a.ov.epoch = time.Now()
 	}
-	defer a.syncLangMenu()
 	if !a.overlayNative() {
 		a.syncPassThrough()
-		return
-	}
-	if a.boxHoldsCard(mode) {
-		// Rewrite's card draws its answer itself: one window from the
-		// shortcut to the last follow-up (wall 122).
-		a.ov.shown = false
-		if was {
-			a.overlayFadeOut()
-		}
 		return
 	}
 	if a.ov.win == nil {
 		a.ov.win = a.newOverlayWin(frame, false)
 		a.ov.passThrough = false
 		a.overlayDraggedAt(a.ov.win.ContentBounds())
-		frame = a.overlayFrame(width, height)
+		frame = a.overlayFrame(mode, width, height)
 		a.ov.frame = frame
 		moved = true
 	}
@@ -340,10 +346,27 @@ func (a *app) currentSessionOverlayLayout() sessionOverlayLayout {
 	return model
 }
 
-func (a *app) overlayFrame(width, height int) mygo.Rectangle {
+func (a *app) overlayFrame(mode overlayMode, width, height int) mygo.Rectangle {
 	frame, area := layout.Frame(a.ov.area, a.prefs.Overlay, width, height), a.ov.area
-	frame.X = min(max(frame.X+a.ov.dragged.x, area.X-layout.Pad), area.X+area.Width-frame.Width+layout.Pad)
-	frame.Y = min(max(frame.Y+a.ov.dragged.y, area.Y-layout.Pad), area.Y+area.Height-frame.Height+layout.Pad)
+	frame.X, frame.Y = frame.X+a.ov.dragged.x, frame.Y+a.ov.dragged.y
+	if mode != ovAnswer {
+		return a.onScreen(frame, area) // the pill keeps its own place
+	}
+	return a.pinnedFrame(frame, area)
+}
+
+// pinnedFrame is frame at slotPin's top-left when a session switch set
+// one, kept on the screen.
+func (a *app) pinnedFrame(frame, area mygo.Rectangle) mygo.Rectangle {
+	if a.slotPin != nil {
+		frame.X, frame.Y = a.slotPin.X, a.slotPin.Y
+	}
+	return a.onScreen(frame, area)
+}
+
+func (a *app) onScreen(frame, area mygo.Rectangle) mygo.Rectangle {
+	frame.X = min(max(frame.X, area.X-layout.Pad), area.X+area.Width-frame.Width+layout.Pad)
+	frame.Y = min(max(frame.Y, area.Y-layout.Pad), area.Y+area.Height-frame.Height+layout.Pad)
 	return frame
 }
 
@@ -356,6 +379,7 @@ func (a *app) overlayDragged() {
 }
 
 func (a *app) overlayDraggedTo(bounds mygo.Rectangle) {
+	a.slotPin = nil
 	frame := layout.Frame(a.ov.area, a.prefs.Overlay, a.ov.w, a.ov.h)
 	a.ov.dragged.x, a.ov.dragged.y = bounds.X-frame.X, bounds.Y-frame.Y
 	area := ovTestArea
@@ -437,6 +461,11 @@ func (a *app) overlayFadeOut() {
 		hide()
 		return
 	}
+	if a.ov.win != nil && !a.ov.passThrough {
+		// The last frame stays while it fades: its buttons no longer act.
+		a.ov.passThrough = true
+		a.ov.win.SetIgnoreMouseEvents(true)
+	}
 	dim := func(opacity float64) func() {
 		return func() {
 			if current() && a.ov.win != nil {
@@ -463,7 +492,7 @@ func (a *app) overlayRestyle() {
 	}
 	a.refreshSessionOverlay(time.Now())
 	width, height := a.overlayFace(a.ov.mode)
-	frame := a.overlayFrame(width, height)
+	frame := a.overlayFrame(a.ov.mode, width, height)
 	moved := frame != a.ov.frame
 	a.ov.w, a.ov.h, a.ov.frame = width, height, frame
 	a.syncLangMenu()

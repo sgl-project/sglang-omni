@@ -20,10 +20,10 @@ func TestSettingsFeatureRecommendedDownload(t *testing.T) {
 	tt := ui.NewTester(a.view, windowWidth, 1200)
 	a.navigate("/settings/transcribe")
 	frames(tt)
-	if !slices.Contains(tt.AccessLabels(), "Download MOSS-Transcribe-Diarize") {
-		t.Fatalf("Settings → Transcribe does not recommend MOSS-Transcribe-Diarize: %q", tt.AccessLabels())
+	if !slices.Contains(tt.AccessLabels(), "Download Qwen3-ASR 1.7B (8bit)") {
+		t.Fatalf("Settings → Transcribe does not recommend Qwen3-ASR 1.7B (8bit): %q", tt.AccessLabels())
 	}
-	click(t, tt, "Download MOSS-Transcribe-Diarize")
-	downloadAsked(t, a, drain, models.ASRMoss)
-	downloadAsked(t, a, drain, models.ASRMossDraft)
+	click(t, tt, "Download Qwen3-ASR 1.7B (8bit)")
+	downloadAsked(t, a, drain, models.ASRAccurate)
+	downloadAsked(t, a, drain, models.ASRAccurateDraft)
 }

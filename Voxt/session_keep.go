@@ -178,6 +178,7 @@ func (a *app) showSession(id int) {
 	a.answer, a.under, a.followUp = p.answer, p.under, p.followUp
 	p.answer, p.under, p.followUp = answerCard{}, answerCard{}, ""
 	a.emptyCard = a.prefs.Features.SessionsOn && !a.answer.open
+	a.boxForAnswer()
 	a.buildTrayMenu()
 	a.overlaySync()
 }

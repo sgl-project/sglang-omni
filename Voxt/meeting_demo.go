@@ -232,6 +232,7 @@ func (host *meetingDemoHost) selectMeetingFixture(delta int) {
 			host.snipUI.open(snippetEdit{id: local.ID, trigger: local.Trigger, text: local.Text})
 			host.snipUI.err = local.Error
 		}
+		host.snipUI.importOpen, host.snipUI.importExample, host.snipUI.importErr = local.ImportOpen, local.ImportExample, local.ImportError
 	}
 	host.remoteWaitUI = llmWaitLocalUI{}
 	host.remoteDialogUI = providerDialogLocalUI{}

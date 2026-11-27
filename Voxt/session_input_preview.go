@@ -15,6 +15,7 @@ type answerInputPreview struct {
 	Height int
 	Chars  int
 	Lines  int
+	Turn   int // the conversation turn it went with
 }
 
 func answerTextPreview(text, label string) answerInputPreview {
@@ -30,11 +31,7 @@ func answerInputPreviews(snapshot session.Snapshot, box *rewriteBox) []answerInp
 	automatic := snapshot.ImageHint != "" && snapshot.ImageHint == snapshot.ImagePreviewKind && len(snapshot.ImagePreview) > 0
 	var previews []answerInputPreview
 	if snapshot.Selection != "" {
-		label := i18n.T("Selected text")
-		if snapshot.SelectionVia == "copy" {
-			label = i18n.T("Copied text")
-		}
-		previews = append(previews, answerTextPreview(snapshot.Selection, label))
+		previews = append(previews, answerTextPreview(snapshot.Selection, i18n.T("Selected text")))
 	}
 	if snapshot.Typed != "" {
 		previews = append(previews, answerTextPreview(snapshot.Typed, i18n.T("Text")))
