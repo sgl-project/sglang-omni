@@ -34,6 +34,7 @@ from sglang_omni.models.nemotron_voicechat.talker_model_runner import (
     NemotronVoiceChatTalkerModelRunner,
     VoiceChatTalkerModelRunner,
 )
+from sglang_omni.platforms import current_platform
 from sglang_omni.proto.request import OmniRequest, StagePayload
 from sglang_omni.proto.session import SessionIdentity, TimedChunk
 from sglang_omni.scheduling.sglang_backend.output_processor import SGLangOutputProcessor
@@ -384,10 +385,27 @@ def test_talker_continuation_fuses_previous_codes_with_current_text() -> None:
 
 
 @pytest.mark.accelerator
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA graph requires GPU")
+@pytest.mark.parametrize(
+    "device",
+    [
+        pytest.param(
+            "cuda",
+            marks=pytest.mark.skipif(
+                not torch.cuda.is_available(), reason="requires CUDA"
+            ),
+        ),
+        pytest.param(
+            "npu:0",
+            marks=pytest.mark.skipif(
+                not current_platform.is_npu(), reason="requires NPU"
+            ),
+        ),
+    ],
+)
 @torch.inference_mode()
 def test_sampler_replay_uses_new_hidden_states_and_randomness(
     monkeypatch: pytest.MonkeyPatch,
+    device: str,
 ) -> None:
     def sample_codes(
         hidden: torch.Tensor,
@@ -405,7 +423,7 @@ def test_sampler_replay_uses_new_hidden_states_and_randomness(
         output_processor: SGLangOutputProcessor,
     ) -> None:
         runner.model = Mock(
-            hidden_out=torch.zeros(1, 16, device="cuda"),
+            hidden_out=torch.zeros(1, 16, device=device),
             talker=Mock(num_quantizers=8, generate_codes=sample_codes),
             mog_head=Mock(),
         )
@@ -421,6 +439,7 @@ def test_sampler_replay_uses_new_hidden_states_and_randomness(
         Mock(spec=ModelWorker), Mock(spec=SGLangOutputProcessor)
     )
     first_codes = runner.generate_codes(0)
+    assert runner.sampler_graph is not None
     saved_codes = first_codes.clone()
     second_codes = runner.generate_codes(0)
     assert not torch.equal(first_codes, second_codes)
