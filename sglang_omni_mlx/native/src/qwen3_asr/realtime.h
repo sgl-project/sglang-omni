@@ -45,7 +45,17 @@ struct FinalReuse {
   std::shared_ptr<RefreshReuse> reuse;
   bool is_taken = false;
   std::optional<FinalPreviewGuess> auto_language_guess = std::nullopt;
+  // The shadow Final's language and text (MaybeStartShadowFinal), when one
+  // ran.
+  std::optional<FinalPreviewGuess> shadow_guess = std::nullopt;
 };
+
+// The guesses of a Final from a shadow Final's tokens and a preview's: the
+// shadow's but its last few, which the audio after it may change, then the
+// preview's after where those end; the shadow's alone when the preview has
+// no such place.
+std::vector<int> MergedGuesses(const std::vector<int> &shadow_ids,
+                               const std::vector<int> &preview_ids);
 
 // Qwen3-ASR manual-turn session: audio becomes one segment, cut every max
 // segment length, with preview decodes on a cadence. A Final's prompt, sent as
@@ -112,6 +122,14 @@ private:
                    long end_sample);
   void MaybeStartRefresh();
   void MaybeStartFinalPrefill();
+  // Note (XXXXRT666): a preview keeps its early text as a prefix decided on
+  // less audio, so on recordings over 24 s the Final differs from it after a
+  // sixth of the text and pays a round for every stretch that differs. Each 8
+  // s of a recording whose Final is prefilled, the recording so far is
+  // decoded as its Final would, in the background, over the reuse the Final
+  // will take; its text, merged with the latest preview, is the Final's
+  // guesses.
+  void MaybeStartShadowFinal();
   void FinalizeThrough(long end_sample);
 
   omni_server::TranscriptionWorker &worker_;
@@ -146,6 +164,13 @@ private:
   std::vector<std::pair<int, std::string>> committed_;
   bool refreshing_ = false;
   bool finalizing_ = false;
+  // The last shadow Final's language and text, and the recording sample the
+  // next one waits for.
+  std::optional<FinalPreviewGuess> shadow_guess_;
+  long next_shadow_sample_ = 0;
+  bool is_shadowing_ = false;
+  // Cancels a running shadow Final once the Final is taken.
+  omni_server::CancelFlag shadow_cancel_ = omni_server::NewCancelFlag();
   omni_common::GpuClockHold gpu_clock_;
 };
 

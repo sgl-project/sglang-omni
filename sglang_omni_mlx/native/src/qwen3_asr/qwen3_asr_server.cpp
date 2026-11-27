@@ -106,6 +106,19 @@ public:
         options.guessed_token_ids =
             transcriber_.AutoLanguageGuesses(guess.language, guess.text);
       }
+      // note (XXXXRT666): the session's shadow Final decided the early text on
+      // more audio than the preview did.
+      if (final_reuse.shadow_guess.has_value() &&
+          options.repetition_penalty == 1.0f) {
+        const qwen3_asr::FinalPreviewGuess &shadow = *final_reuse.shadow_guess;
+        options.guessed_token_ids = qwen3_asr::MergedGuesses(
+            options.language.has_value()
+                ? transcriber_.RetainedPrefix(shadow.text, 0).prefix_ids
+                : transcriber_.AutoLanguageGuesses(shadow.language,
+                                                   shadow.text),
+            options.guessed_token_ids);
+      } else {
+      }
       return [this, final_reuse, samples = std::move(samples),
               options = std::move(options)](const std::atomic<bool> &cancel) {
         // note (XXXXRT666): a copy the refreshes keep using shares the

@@ -3,7 +3,11 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
 #include <iostream>
+#include <optional>
+#include <string>
+#include <vector>
 
 #include "common/audio.h"
 #include "common/generation.h"
@@ -35,8 +39,48 @@ constexpr int kPrefixedTokenSlack = 8;
 // records, and the Final that is left starts where the last piece ended.
 constexpr size_t kMaxFinalPrefillSamples = 64 * omni_common::kSampleRate;
 constexpr size_t kMaxFinalRecordingSamples = 128 * omni_common::kSampleRate;
+// A shadow Final runs once per window of the recording, a little after the
+// window completes.
+constexpr long kShadowIntervalSamples = 8 * omni_common::kSampleRate;
+constexpr long kShadowDelaySamples = omni_common::kSampleRate / 10;
+// The shadow's last tokens, which the audio after it may change, and the
+// tokens before them that find where the preview goes on.
+constexpr int kShadowUnsettledTokens = 4;
+constexpr int kShadowAnchorTokens = 3;
 
 } // namespace
+
+std::vector<int> MergedGuesses(const std::vector<int> &shadow_ids,
+                               const std::vector<int> &preview_ids) {
+  const int settled_count =
+      static_cast<int>(shadow_ids.size()) - kShadowUnsettledTokens;
+  if (settled_count < kShadowAnchorTokens) {
+    return preview_ids.empty() ? shadow_ids : preview_ids;
+  } else {
+  }
+  const auto settled_end = shadow_ids.begin() + settled_count;
+  // The place in the preview after the anchor nearest the settled tokens'
+  // count.
+  std::optional<int> best_end;
+  for (int end = kShadowAnchorTokens;
+       end <= static_cast<int>(preview_ids.size()); ++end) {
+    if (std::equal(settled_end - kShadowAnchorTokens, settled_end,
+                   preview_ids.begin() + end - kShadowAnchorTokens) &&
+        (!best_end.has_value() ||
+         std::abs(end - settled_count) < std::abs(*best_end - settled_count))) {
+      best_end = end;
+    } else {
+    }
+  }
+  if (!best_end.has_value()) {
+    return shadow_ids;
+  } else {
+  }
+  std::vector<int> merged(shadow_ids.begin(), settled_end);
+  merged.insert(merged.end(), preview_ids.begin() + *best_end,
+                preview_ids.end());
+  return merged;
+}
 
 RealtimeSettings MakeRealtimeSettings(int decode_interval_ms,
                                       int first_decode_ms,
@@ -207,8 +251,9 @@ FinalReuse
 RealtimeSession::TakeFinalReuse(const std::optional<std::string> &context,
                                 bool guess_auto_language) {
   std::lock_guard<std::mutex> lock(mutex_);
+  shadow_cancel_->store(true);
   if (!should_prefill_final_ || context.value_or("") != final_context_) {
-    return {recording_reuse_, false};
+    return {recording_reuse_, false, std::nullopt, shadow_guess_};
   } else {
     // note (XXXXRT666): the prefill starts after the first preview, and without
     // a dictionary after the first segment, so a Final before it finds none
@@ -219,6 +264,7 @@ RealtimeSession::TakeFinalReuse(const std::optional<std::string> &context,
     FinalReuse reuse = final_reuse != nullptr
                            ? FinalReuse{std::move(final_reuse), true}
                            : FinalReuse{recording_reuse_, false};
+    reuse.shadow_guess = shadow_guess_;
     // note (chenye): only use an auto-language preview of the same recording
     // start. A committed segment or a moved start can leave a different tail.
     if (guess_auto_language && !language_.has_value() &&
@@ -303,6 +349,111 @@ void RealtimeSession::MaybeStartFinalPrefill() {
         // A failed prefill leaves the rest to the Final.
         if (error == nullptr && *has_more) {
           self->MaybeStartFinalPrefill();
+        } else {
+        }
+      });
+}
+
+void RealtimeSession::MaybeStartShadowFinal() {
+  std::vector<float> samples;
+  TranscriptionOptions options;
+  std::string preview_text;
+  std::optional<std::string> preview_language;
+  std::optional<FinalPreviewGuess> shadow_guess;
+  omni_server::CancelFlag cancel;
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    const long recording_end = static_cast<long>(recording_samples_.size());
+    if (!should_prefill_final_ || !has_preview_ || is_shadowing_ ||
+        finalizing_ || is_recording_cut_off_ || final_start_sample_ != 0 ||
+        !segment_.has_value() ||
+        recording_end <
+            std::max(next_shadow_sample_,
+                     kShadowIntervalSamples + kShadowDelaySamples) ||
+        recording_samples_.size() > kMaxChunkSamples) {
+      return;
+    } else {
+    }
+    next_shadow_sample_ =
+        ((recording_end - kShadowDelaySamples) / kShadowIntervalSamples + 1) *
+            kShadowIntervalSamples +
+        kShadowDelaySamples;
+    samples = recording_samples_;
+    options.language = language_;
+    options.context = final_context_;
+    options.stop_at_end_of_text = true;
+    options.stop_on_token_loop = true;
+    std::vector<std::pair<int, std::string>> committed = committed_;
+    std::sort(committed.begin(), committed.end());
+    std::vector<std::string> texts;
+    for (const auto &[segment_id, text] : committed) {
+      texts.push_back(text);
+    }
+    texts.push_back(segment_->transcript);
+    preview_text = JoinTranscriptParts(texts);
+    preview_language = segment_->language;
+    shadow_guess = shadow_guess_;
+    is_shadowing_ = true;
+    shadow_cancel_ = omni_server::NewCancelFlag();
+    cancel = shadow_cancel_;
+  }
+  std::weak_ptr<RealtimeSession> weak_self =
+      std::static_pointer_cast<RealtimeSession>(shared_from_this());
+  worker_.Submit(
+      [&transcriber = transcriber_, weak_self, samples = std::move(samples),
+       options = std::move(options), preview_text = std::move(preview_text),
+       preview_language,
+       shadow_guess](const std::atomic<bool> &cancel) mutable {
+        const auto guesses = [&](const std::optional<std::string> &language,
+                                 const std::string &text) {
+          return options.language.has_value()
+                     ? transcriber.RetainedPrefix(text, 0).prefix_ids
+                 : language.has_value()
+                     ? transcriber.AutoLanguageGuesses(*language, text)
+                     : std::vector<int>();
+        };
+        const std::vector<int> preview_ids =
+            guesses(preview_language, preview_text);
+        options.guessed_token_ids =
+            shadow_guess.has_value()
+                ? MergedGuesses(
+                      guesses(shadow_guess->language, shadow_guess->text),
+                      preview_ids)
+                : preview_ids;
+        // The reuse the Final will take, copied: the shadow's decode must not
+        // change it.
+        RefreshReuse reuse;
+        if (const std::shared_ptr<RealtimeSession> self = weak_self.lock()) {
+          std::lock_guard<std::mutex> lock(self->mutex_);
+          const std::shared_ptr<RefreshReuse> &source =
+              self->final_reuse_ != nullptr ? self->final_reuse_
+                                            : self->recording_reuse_;
+          if (source == nullptr) {
+            return TranscriptionResult();
+          } else {
+          }
+          reuse = *source;
+        } else {
+          return TranscriptionResult();
+        }
+        return transcriber.Transcribe(samples, options, cancel, &reuse);
+      },
+      cancel,
+      [weak_self](std::optional<TranscriptionResult> result,
+                  std::exception_ptr error) {
+        const std::shared_ptr<RealtimeSession> self = weak_self.lock();
+        if (!self) {
+          return;
+        } else {
+        }
+        std::lock_guard<std::mutex> lock(self->mutex_);
+        self->is_shadowing_ = false;
+        // A failed or cut-short shadow leaves the last one.
+        if (error == nullptr && result.has_value() &&
+            result->finish_reason == FinishReason::kStop &&
+            !result->text.empty()) {
+          self->shadow_guess_ =
+              FinalPreviewGuess{result->language.value_or(""), result->text};
         } else {
         }
       });
@@ -448,6 +599,7 @@ void RealtimeSession::MaybeStartRefresh() {
         // note (XXXXRT666): queued before the event, so a Final sent in answer
         // to it finds the windows this refresh finished.
         self->MaybeStartFinalPrefill();
+        self->MaybeStartShadowFinal();
         if (error) {
           self->ReportDecodeFailure(error);
         } else if (preview.has_value()) {
