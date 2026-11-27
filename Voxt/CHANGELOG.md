@@ -2,6 +2,22 @@
 
 All notable changes to Voxt. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [Semantic Versioning](https://semver.org/). Each version's section is its release notes: English first, then the same in Chinese under `### 中文`, with `####` headings below it (docs/release.md §2.1).
 
+## [Unreleased]
+
+### Fixed
+- **The microphone starts at once again when the chosen input is the default one**: with a microphone chosen in Settings → Audio that is also the system's default input, Voxt bound the recording to it explicitly, and a USB microphone then gave no sound until Voxt rebuilt the recording twice and fell back to the default input: 3.1–3.6 s of "Starting the microphone…" at every start, and the first words lost. Voxt now records such an input as the default input, which gives sound in about 0.35 s, and binds it only once another input becomes the default.
+
+### Changed
+- **The microphone starts sooner from the second recording on, and stays off in between**: after a recording stops, Voxt keeps its audio engine built and prepared, without opening the microphone, so the next recording on the same input gives its first sound in about 0.28 s instead of 0.4 s. The microphone and its indicator are off between recordings, as before.
+
+### 中文
+
+#### 变更
+- **从第二次录音起麦克风启动更快，两次录音之间仍然关着**：录音停止后，Voxt 把录音引擎建好、准备好，但不打开麦克风；同一个输入的下一次录音约 0.28 秒出声，以前约 0.4 秒。两次录音之间麦克风和它的指示灯照旧是关的。
+
+#### 修复
+- **选中的麦克风就是系统默认输入时，又能一按就开始录了**：在设置 → 音频里选的麦克风如果正好也是系统默认输入，Voxt 会把录音显式绑到它上面，USB 麦克风这时一直没有声音，要等 Voxt 重建两次录音、退回默认输入才出声：每次开始都有 3.1–3.6 秒显示“正在启动麦克风…”，开头的话录不下来。现在这种情况按默认输入来录，约 0.35 秒就有声音；只有别的输入变成默认输入后，才绑定到选中的麦克风。
+
 ## [2.1.4] - 2026-11-26
 
 ### Added
