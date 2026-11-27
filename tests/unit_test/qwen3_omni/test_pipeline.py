@@ -2833,7 +2833,9 @@ def test_preprocessing_video_holds_up_no_request_behind_it(
     config = Qwen3OmniSpeechColocatedPipelineConfig(model_path="model")
     scheduler = qwen_stages.create_preprocessing_executor(
         "model",
-        max_concurrency=config.stage_named("preprocessing").factory.max_concurrency,
+        max_running_video_requests=config.stage_named(
+            "preprocessing"
+        ).factory.max_running_video_requests,
     )
     worker = threading.Thread(target=scheduler.start, daemon=True)
     worker.start()
@@ -2949,12 +2951,12 @@ def test_preprocessing_audio_request_decodes_while_a_video_holds_its_media_threa
 
 
 @pytest.mark.parametrize(
-    ("max_concurrency", "build_request"),
-    [(2, text_request), (1, video_request)],
+    ("max_running_video_requests", "build_request"),
+    [(2, text_request), (0, video_request)],
 )
 def test_preprocessing_serial_requests_keep_arrival_order_on_the_scheduler_thread(
     monkeypatch: pytest.MonkeyPatch,
-    max_concurrency: int,
+    max_running_video_requests: int,
     build_request: RequestBuilder,
 ) -> None:
     calls: list[tuple[str, int]] = []
@@ -2978,7 +2980,7 @@ def test_preprocessing_serial_requests_keep_arrival_order_on_the_scheduler_threa
         qwen_stages, "Qwen3OmniPreprocessor", lambda **_: Preprocessor()
     )
     scheduler = qwen_stages.create_preprocessing_executor(
-        "model", max_concurrency=max_concurrency
+        "model", max_running_video_requests=max_running_video_requests
     )
     worker = threading.Thread(target=scheduler.start, daemon=True)
     worker.start()
@@ -3022,7 +3024,9 @@ def test_preprocessing_runs_no_more_videos_than_its_threads(
     monkeypatch.setattr(
         qwen_stages, "Qwen3OmniPreprocessor", lambda **_: Preprocessor()
     )
-    scheduler = qwen_stages.create_preprocessing_executor("model", max_concurrency=2)
+    scheduler = qwen_stages.create_preprocessing_executor(
+        "model", max_running_video_requests=2
+    )
     worker = threading.Thread(target=scheduler.start, daemon=True)
     worker.start()
     try:
@@ -3266,7 +3270,9 @@ def test_preprocessing_video_threads_see_the_stage_bound_to_the_scheduler_thread
     monkeypatch.setattr(
         qwen_stages, "Qwen3OmniPreprocessor", lambda **_: Preprocessor()
     )
-    scheduler = qwen_stages.create_preprocessing_executor("model", max_concurrency=2)
+    scheduler = qwen_stages.create_preprocessing_executor(
+        "model", max_running_video_requests=2
+    )
     worker = threading.Thread(target=run_scheduler, daemon=True)
     worker.start()
     try:
@@ -3306,7 +3312,9 @@ def test_preprocessing_video_reports_errors_and_drops_aborted_requests(
     monkeypatch.setattr(
         qwen_stages, "Qwen3OmniPreprocessor", lambda **_: Preprocessor()
     )
-    scheduler = qwen_stages.create_preprocessing_executor("model", max_concurrency=2)
+    scheduler = qwen_stages.create_preprocessing_executor(
+        "model", max_running_video_requests=2
+    )
     worker = threading.Thread(target=scheduler.start, daemon=True)
     worker.start()
     try:
@@ -3361,7 +3369,9 @@ def test_preprocessing_stop_drops_videos_still_waiting_for_a_thread(
     monkeypatch.setattr(
         qwen_stages, "Qwen3OmniPreprocessor", lambda **_: Preprocessor()
     )
-    scheduler = qwen_stages.create_preprocessing_executor("model", max_concurrency=2)
+    scheduler = qwen_stages.create_preprocessing_executor(
+        "model", max_running_video_requests=2
+    )
     worker = threading.Thread(target=scheduler.start, daemon=True)
     worker.start()
     try:
@@ -3696,7 +3706,9 @@ def test_threaded_preprocessing_loads_repeated_remote_images(monkeypatch):
     server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
     http_worker = threading.Thread(target=server.serve_forever, daemon=True)
     http_worker.start()
-    scheduler = qwen_stages.create_preprocessing_executor("model", max_concurrency=2)
+    scheduler = qwen_stages.create_preprocessing_executor(
+        "model", max_running_video_requests=2
+    )
     worker = threading.Thread(target=scheduler.start, daemon=True)
     worker.start()
     try:

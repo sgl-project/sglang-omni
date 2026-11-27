@@ -36,7 +36,7 @@ TALKER_START_MIN_CHUNKS = 1
 
 TALKER_MAX_RUNNING_REQUESTS = 32
 
-PREPROCESSING_VIDEO_REQUESTS = 8
+PREPROCESSING_MAX_RUNNING_VIDEO_REQUESTS = 8
 
 # SGLang reads this when DeepGEMM compile utilities are imported. Qwen AR
 # stages can first hit some dense FP8 shapes after readiness; disable all-M
@@ -69,7 +69,9 @@ def preprocessing_stage(*, process: str, speech_enabled: bool = False) -> StageC
         name="preprocessing",
         process=process,
         factory_path=f"{_PKG}.stages.create_preprocessing_executor",
-        factory=FactoryArgs(max_concurrency=PREPROCESSING_VIDEO_REQUESTS),
+        factory=FactoryArgs(
+            max_running_video_requests=PREPROCESSING_MAX_RUNNING_VIDEO_REQUESTS
+        ),
         next=next_stages,
         route_fn=route_fn,
         project_payload={

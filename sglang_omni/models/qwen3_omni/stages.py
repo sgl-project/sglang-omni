@@ -1201,7 +1201,7 @@ class PreprocessingScheduler(SimpleScheduler[StagePayload, StagePayload]):
 def create_preprocessing_executor(
     model_path: str,
     *,
-    max_concurrency: int,
+    max_running_video_requests: int,
     max_seq_len: int | None = None,
     video_fps: float | None = None,
     video_max_frames: int | None = None,
@@ -1210,6 +1210,7 @@ def create_preprocessing_executor(
     video_total_pixels: int | None = None,
     video_decode_threads: int | None = None,
 ) -> SimpleScheduler[StagePayload, StagePayload]:
+    # note (ratish): the scheduler thread preprocesses one request at a time, so a video it runs decodes on the whole automatic thread count.
     preprocessor = Qwen3OmniPreprocessor(
         model_path=model_path,
         max_seq_len=max_seq_len,
@@ -1219,20 +1220,20 @@ def create_preprocessing_executor(
         video_max_pixels=video_max_pixels,
         video_total_pixels=video_total_pixels,
         video_decode_threads=(
-            automatic_video_decode_threads(max(max_concurrency, 1))
+            automatic_video_decode_threads(1)
             if video_decode_threads is None
             else video_decode_threads
         ),
     )
 
-    if max_concurrency <= 1:
+    if max_running_video_requests == 0:
         return SimpleScheduler[StagePayload, StagePayload](preprocessor)
     else:
         pass
 
     return PreprocessingScheduler(
         preprocessor,
-        video_request_worker_count=max_concurrency,
+        video_request_worker_count=max_running_video_requests,
         stage_intraop_threads=torch.get_num_threads(),
         stage_cpu_count=effective_cpu_count(),
         video_decode_threads=video_decode_threads,
