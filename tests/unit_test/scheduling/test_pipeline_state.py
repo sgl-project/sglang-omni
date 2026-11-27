@@ -149,6 +149,7 @@ def test_tts_pipeline_state_round_trips_preserve_payload_fields() -> None:
     from sglang_omni.models.dots_tts.payload_types import DotsTTSState
     from sglang_omni.models.fishaudio_s2_pro.payload_types import S2ProState
     from sglang_omni.models.higgs_tts.payload_types import HiggsTtsState
+    from sglang_omni.models.lfm3_audio.payload_types import Lfm3AudioState
     from sglang_omni.models.ming_tts.payload_types import MingTTSState
     from sglang_omni.models.moss_tts.payload_types import MossTTSState
     from sglang_omni.models.moss_tts_local.payload_types import MossTTSLocalState
@@ -346,6 +347,33 @@ def test_tts_pipeline_state_round_trips_preserve_payload_fields() -> None:
             {
                 "audio_samples": torch.tensor([0.7, 0.8]).tolist(),
             },
+        ),
+        (
+            Lfm3AudioState(
+                input_ids=[1, 2, 3],
+                input_features=torch.tensor([[[0.25, 0.5], [0.75, 1.0]]]),
+                feature_attention_mask=torch.tensor([[1, 1]]),
+                pixel_values=torch.tensor([[0.5, -0.5]]),
+                image_grid_thw=torch.tensor([[1, 2, 2]]),
+                pixel_values_videos=torch.tensor([[0.25, -0.25]]),
+                video_grid_thw=torch.tensor([[2, 2, 2]]),
+                text_only=True,
+                max_new_tokens=32,
+                temperature=0.5,
+                top_p=0.9,
+                top_k=20,
+                min_p=0.05,
+                repetition_penalty=1.1,
+                seed=7,
+                audio_temperature=0.4,
+                audio_top_k=64,
+                audio_repetition_penalty=1.2,
+                generated_ids=[4, 5],
+                audio_codes=torch.tensor([[1, 2], [3, 4]]),
+                prompt_tokens=3,
+                completion_tokens=2,
+            ),
+            {},
         ),
         (
             Zonos2State(

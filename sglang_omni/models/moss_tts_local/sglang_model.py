@@ -30,16 +30,16 @@ from sglang.srt.runtime_context import get_parallel, get_schedule
 from sglang.srt.utils import add_prefix
 from transformers import GPT2Config, PretrainedConfig, Qwen3Config
 
-from sglang_omni.models.moss_tts.sampling_kernels import (
-    MAX_FUSED_SAMPLE_VOCAB,
-    sample_seeded_branchless,
-    sample_seeded_fused,
-)
+from sglang_omni.models.moss_tts.sampling_kernels import sample_seeded_branchless
 from sglang_omni.models.moss_tts_local.local_transformer import MossTTSLocalTransformer
 from sglang_omni.models.moss_tts_local.payload_types import (
     moss_tts_local_special_token_defaults,
 )
 from sglang_omni.models.moss_tts_local.state_pool import MossTTSLocalDecodeStatePool
+from sglang_omni.sampling.fused_seeded_sample import (
+    MAX_FUSED_SAMPLE_VOCAB,
+    sample_seeded_fused,
+)
 
 logger = logging.getLogger(__name__)
 

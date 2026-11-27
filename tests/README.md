@@ -142,6 +142,15 @@ tests/
     │   ├── test_tail.py
     │   ├── test_vocoder.py
     │   └── test_vocoder_streaming.py
+    ├── lfm3_audio/
+    │   ├── test_generation.py
+    │   ├── test_hf_config.py
+    │   ├── test_media.py
+    │   ├── test_model_runner.py
+    │   ├── test_request_builders.py
+    │   ├── test_short_conv.py
+    │   ├── test_speech_pool.py
+    │   └── test_stages.py
     ├── llada2_uni/
     │   └── test_request_builders.py
     ├── minimax_music3/
@@ -949,6 +958,8 @@ that happened to contain an older version of the test.
   session voice, role prompt and sampling; the `/v1/realtime` events, and a
   session over the WebSocket against a scripted pipeline). CPU only, no
   weights; runner and request tests need SGLang but start no engine.
+
+- `unit_test/lfm3_audio/`: LFM3-Audio and LFM3-Omni config parsing for both checkpoint layouts, the short-conv state, the text/speech state machine and its device copy, mixed-batch speech steps, retraction replay, refused server settings, the request boundary (checkpoint sampling defaults, seeds, the result payload), speech-frame sampling, depth CUDA graphs against eager, and prompt and media helpers.
 
 - `unit_test/llada2_uni/`: LLaDA2-Uni request lowering to the upstream
   diffusion-language-model token-array contract.

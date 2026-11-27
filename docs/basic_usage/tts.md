@@ -27,6 +27,7 @@ model you are serving.
 | [MOSS-TTS Local](../cookbook/moss_tts_local.md) | Yes | Optional reference; 48 kHz output |
 | [Higgs TTS](../cookbook/higgs_tts.md) | Yes | Optional reference, inline control tokens |
 | [Voxtral TTS](../cookbook/voxtral_tts.md) | Yes | Named preset voices; no reference cloning |
+| [LFM3-Audio / LFM3-Omni](../cookbook/lfm3.md) | No | `female` and `male` voices; no reference cloning |
 | [dots.tts](../cookbook/dots_tts.md) | Yes | Reference audio and transcript; MeanFlow and SOAR have different settings |
 | [FireRedTTS3](../cookbook/firered_tts3.md) | Yes | Base uses a reference clip and transcript; Instruct supports voice design and editing; Speaker provides text-only synthesis and optional dual-stream decoding |
 | [Ming-Omni-TTS](../cookbook/ming_tts.md) | Yes | Optional reference and transcript; `initial_codec_chunk_frames` is rejected |

@@ -74,6 +74,15 @@ _BUFFER_PROBES: dict[str, BufferProbe] = {
             ),
         )
     ),
+    "Lfm3AudioSGLangModel": BufferProbe(
+        (
+            (
+                "decode_input_embed_buffer",
+                lambda m: m.decode_input_embed_buffer.shape[0],
+            ),
+            ("text_only_buffer", lambda m: m.text_only_buffer.shape[0]),
+        )
+    ),
     "Qwen3OmniTalker": BufferProbe(
         (("feedback_buffer", lambda m: m.feedback_buffer.shape[0]),)
     ),

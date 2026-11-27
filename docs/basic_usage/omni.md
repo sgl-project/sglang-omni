@@ -16,6 +16,7 @@ Install SGLang-Omni using the [installation guide](../get_started/installation.m
 | [Ming-Omni](../cookbook/ming_omni.md) | Text, image, audio, video | Text, or text and speech | 44.1 kHz speech; thinker and talker stages |
 | [Ming-3.0-audio](../cookbook/ming3_audio.md) | Audio, with optional text | Text, or text and speech | Transcription, audio question answering, and speech synthesis |
 | [MiniCPM-o](../cookbook/minicpm_o.md) | Text, image, audio, video | Text, or text and speech | Chat here; live full-duplex calls use `/v1/realtime` |
+| [LFM3-Audio / LFM3-Omni](../cookbook/lfm3.md) | Text, audio; LFM3-Omni also image and video | Text, or interleaved text and speech | Also serves `/v1/audio/speech` with `female` and `male` voices |
 
 ## General Usage
 
