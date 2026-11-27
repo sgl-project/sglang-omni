@@ -1550,7 +1550,8 @@ class Qwen3TTSStreamingVocoderScheduler(
     ) -> None:
         if origin == "payload":
             params = source.request.params
-            if isinstance(params, Mapping):
+            # note (ratish): once a chunk is in, its metadata has set this width and a first decode may already be planned on it.
+            if isinstance(params, Mapping) and state.total_frames == 0:
                 state.initial_chunk_frames = resolve_initial_codec_chunk_frames(
                     params,
                     steady_chunk_frames=self.stream_stride,
