@@ -123,7 +123,9 @@ class Latent2Wav(nn.Module):
     def inverse_stft(self, spectrum_BFT):
         window_length = self.n_fft
         frames = spectrum_BFT.shape[-1]
-        window_W = torch.hann_window(window_length, device=spectrum_BFT.device)
+        window_W = torch.hann_window(
+            window_length, dtype=torch.float32, device=spectrum_BFT.device
+        )
         frames_BWT = torch.fft.irfft(
             spectrum_BFT, n=self.n_fft, dim=-2, norm="backward"
         )
