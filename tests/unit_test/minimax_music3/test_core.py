@@ -9,6 +9,7 @@ import pytest
 import torch
 from sglang.multimodal_gen.runtime.managers.forward_context import set_forward_context
 from sglang.multimodal_gen.runtime.platforms import AttentionBackendEnum
+from sglang.srt import batch_invariant_ops
 from sglang.srt.models.qwen3 import Qwen3ForCausalLM
 from torch.nn import functional as F
 
@@ -32,9 +33,16 @@ from sglang_omni.models.minimax_music3.dit import (
 )
 from sglang_omni.models.minimax_music3.engine_builder import MiniMaxMusic3EngineBuilder
 from sglang_omni.models.minimax_music3.model_runner import HiddenFrameBuffer
+from sglang_omni.models.minimax_music3.prompt import SPECIAL_TOKEN_IDS
 from sglang_omni.models.minimax_music3.rvq_cuda_graph import RVQDepthCudaGraphRunner
 from sglang_omni.models.minimax_music3.rvq_decoder import sample_topk_seeded
 from sglang_omni.models.minimax_music3.serial_offload import SerialOffloadCoordinator
+from sglang_omni.models.minimax_music3.sglang_model import (
+    apply_batch_invariant_policy,
+    build_c0_logit_ids,
+    narrow_lm_head_to_c0,
+    select_c0_logits,
+)
 from sglang_omni.pipeline.stage.stream_queue import StreamItem
 from sglang_omni.platforms import current_platform
 from sglang_omni.platforms.device_graph import DeviceGraphBackend
@@ -296,6 +304,100 @@ def test_dav_weight_norm_folding_preserves_output() -> None:
 
     torch.testing.assert_close(actual, expected, rtol=0, atol=0)
     assert remove_weight_norm(convolution) == 0
+
+
+MUSIC3_BACKBONE_VOCAB_SIZE = 200000
+
+
+def c0_head_model() -> torch.nn.Module:
+    torch.manual_seed(5)
+    model = torch.nn.Module()
+    model.lm_head = torch.nn.Linear(4, MUSIC3_BACKBONE_VOCAB_SIZE, bias=False)
+    model.register_buffer(
+        "c0_logit_ids",
+        build_c0_logit_ids(SPECIAL_TOKEN_IDS["<|audio_end|>"], torch.device("cpu")),
+        persistent=False,
+    )
+    return model
+
+
+def test_narrowed_lm_head_keeps_the_c0_rows_in_logit_order() -> None:
+    model = c0_head_model()
+    full_weight = model.lm_head.weight.detach().clone()
+    hidden_states = torch.randn(2, full_weight.shape[1])
+
+    narrow_lm_head_to_c0(model)
+
+    c0_logit_ids = model.c0_logit_ids
+    head_weight = model.lm_head.weight
+    assert head_weight.shape[0] == 16392
+    assert head_weight.shape[0] * torch.bfloat16.itemsize % 16 == 0
+    assert torch.equal(
+        head_weight[: c0_logit_ids.numel()], full_weight.index_select(0, c0_logit_ids)
+    )
+    assert not head_weight[c0_logit_ids.numel() :].any()
+    logits = select_c0_logits(model, model.lm_head(hidden_states))
+    assert logits.shape == (2, c0_logit_ids.numel())
+    assert logits.dtype == torch.float32
+    torch.testing.assert_close(
+        logits, (hidden_states @ full_weight.T).index_select(1, c0_logit_ids)
+    )
+
+
+def test_narrowed_lm_head_reloads_a_full_vocabulary_checkpoint_in_place() -> None:
+    model = c0_head_model()
+    narrow_lm_head_to_c0(model)
+    head_weight = model.lm_head.weight
+    address = head_weight.data_ptr()
+    checkpoint = torch.randn(MUSIC3_BACKBONE_VOCAB_SIZE, head_weight.shape[1])
+
+    Qwen3ForCausalLM.load_weights(model, [("lm_head.weight", checkpoint)])
+
+    c0_rows = model.c0_logit_ids.numel()
+    assert model.lm_head.weight is head_weight
+    assert head_weight.data_ptr() == address
+    assert torch.equal(
+        head_weight[:c0_rows], checkpoint.index_select(0, model.c0_logit_ids)
+    )
+    assert not head_weight[c0_rows:].any()
+
+
+def test_select_c0_logits_rejects_full_vocabulary_logits() -> None:
+    model = c0_head_model()
+
+    with pytest.raises(RuntimeError, match="narrowed c0 head"):
+        select_c0_logits(model, torch.zeros(2, model.lm_head.weight.shape[0]))
+
+
+@pytest.mark.parametrize(
+    ("platform_keeps", "mode_enabled", "expected_disables"),
+    [(True, True, 0), (False, True, 1), (False, False, 0)],
+)
+def test_batch_invariant_policy_follows_the_platform(
+    monkeypatch: pytest.MonkeyPatch,
+    platform_keeps: bool,
+    mode_enabled: bool,
+    expected_disables: int,
+) -> None:
+    disables: list[None] = []
+    monkeypatch.setattr(
+        current_platform,
+        "enable_minimax_music3_batch_invariant_ops",
+        lambda: platform_keeps,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        batch_invariant_ops, "is_batch_invariant_mode_enabled", lambda: mode_enabled
+    )
+    monkeypatch.setattr(
+        batch_invariant_ops,
+        "disable_batch_invariant_mode",
+        lambda: disables.append(None),
+    )
+
+    apply_batch_invariant_policy()
+
+    assert len(disables) == expected_disables
 
 
 @pytest.mark.accelerator

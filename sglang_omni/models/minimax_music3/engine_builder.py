@@ -167,9 +167,14 @@ class MiniMaxMusic3EngineBuilder(TtsEngineBuilder["MiniMaxMusic3SGLangRequestDat
             get_decode_cuda_graph_max_bs,
         )
 
-        from .sglang_model import attach_minimax_modules, enable_graph_feedback
+        from .sglang_model import (
+            apply_batch_invariant_policy,
+            attach_minimax_modules,
+            enable_graph_feedback,
+        )
 
         assert self.checkpoint_root is not None
+        apply_batch_invariant_policy()
         model = model_worker.model_runner.model
         if self.enable_serial_offload:
             if torch_memory_saver is None:

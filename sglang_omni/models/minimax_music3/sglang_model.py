@@ -8,6 +8,7 @@ from types import MethodType
 from typing import TYPE_CHECKING
 
 import torch
+from sglang.srt import batch_invariant_ops
 from torch import nn
 
 from sglang_omni.platforms import current_platform
@@ -26,6 +27,7 @@ logger = logging.getLogger(__name__)
 
 _AUDIO_EMBEDDING_KEY = "model.audio_extra_embedding.weight"
 _C0_VOCAB_SIZE = 16384
+C0_HEAD_ROW_MULTIPLE = 8
 
 
 def attach_minimax_modules(model: "Qwen3ForCausalLM", checkpoint_root: str) -> None:
@@ -89,6 +91,7 @@ def attach_minimax_modules(model: "Qwen3ForCausalLM", checkpoint_root: str) -> N
     )
     model.graph_feedback_buffer = None
 
+    narrow_lm_head_to_c0(model)
     use_unfused_qk_norm(model)
     route_forward_batch_input_embeds(model)
     logger.info(
@@ -131,14 +134,64 @@ def apply_cfg(cond: torch.Tensor, uncond: torch.Tensor) -> torch.Tensor:
     return guided.masked_fill(cond < threshold, -float("inf"))
 
 
+def apply_batch_invariant_policy() -> None:
+    if current_platform.enable_minimax_music3_batch_invariant_ops():
+        return
+    else:
+        pass
+    if batch_invariant_ops.is_batch_invariant_mode_enabled():
+        batch_invariant_ops.disable_batch_invariant_mode()
+        logger.info(
+            "MiniMax Music 3 AR runs without SGLang's batch-invariant ops on "
+            f"{current_platform.device_type}; deterministic attention and sampling stay on"
+        )
+    else:
+        pass
+
+
+def c0_head_rows(c0_rows: int) -> int:
+    return (
+        (c0_rows + C0_HEAD_ROW_MULTIPLE - 1)
+        // C0_HEAD_ROW_MULTIPLE
+        * C0_HEAD_ROW_MULTIPLE
+    )
+
+
+def narrow_lm_head_to_c0(model: "Qwen3ForCausalLM") -> None:
+    c0_rows = model.c0_logit_ids.numel()
+    head_rows = c0_head_rows(c0_rows)
+
+    def load_c0_head_weight(
+        parameter: nn.Parameter, loaded_weight: torch.Tensor
+    ) -> None:
+        logit_ids = model.c0_logit_ids.to(device=loaded_weight.device)
+        parameter.data[:c0_rows].copy_(loaded_weight.index_select(0, logit_ids))
+        parameter.data[c0_rows:].zero_()
+
+    head = model.lm_head
+    weight = head.weight.data.new_zeros((head_rows, head.weight.shape[1]))
+    weight[:c0_rows].copy_(head.weight.data.index_select(0, model.c0_logit_ids))
+    head.weight = nn.Parameter(weight, requires_grad=False)
+    head.weight.weight_loader = load_c0_head_weight
+
+
 def select_c0_logits(model: "Qwen3ForCausalLM", logits: torch.Tensor) -> torch.Tensor:
-    """Narrow backbone logits to the only ids c0 sampling can ever return.
+    """Backbone logits over the only ids c0 sampling can ever return.
 
     Returns [rows, 1 + 16384] in vocabulary order: <|audio_end|> first,
     then the c0 code range. Column 0 therefore means stop and column code+1
     means code.
     """
-    return logits.index_select(1, model.c0_logit_ids).float()
+    c0_rows = model.c0_logit_ids.numel()
+    head_rows = c0_head_rows(c0_rows)
+    if logits.shape[1] != head_rows:
+        raise RuntimeError(
+            "MiniMax Music 3 expects backbone logits over the narrowed c0 head: "
+            f"got {logits.shape[1]} columns, expected {head_rows}"
+        )
+    else:
+        pass
+    return logits[:, :c0_rows].float()
 
 
 def enable_rvq_depth_cuda_graph(model: "Qwen3ForCausalLM", buckets: list[int]) -> None:
@@ -331,10 +384,14 @@ def route_forward_batch_input_embeds(model: "Qwen3ForCausalLM") -> None:
 
 
 __all__ = [
+    "apply_batch_invariant_policy",
     "attach_minimax_modules",
     "enable_graph_feedback",
     "enable_rvq_depth_cuda_graph",
     "depth_decode",
     "embed_audio_frames",
+    "C0_HEAD_ROW_MULTIPLE",
+    "c0_head_rows",
+    "narrow_lm_head_to_c0",
     "select_c0_logits",
 ]
