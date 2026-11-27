@@ -63,7 +63,7 @@ func (m *Manager) Retry(ctx context.Context, req RetryRequest) (store.Entry, err
 	defer cancel()
 	r := &run{m: m, id: e.ID, req: StartRequest{Kind: e.Kind}, settings: cfg.Settings(), ctx: ctx, cancel: cancel, llmCtx: ctx,
 		stop: make(chan struct{}), recorded: make(chan struct{}), pcm: newPCMBuffer(), target: e.TargetLang, typed: e.TypedText, historyRetry: true, onDraft: req.OnDraft}
-	r.pcm.append(pcm)
+	r.pcm.data = pcm // Retry already owns the full recording read from history.
 	r.retryScene(e)
 	stage := func(st State) {
 		if req.OnStage != nil {

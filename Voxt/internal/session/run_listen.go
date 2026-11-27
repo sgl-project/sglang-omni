@@ -347,8 +347,7 @@ func (r *run) listen() (string, bool) {
 		r.endFailed(ProblemOf(captured.err), stream)
 		return "", false
 	}
-	pcm := r.pcm.bytes()
-	audioLen := asr.Duration(pcm, asr.SampleRate)
+	audioLen := pcmDuration(r.pcm.size())
 	r.m.update(r, func(s *Snapshot) {
 		s.State = Recognizing
 		if s.StoppedAt.IsZero() {
@@ -495,6 +494,12 @@ func (r *run) listen() (string, bool) {
 			return "", false
 		}
 	} else if ft, ok := r.svc.ASR.(asr.FileTranscriber); ok {
+		pcm, readErr := r.pcm.bytes()
+		if readErr != nil {
+			r.recognitionFailed = true
+			r.endFailed(&Problem{Code: ProblemInternal, Err: readErr}, nil)
+			return "", false
+		}
 		upload, speech := r.prepare(pcm)
 		if !speech && r.typedOnly() {
 			return "", true

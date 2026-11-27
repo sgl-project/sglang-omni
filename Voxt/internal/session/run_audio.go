@@ -130,6 +130,9 @@ func (r *run) feed(st asr.Stream) chan streamEnd {
 		for {
 			chunk, closed, err := r.pcm.next(r.ctx, off)
 			if err != nil {
+				if r.ctx.Err() == nil {
+					sendErr <- err
+				}
 				return
 			}
 			if len(chunk) > 0 {
