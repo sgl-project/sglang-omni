@@ -1415,3 +1415,13 @@ Developer ID 签名、公证、发布和更新的测试见 [release.md](release.
   - 第 4 步：第二次清理那行的 `cached` 不是 0，约等于指令的长度（1,000 多 tokens）；第一次只写入缓存，还是 0。
   - 第 5 步：照常出结果，“提示词缓存”不见了。
 - **不对时看**：日志里 `connection test of remote language model anthropic`；`llm.bad_request` 的 detail 是 Anthropic 返回的原话（`invalid_request_error: …`）。
+
+### Meeting detection review follow-up
+
+Before release, verify on the exact built head and record the result:
+
+- In Feishu/Lark, DingTalk, WeCom, Slack and Discord, a two-second voice message must show no card. With automatic recording enabled, a microphone use lasting at least two minutes may show a card but must wait for Start recording. A long voice message can still show the card.
+- While Chrome records on a non-meeting page, tab retries back off to five seconds; foregrounding Chrome immediately re-reads it. With app enhancement off, stop using its microphone and verify that an enhanced accessibility attribute previously off is restored. Repeat a meeting to confirm reactivation. Also try with VoiceOver and the user's window manager; an already enabled or unreadable attribute is deliberately preserved.
+- Press End from the overlay, menu and detected-end card while tracks stop and while the final pass runs. There must be one final pass, and a pending Keep/Discard question must stay open.
+
+These platform interactions are not covered by the injected-AX unit tests alone. No new installed-app, window-manager or browser-performance result is claimed for this follow-up.

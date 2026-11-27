@@ -104,6 +104,20 @@ const Quiet = 2 * time.Minute
 // found the card slow: one second still passes over a probe.
 const Hold = time.Second
 
+// ChatHold skips short voice messages in apps that also host calls.
+// A longer message can still ask, so these apps never start automatically.
+const ChatHold = 2 * time.Minute
+
+// IsChat reports whether app also records voice messages or audio clips.
+func IsChat(app string) bool {
+	switch app {
+	case Feishu, DingTalk, WeCom, Slack, Discord:
+		return true
+	default:
+		return false
+	}
+}
+
 // User is a process recording from an input (the helper's mic.watch), and
 // the names of the meeting processes that run for it (meetingHosts; nil
 // when the helper does not say).
@@ -230,13 +244,16 @@ func (d *Detector) Update(users []User, browsers []string, now time.Time) (found
 			d.settled[key] = now
 		}
 	}
-	hold := cmp.Or(d.Hold, Hold)
 	found = slices.DeleteFunc(found, func(c Candidate) bool {
 		if _, done := d.settled[c.Key]; done {
 			return true
 		}
 		if confirmed[c.Key] {
 			return false // Zoom's meeting process already rules out its microphone test.
+		}
+		hold := cmp.Or(d.Hold, Hold)
+		if d.Hold == 0 && IsChat(c.App) {
+			hold = ChatHold
 		}
 		if left := hold - now.Sub(d.since[c.Key]); left > 0 {
 			if wait == 0 || left < wait {

@@ -258,6 +258,19 @@ func TestDiscardWhileEnding(t *testing.T) {
 	if got := r.m.Current(); got.State != meeting.StateFinishing || got.ID != id {
 		t.Errorf("after both: state %s, id %q; want the meeting finishing", got.State, got.ID)
 	}
+	var saving atomic.Int32
+	stopRepeat := r.m.Subscribe(func(s meeting.Snapshot) {
+		if s.Stage == meeting.StageSaving {
+			saving.Add(1)
+		}
+	})
+	if err := r.m.Finish(ctx, id); err != nil {
+		t.Errorf("End again while its final pass runs: %v", err)
+	}
+	stopRepeat()
+	if saving.Load() != 0 {
+		t.Error("End again restarted saving during the final pass")
+	}
 	if _, _, err := r.meetings.Meeting(ctx, id); err != nil {
 		t.Errorf("the ended meeting's row: %v", err)
 	}

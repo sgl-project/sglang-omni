@@ -12,7 +12,8 @@ import VoxtNewHelperKit
 /// 100 ms, 300 ms, 1 s and 3 s, and every pollEvery while the watch is on.
 final class Mic: @unchecked Sendable {
     let out: Writer
-    private let watch = MicWatch()
+    private let watch: MicWatch
+    private let readUsers: (() -> MicUsers)?
     private let queue = DispatchQueue(label: "voxtnew.mic", qos: .utility)
     private let lock = NSLock()
     private var listening = false
@@ -24,8 +25,10 @@ final class Mic: @unchecked Sendable {
     private static let pollEvery: DispatchTimeInterval = .seconds(2)
     private static let againAfter: [DispatchTimeInterval] = [.milliseconds(100), .milliseconds(300), .seconds(1), .seconds(3)]
 
-    init(out: Writer) {
+    init(out: Writer, watch: MicWatch = MicWatch(), read: (() -> MicUsers)? = nil) {
         self.out = out
+        self.watch = watch
+        self.readUsers = read
     }
 
     func watch(_ p: MicWatchParams) -> MicUsers {
@@ -64,14 +67,16 @@ final class Mic: @unchecked Sendable {
 
     /// A change: read once Core Audio settled (50 ms; it tells a change
     /// several times), then tell the app when the users are new.
-    private func changed() {
+    func changed(after: ((@escaping @Sendable () -> Void) -> Void)? = nil) {
+        guard watch.isOn else { return }
         let schedule = lock.withLock { () -> Bool in
             defer { pending = true }
             return !pending
         }
         guard schedule else { return }
-        queue.asyncAfter(deadline: .now() + .milliseconds(50)) { [self] in
+        let work: @Sendable () -> Void = { [self] in
             lock.withLock { pending = false }
+            guard watch.isOn else { return } // it may have been turned off during the debounce
             if let users = watch.changed(read()) {
                 out.notify(Method.micChanged, users)
             }
@@ -80,12 +85,18 @@ final class Mic: @unchecked Sendable {
                 queue.asyncAfter(deadline: .now() + delay) { [weak self] in self?.again() }
             }
         }
+        if let after {
+            after(work)
+        } else {
+            queue.asyncAfter(deadline: .now() + .milliseconds(50), execute: work)
+        }
     }
 
     /// The users now; while listening, every process's input is followed.
     /// Only a process that records is asked who it is: most of the dozens
     /// Core Audio lists do not, and each bundle id is a round trip.
     private func read() -> MicUsers {
+        if let readUsers { return readUsers() }
         let ids = Self.processes()
         if lock.withLock({ listening }) { follow(ids) }
         let recording = ids.filter { Self.number($0, kAudioProcessPropertyIsRunningInput) == 1 }

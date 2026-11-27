@@ -20,6 +20,9 @@ final class FrontApps: @unchecked Sendable {
     private var started = false
     private var electron: [String: Bool] = [:] // bundle path → is Electron
     let manual = ManualAccessibility()
+    private let accessibilityLock = NSLock()
+    // Only attributes read as false before our request are ours to restore.
+    private var enhanced: [Int: String] = [:]
     private let queue = DispatchQueue(label: "voxtnew.front", qos: .userInitiated)
 
     init(out: Writer) { self.out = out }
@@ -43,7 +46,7 @@ final class FrontApps: @unchecked Sendable {
             NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.didTerminateApplicationNotification,
                                                               object: nil, queue: nil) { [weak self] n in
                 guard let self, let a = n.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication else { return }
-                self.manual.forget(pid: Int(a.processIdentifier))
+                self.forgetAccessibility(pid: Int(a.processIdentifier))
             }
         }
     }
@@ -52,9 +55,10 @@ final class FrontApps: @unchecked Sendable {
     /// Electron apps. The app in front gets it now when it is one of them
     /// (it came to the front before the list did).
     func configure(_ p: AppConfigureParams) {
-        manual.configure(p.manualAccessibility ?? [])
-        guard let cur = cached, manual.listed(cur.bundleId) else { return }
+        accessibilityLock.withLock { manual.configure(p.manualAccessibility ?? []) }
         queue.async { [self] in
+            releaseUnusedAccessibility()
+            guard let cur = cached, manual.listed(cur.bundleId) else { return }
             if AXIsProcessTrusted(), manual.claim(pid: cur.pid, .activation) {
                 setManualAccessibility(pid: pid_t(cur.pid), bundleId: cur.bundleId, why: "in front")
             }
@@ -64,19 +68,51 @@ final class FrontApps: @unchecked Sendable {
     /// Electron accepts the manual attribute; Chrome needs the enhanced one.
     @discardableResult
     func setManualAccessibility(pid: pid_t, bundleId: String?, why: String,
-                                set: (AXUIElement, CFString, CFTypeRef) -> AXError = AXUIElementSetAttributeValue) -> Bool {
+                                set: (AXUIElement, CFString, CFTypeRef) -> AXError = AXUIElementSetAttributeValue,
+                                read: (AXUIElement, CFString, UnsafeMutablePointer<CFTypeRef?>) -> AXError = AXUIElementCopyAttributeValue) -> Bool {
+        accessibilityLock.lock()
+        defer { accessibilityLock.unlock() }
         let app = AXUIElementCreateApplication(pid)
         AXUIElementSetMessagingTimeout(app, 0.3)
         var name = "AXManualAccessibility"
         var r = set(app, name as CFString, kCFBooleanTrue)
         if r != .success {
+            guard manual.listed(bundleId) else {
+                manual.forget(pid: Int(pid)) // a stale URL read after app.configure removed it
+                return false
+            }
             name = "AXEnhancedUserInterface"
+            var prior: CFTypeRef?
+            let known = read(app, name as CFString, &prior) == .success
+            if known, prior as? Bool == false, let bundleId, manual.listed(bundleId) {
+                enhanced[Int(pid)] = bundleId
+            }
             r = set(app, name as CFString, kCFBooleanTrue)
         }
         let what = "\(name) on \(bundleId ?? "?") (pid \(pid), \(why))"
         // Chrome forwards to NSApplication after enabling AX, which may still return an error.
         out.logLine("debug", what + ": requested (\(r.rawValue))")
         return r == .success
+    }
+
+    /// app.configure no longer needs this browser's tree. Leave an attribute
+    /// that was already on (or unreadable) alone: another assistive app may own it.
+    func releaseUnusedAccessibility(set: (AXUIElement, CFString, CFTypeRef) -> AXError = AXUIElementSetAttributeValue) {
+        accessibilityLock.lock()
+        defer { accessibilityLock.unlock() }
+        for (pid, bundle) in enhanced where !manual.listed(bundle) {
+            let app = AXUIElementCreateApplication(pid_t(pid))
+            AXUIElementSetMessagingTimeout(app, 0.3)
+            let result = set(app, "AXEnhancedUserInterface" as CFString, kCFBooleanFalse)
+            out.logLine("debug", "AXEnhancedUserInterface off \(bundle) (pid \(pid)): requested (\(result.rawValue))")
+            enhanced.removeValue(forKey: pid)
+            manual.forget(pid: pid) // a later microphone use may activate the tree again
+        }
+    }
+
+    private func forgetAccessibility(pid: Int) {
+        accessibilityLock.withLock { _ = enhanced.removeValue(forKey: pid) }
+        manual.forget(pid: pid)
     }
 
     static func describe(_ a: NSRunningApplication) -> App {

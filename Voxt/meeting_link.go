@@ -235,7 +235,7 @@ func (a *app) meetingPauseResume() {
 }
 
 func (a *app) meetingFinish() {
-	if a.meetMgr == nil || !a.meetingActive() {
+	if a.meetMgr == nil || !a.meetingActive() || a.meetSnap.State == meeting.StateFinishing || a.meetSnap.State == meeting.StateAsking {
 		return
 	}
 	id := a.meetSnap.ID

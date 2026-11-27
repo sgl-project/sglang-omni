@@ -35,7 +35,7 @@ func meetingCaptureSettings(c *ui.Context, state settingsMeetingViewState, actio
 		})
 	if state.DetectMeetings {
 		settingRow(c, "mt-auto", i18n.T("Start recording automatically"),
-			i18n.T("A detected meeting is recorded without asking."), func() {
+			i18n.T("A detected meeting is recorded without asking. Chat apps that also record voice messages still ask."), func() {
 				if ui.Switch(c.Key("mt-auto-sw"), &local.auto).Label(i18n.T("Start recording automatically")).Changed() {
 					actions.setMeetingAutoStart(local.auto)
 				}

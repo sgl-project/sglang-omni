@@ -47,6 +47,8 @@ Meeting speakers and clean-up	E	TestEvalMTDSpeakers	none
 Meeting detection	L	TestMeetingDetectedAsksOnce	Which real apps hold the microphone during a meeting is checked by hand only
 Meeting detection	L	TestMeetingDetectedInBrowser	Reading a real browser's tab is checked by hand only
 Meeting detection	L	TestMeetingAskMenu	none
+Meeting detection	L	TestMeetingChatClipsRequireConfirmation	Real chat apps and long voice messages require the manual checks in docs/manual-test.md
+Meeting detection	L	TestMeetingDetectReadsTheTabAgain	Real Chrome accessibility restoration and window-manager interactions require the manual checks in docs/manual-test.md
 Meeting detection	L	TestMeetingAskCompact	The card's window (its place, staying behind the app in front, the pointer over it) is checked by hand only
 Meeting detection	L	TestMeetingDetectEndToEnd	none
 Meeting detection	L	TestMeetingDetectDuringDictationEndToEnd	none

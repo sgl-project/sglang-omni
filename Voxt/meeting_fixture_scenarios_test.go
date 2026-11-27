@@ -112,6 +112,7 @@ func meetingFixtureScenarios() []meetingFixtureScenario {
 	scenarios = append(scenarios,
 		meetingFixtureScenario{name: "ask-normal", kind: "meeting-ask", ask: meetingAskInput{App: meetdetect.Zoom}},
 		meetingFixtureScenario{name: "ask-menu", kind: "meeting-ask", ask: meetingAskInput{App: meetdetect.Meet, MenuOpen: true}},
+		meetingFixtureScenario{name: "ask-chat-menu", kind: "meeting-ask", ask: meetingAskInput{App: meetdetect.Slack, MenuOpen: true}},
 		meetingFixtureScenario{name: "ask-compact", kind: "meeting-ask", ask: meetingAskInput{App: meetdetect.Tencent, Compact: true}},
 		meetingFixtureScenario{name: "ask-ended", kind: "meeting-ask", ask: meetingAskInput{End: true}},
 	)

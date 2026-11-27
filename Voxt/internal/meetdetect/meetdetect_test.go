@@ -86,6 +86,26 @@ func TestHold(t *testing.T) {
 	}
 }
 
+func TestChatHoldSkipsShortVoiceMessages(t *testing.T) {
+	for _, app := range native {
+		if !IsChat(app.app) {
+			continue
+		}
+		var d Detector
+		users := []User{{PID: 1, BundleID: app.bundle}}
+		start := time.Unix(1000, 0)
+		if got, wait := d.Update(users, nil, start); len(got) != 0 || wait != ChatHold {
+			t.Fatalf("%s: initial candidates %v, wait %v", app.app, got, wait)
+		}
+		if got, _ := d.Update(users, nil, start.Add(2*time.Second)); len(got) != 0 {
+			t.Fatalf("%s: a short voice message brought a card", app.app)
+		}
+		if got, wait := d.Update(users, nil, start.Add(ChatHold)); len(got) != 1 || wait != 0 {
+			t.Fatalf("%s: a long microphone use should ask: %v, wait %v", app.app, got, wait)
+		}
+	}
+}
+
 // An app the user was asked about is not asked about again while it
 // records, nor at an unmute soon after; a later meeting asks again, also
 // when nothing else changed in between.

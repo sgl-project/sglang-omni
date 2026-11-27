@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -38,6 +39,14 @@ func TestFinishEndsTracksTogether(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	var repeated atomic.Bool
+	m.Subscribe(func(s meeting.Snapshot) {
+		if s.Stage == meeting.StageSaving && repeated.CompareAndSwap(false, true) {
+			if err := m.Finish(ctx, id); err != nil {
+				t.Errorf("End again during its first notification: %v", err)
+			}
+		}
+	})
 	var mu sync.Mutex
 	var seen []meeting.Snapshot
 	micIn, sysIn := make(chan struct{}), make(chan struct{})
@@ -60,6 +69,9 @@ func TestFinishEndsTracksTogether(t *testing.T) {
 	}
 	if len(seen) != 2 {
 		t.Fatalf("%d tracks stopped, want 2", len(seen))
+	}
+	if !repeated.Load() {
+		t.Fatal("the regression never repeated End during its first notification")
 	}
 	for _, s := range seen {
 		if s.State != meeting.StateFinishing || s.Stage != meeting.StageSaving {

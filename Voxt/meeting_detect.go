@@ -30,8 +30,7 @@ import (
 const (
 	meetingAskRest  = 8 * time.Second
 	meetingAskLater = 2 * time.Minute
-	// meetingTabAgain is how often the tab of a browser that records is
-	// read again while it is no meeting's (readMeetingTabNow).
+	// meetingTabAgain is the first retry; repeated misses back off to 5 s.
 	meetingTabAgain = time.Second
 )
 
@@ -47,9 +46,14 @@ type meetingDetectState struct {
 	reading, tree string
 	// tabAgain has the browsers that record whose tab was no meeting's
 	// (or could not be read), each read again from its time on.
-	tabAgain map[string]time.Time
+	tabAgain map[string]meetingTabRetry
 	ask      meetingAsk
 	recorded meetingRecorded // meeting_detect_end.go
+}
+
+type meetingTabRetry struct {
+	next  time.Time
+	delay time.Duration
 }
 
 // meetingAsk is the card on screen: the app it asks about (key is the
@@ -86,7 +90,7 @@ func (a *app) meetingDetectChanged() {
 	switch {
 	case !a.detectMeetings():
 		a.closeMeetingAsk()
-	case a.prefs.Features.Meeting.AutoStart && a.ask.key != "" && !a.ask.end:
+	case a.prefs.Features.Meeting.AutoStart && a.ask.key != "" && !a.ask.end && !meetdetect.IsChat(a.ask.app):
 		a.startDetectedMeeting() // the card asked what is now decided: yes
 	}
 	a.syncMicWatch()
@@ -169,7 +173,7 @@ func (a *app) syncMeetingDetect() {
 		a.tree = ""
 		a.syncTrees() // appenhance.go: the browser no longer records
 	}
-	maps.DeleteFunc(a.tabAgain, func(key string, _ time.Time) bool {
+	maps.DeleteFunc(a.tabAgain, func(key string, _ meetingTabRetry) bool {
 		return !a.detect.Recording(key) // read again only while it records
 	})
 	if wait > 0 {
@@ -199,7 +203,7 @@ func (a *app) syncMeetingDetect() {
 		}
 	}
 	for _, c := range found {
-		if next, ok := a.tabAgain[c.Key]; !ok || !a.now().Before(next) {
+		if retry, ok := a.tabAgain[c.Key]; !ok || !a.now().Before(retry.next) {
 			a.readMeetingTab(c) // a browser not read yet, or whose time came
 			return
 		}
@@ -231,13 +235,20 @@ func (a *app) readMeetingTabNow(c meetdetect.Candidate) {
 		case err != nil || !ok:
 			// Not a meeting's page now, or none read (no Accessibility
 			// yet): read again while it records, when it comes to the
-			// front and every meetingTabAgain. Settled, it was never asked
+			// front and on a bounded backoff. Settled, it was never asked
 			// again (11-25: the meeting tab came to the front later).
 			if a.tabAgain == nil {
-				a.tabAgain = map[string]time.Time{}
+				a.tabAgain = map[string]meetingTabRetry{}
 			}
-			a.tabAgain[c.Key] = a.now().Add(meetingTabAgain)
-			a.later(meetingTabAgain, func() { a.readMeetingTabAgain(c.Key) })
+			delay := meetingTabAgain
+			if prior := a.tabAgain[c.Key].delay; prior > 0 {
+				delay = 2 * time.Second
+				if prior >= delay {
+					delay = 5 * time.Second
+				}
+			}
+			a.tabAgain[c.Key] = meetingTabRetry{next: a.now().Add(delay), delay: delay}
+			a.later(delay, func() { a.readMeetingTabAgain(c.Key) })
 			// Another browser that records may be read meanwhile.
 		case a.sess.State.Live() || a.meetingActive() || a.ob.open:
 			// Held back meanwhile: syncMeetingDetect decides again.
@@ -254,10 +265,12 @@ func (a *app) readMeetingTabNow(c meetdetect.Candidate) {
 // tab was no meeting's: on its timer, or as it came to the front
 // (meetingTabFront).
 func (a *app) readMeetingTabAgain(key string) {
-	if _, ok := a.tabAgain[key]; !ok {
+	retry, ok := a.tabAgain[key]
+	if !ok || a.now().Before(retry.next) {
 		return
 	}
-	a.tabAgain[key] = time.Time{}
+	retry.next = time.Time{}
+	a.tabAgain[key] = retry
 	a.syncMeetingDetect()
 }
 
@@ -266,6 +279,7 @@ func (a *app) readMeetingTabAgain(key string) {
 func (a *app) meetingTabFront(front proto.App) {
 	for key := range a.tabAgain {
 		if strings.EqualFold(front.BundleID, key) {
+			a.tabAgain[key] = meetingTabRetry{} // foreground changes bypass and reset the backoff
 			a.readMeetingTabAgain(key)
 			return
 		}
@@ -295,7 +309,7 @@ func (a *app) askMeeting(key, app string) {
 		msg += ", on the microphone for " + a.now().Sub(since).Round(10*time.Millisecond).String()
 	}
 	a.logs.Append(core.LogEntry{Time: a.now(), Source: meetingLogSource, Level: core.SeverityInfo, Message: msg})
-	if a.prefs.Features.Meeting.AutoStart {
+	if a.prefs.Features.Meeting.AutoStart && !meetdetect.IsChat(app) {
 		a.startMeetingFor(key)
 		return
 	}

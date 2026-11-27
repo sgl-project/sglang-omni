@@ -58,6 +58,11 @@ func buildMeetingAskViewState(translator *i18n.Translator, input meetingAskInput
 	if input.App == "" {
 		return meetingAskViewState{Menu: []meetingAskMenuItem{}}
 	}
+	menu := []meetingAskMenuItem{{ID: meetingAskSnooze, Label: translator.T("Ask again in 2 minutes"), Rule: true}}
+	if !meetdetect.IsChat(input.App) {
+		menu = append(menu, meetingAskMenuItem{ID: meetingAskAuto, Label: translator.T("Start recording automatically")})
+	}
+	menu = append(menu, meetingAskMenuItem{ID: meetingAskSettings, Label: translator.T("Detection settings")})
 	return meetingAskViewState{
 		Visible:    true,
 		Title:      translator.T("Meeting detected"),
@@ -67,11 +72,7 @@ func buildMeetingAskViewState(translator *i18n.Translator, input meetingAskInput
 		CloseLabel: translator.T("Dismiss"),
 		Compact:    input.Compact,
 		MenuOpen:   input.MenuOpen && !input.Compact,
-		Menu: []meetingAskMenuItem{
-			{ID: meetingAskSnooze, Label: translator.T("Ask again in 2 minutes"), Rule: true},
-			{ID: meetingAskAuto, Label: translator.T("Start recording automatically")},
-			{ID: meetingAskSettings, Label: translator.T("Detection settings")},
-		},
+		Menu:       menu,
 	}
 }
 

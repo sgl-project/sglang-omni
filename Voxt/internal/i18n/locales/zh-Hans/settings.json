@@ -288,7 +288,7 @@
   "Faster": "更快",
   "Detect meetings": "检测会议",
   "When a meeting app starts using the microphone, Voxt offers to record it.": "会议 App 开始用麦克风时，Voxt 会问你要不要记录。",
-  "A detected meeting is recorded without asking.": "检测到会议就直接开始记录，不再询问。",
+  "A detected meeting is recorded without asking. Chat apps that also record voice messages still ask.": "检测到会议后自动录制。也能发送语音消息的聊天 App 仍会先询问。",
   "Another Mac": "换到另一台 Mac",
   "Export library": "导出资料库",
   "Import library": "导入资料库",

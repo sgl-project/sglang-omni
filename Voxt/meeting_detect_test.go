@@ -218,4 +218,73 @@ func TestMeetingDetectReadsTheTabAgain(t *testing.T) {
 	if !b.ask.view.Visible {
 		t.Fatalf("Chrome in front with its meeting: %+v", b.ask.view)
 	}
+
+	c, fsc, _ := newTestApp(t)
+	browserURLs(fsc, map[string]string{"com.google.Chrome": "https://mail.google.com/"})
+	reads := func() int {
+		n := 0
+		for _, method := range fsc.methods() {
+			if method == proto.MethodBrowserURL {
+				n++
+			}
+		}
+		return n
+	}
+	micUsers(t, c, "com.google.Chrome.helper")
+	for _, delay := range []time.Duration{time.Second, 2 * time.Second, 5 * time.Second, 5 * time.Second} {
+		before := reads()
+		detectClock(t, c).advance(delay - time.Millisecond)
+		if reads() != before {
+			t.Fatalf("browser read before its %v backoff", delay)
+		}
+		detectClock(t, c).advance(time.Millisecond)
+		if reads() != before+1 {
+			t.Fatalf("browser reads did not follow the %v backoff", delay)
+		}
+	}
+	before := reads()
+	c.frontChanged(proto.App{PID: 900, BundleID: "com.google.Chrome"})
+	if reads() != before+1 {
+		t.Fatal("foreground did not immediately read the browser")
+	}
+	detectClock(t, c).advance(time.Second)
+	if reads() != before+2 {
+		t.Fatal("foreground did not reset the browser backoff")
+	}
+	micSays(t, c)
+	before = reads()
+	detectClock(t, c).advance(10 * time.Second)
+	if reads() != before {
+		t.Fatal("a stopped microphone kept reading the browser tab")
+	}
+}
+
+func TestMeetingChatClipsRequireConfirmation(t *testing.T) {
+	for _, id := range []string{"com.electron.lark", "com.alibaba.DingTalkMac", "com.tencent.WeWorkMac", "com.tinyspeck.slackmacgap", "com.hnc.Discord"} {
+		t.Run(id, func(t *testing.T) {
+			a, _, _ := newTestApp(t)
+			timers := detectClock(t, a)
+			a.setMeetingAutoStart(true)
+			micSays(t, a, id)
+			timers.advance(2 * time.Second)
+			if a.ask.view.Visible || a.meetingActive() || len(a.toasts) != 0 {
+				t.Fatal("a short voice message prompted or started a meeting")
+			}
+			timers.advance(meetdetect.ChatHold - 2*time.Second)
+			if !a.ask.view.Visible || a.meetingActive() || len(a.toasts) != 0 {
+				t.Fatal("a long chat recording must ask even with automatic recording enabled")
+			}
+			for _, item := range a.ask.view.Menu {
+				if item.ID == meetingAskAuto {
+					t.Fatal("the chat card offers automatic recording that is unavailable for this app")
+				}
+			}
+			a.setMeetingAutoStart(false)
+			a.setMeetingAutoStart(true)
+			a.chooseMeetingAskMenu(meetingAskAuto)
+			if !a.ask.view.Visible || a.meetingActive() || len(a.toasts) != 0 {
+				t.Fatal("toggling automatic recording bypassed the chat confirmation")
+			}
+		})
+	}
 }

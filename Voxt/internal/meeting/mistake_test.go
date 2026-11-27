@@ -101,6 +101,18 @@ func TestFewWordsAskAndKeep(t *testing.T) {
 	if now := m.Current(); now.State != meeting.StateAsking || !now.Mistake || meetingStatus(t, s, id) != store.MeetingAsking {
 		t.Fatalf("after two words in three seconds: %s, mistake %v, row %s", now.State, now.Mistake, meetingStatus(t, s, id))
 	}
+	got.mu.Lock()
+	before := len(got.list)
+	got.mu.Unlock()
+	if err := m.Finish(context.Background(), id); err != nil {
+		t.Fatal(err)
+	}
+	got.mu.Lock()
+	after := len(got.list)
+	got.mu.Unlock()
+	if after != before {
+		t.Fatal("End again restarted the pending Keep/Discard question")
+	}
 	if err := m.Save(context.Background(), id); err != nil {
 		t.Fatal(err)
 	}

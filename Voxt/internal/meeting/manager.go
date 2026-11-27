@@ -250,6 +250,10 @@ func (m *Manager) Finish(ctx context.Context, id string) error {
 		m.mu.Unlock()
 		return fmt.Errorf("meeting: not active")
 	}
+	if m.state == StateFinishing || m.state == StateAsking {
+		m.mu.Unlock()
+		return nil // another End already owns the final pass or its Keep/Discard question
+	}
 	if m.state == StateStarting {
 		// Start is still opening the tracks: it sees the cancel, then
 		// stops them and drops the meeting, as nothing was recorded.
@@ -260,6 +264,7 @@ func (m *Manager) Finish(ctx context.Context, id string) error {
 	keep := m.cfg.Privacy().KeepHistory
 	// The tracks recognise what they still hold before they stop, a few
 	// seconds: meanwhile the meeting shows as ending, not as recording.
+	m.state = StateFinishing // claim End before notifying subscribers or stopping tracks without mu
 	m.snap.State, m.snap.Stage, m.snap.Progress = StateFinishing, StageSaving, 0
 	ending := m.snap
 	m.mu.Unlock()
