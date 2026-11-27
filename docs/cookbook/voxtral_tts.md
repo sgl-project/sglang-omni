@@ -127,9 +127,7 @@ for a full Python raw PCM consumer.
 | `response_format` | `wav` | Output container (`wav`, `mp3`, `flac`, `opus`, `aac`, `pcm`) |
 | `stream` | `false` | Stream raw PCM audio chunks |
 
-> Voxtral generation is **deterministic**: the engine fixes `temperature` to `0.0`, so a request
-> that sets `temperature`, `top_p`, `top_k`, `repetition_penalty` or `seed` is rejected. Reference-clip voice
-> cloning (`references`) is **not** supported for Voxtral — use a preset `voice` instead.
+> Voxtral fixes semantic-token decoding to `temperature=0.0`; this does not guarantee identical audio across requests. Requests that set `temperature`, `top_p`, `top_k`, `repetition_penalty` or `seed` are rejected. Reference-clip voice cloning (`references`) is **not** supported for Voxtral — use a preset `voice` instead.
 
 ## Benchmark Results
 
@@ -201,8 +199,7 @@ requests' codes (English, French, German, Hindi, and a `max_new_tokens` cap) aga
 
 - **Preset voices only.** Voxtral selects from named voices baked into the checkpoint; it does
   not clone an arbitrary speaker from a reference clip in this engine.
-- **Deterministic decoding.** `temperature` is fixed at `0.0`; you cannot trade determinism for
-  diversity through sampling parameters.
+- **Fixed sampling parameters.** `temperature`, `top_p`, `top_k`, `repetition_penalty` and `seed` cannot be set through the speech API.
 - **Language coverage.** Quality is tuned for the 9 supported languages (English, French,
   Spanish, German, Italian, Portuguese, Dutch, Arabic, Hindi).
 - **Non-commercial license.** The weights are CC BY-NC 4.0; commercial use is not permitted.
