@@ -28,11 +28,11 @@ from sglang_omni.models.firered_tts3.hf_config import FireRedTTS3Config
 from sglang_omni.models.firered_tts3.payload_types import load_firered_tts3_state
 from sglang_omni.models.firered_tts3.ref_encode import (
     FireRedReferenceBundle,
-    FireRedReferenceEncoder,
     FireRedReferenceHook,
     ReferenceAudioInput,
     ReferenceConditioning,
 )
+from sglang_omni.models.firered_tts3.ref_service import FireRedReferenceEncoder
 from sglang_omni.models.firered_tts3.weights import (
     build_redae_encoder,
     drop_embedding_tables,
@@ -44,6 +44,7 @@ from tests.unit_test.fixtures.firered_tts3_preprocessing import (
     make_preprocessing_payload,
     make_reference_encoder,
     preprocess_payload,
+    without_solo_thread,
 )
 
 
@@ -270,12 +271,6 @@ def fp32_encoder(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(torch, "autocast", lambda **kwargs: contextlib.nullcontext())
 
 
-@pytest.fixture
-def batch_only(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Route every request through the batch queue (no solo path)."""
-    monkeypatch.setattr(FireRedReferenceHook, "can_encode_alone", lambda self: False)
-
-
 def make_waveforms() -> dict[str, np.ndarray]:
     generator = np.random.default_rng(0)
     waveforms = {
@@ -474,7 +469,7 @@ def test_a_group_that_fails_together_retries_its_clips_alone(
         assert_matches_per_clip(outcome, hook.encode_one(reference))
 
 
-@pytest.mark.usefixtures("fp32_encoder", "batch_only")
+@pytest.mark.usefixtures("fp32_encoder")
 def test_bad_reference_fails_alone_without_re_encoding_its_batch_mates(
     reference_bundle: FireRedReferenceBundle, decoded_audio: list[tuple[str, str]]
 ) -> None:
@@ -487,7 +482,7 @@ def test_bad_reference_fails_alone_without_re_encoding_its_batch_mates(
         cache_enabled=False,
     )
     try:
-        service = reference_encoder.service
+        service = without_solo_thread(reference_encoder.service)
         names = ("long", "broken", "short", "empty")
         with patch.object(
             reference_bundle, "encode", wraps=reference_bundle.encode
@@ -515,7 +510,6 @@ def test_bad_reference_fails_alone_without_re_encoding_its_batch_mates(
         reference_encoder.close()
 
 
-@pytest.mark.usefixtures("batch_only")
 def test_normalize_runs_in_caller_threads_and_never_for_cache_hits(
     reference_bundle: FireRedReferenceBundle,
     decoded_audio: list[tuple[str, str]],
@@ -535,7 +529,7 @@ def test_normalize_runs_in_caller_threads_and_never_for_cache_hits(
         cache_enabled=True,
     )
     try:
-        service = reference_encoder.service
+        service = without_solo_thread(reference_encoder.service)
         with concurrent.futures.ThreadPoolExecutor(
             max_workers=3, thread_name_prefix="caller"
         ) as pool:
@@ -550,7 +544,7 @@ def test_normalize_runs_in_caller_threads_and_never_for_cache_hits(
         reference_encoder.close()
 
 
-@pytest.mark.usefixtures("fp32_encoder", "decoded_audio", "batch_only")
+@pytest.mark.usefixtures("fp32_encoder", "decoded_audio")
 def test_payloads_encoded_in_one_forward_keep_their_own_reference(
     reference_bundle: FireRedReferenceBundle,
 ) -> None:
@@ -575,6 +569,7 @@ def test_payloads_encoded_in_one_forward_keep_their_own_reference(
         max_batch_wait_ms=5000.0,
         cache_enabled=False,
     )
+    without_solo_thread(reference_encoder.service)
     try:
         with patch.object(
             reference_bundle, "encode", wraps=reference_bundle.encode

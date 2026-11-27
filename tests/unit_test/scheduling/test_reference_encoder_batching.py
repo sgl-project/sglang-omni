@@ -4,17 +4,15 @@
 from __future__ import annotations
 
 import concurrent.futures
-import contextlib
-import gc
 import threading
 import time
-import weakref
 from typing import Any
 
 import pytest
 import torch
 
 from sglang_omni.scheduling.reference_encoder import (
+    BatchQueueEntry,
     ReferenceEncodeService,
     TensorReferenceEncodeHook,
 )
@@ -69,18 +67,6 @@ class BatchHook(TensorReferenceEncodeHook[str]):
         return [self.encode(item) for item in items]
 
 
-class PreparingHook(BatchHook):
-    """Records the preparing thread and prefixes each item."""
-
-    def __init__(self) -> None:
-        super().__init__()
-        self.prepared: list[tuple[str, str]] = []
-
-    def prepare_batch_input(self, item: str) -> str:
-        self.prepared.append((item, threading.current_thread().name))
-        return f"prepared-{item}"
-
-
 class GroupingHook(BatchHook):
     """One group per item, "slow" last and held until its gate opens."""
 
@@ -102,11 +88,39 @@ class GroupingHook(BatchHook):
         return super().encode_batch(items)
 
 
+class SlowFirstGroupingHook(GroupingHook):
+    """Like GroupingHook, but the held "slow" group runs first."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.slow_entered = threading.Event()
+
+    def batch_groups(self, items: list[str]) -> list[list[int]]:
+        return sorted(
+            ([index] for index in range(len(items))),
+            key=lambda group: items[group[0]] != "slow",
+        )
+
+    def encode_batch(self, items: list[str]) -> list[torch.Tensor]:
+        if items == ["slow"]:
+            self.slow_entered.set()
+        else:
+            pass
+        return super().encode_batch(items)
+
+
 class BrokenGroupingHook(BatchHook):
     """A hook whose batch split raises, as a buggy hook would."""
 
     def batch_groups(self, items: list[str]) -> list[list[int]]:
         raise RuntimeError("cannot split")
+
+
+class DroppingGroupingHook(BatchHook):
+    """A hook whose batch split loses an item, as a buggy hook would."""
+
+    def batch_groups(self, items: list[str]) -> list[list[int]]:
+        return [[0]]
 
 
 class IsolatedGroupsHook(BatchHook):
@@ -139,56 +153,6 @@ class SlotFailureHook(BatchHook):
             )
             for item in items
         ]
-
-
-class SoloHook(BatchHook):
-    """Solo opt-in hook that records encode threads and can hold one open."""
-
-    def __init__(self, *, solo_opt_in: bool = True) -> None:
-        super().__init__()
-        self.solo_opt_in = solo_opt_in
-        self.single_threads: list[str] = []
-        self.single_done = threading.Condition(self.lock)
-        self.single_gate: threading.Event | None = None
-        self.single_entered = threading.Event()
-        self.fail_prepare: set[str] = set()
-        self.prepared: list[str] = []
-
-    def can_encode_alone(self) -> bool:
-        return self.solo_opt_in
-
-    def prepare_batch_input(self, item: str) -> str:
-        with self.lock:
-            self.prepared.append(item)
-        if item in self.fail_prepare:
-            raise ValueError(f"cannot prepare: {item}")
-        else:
-            pass
-        return item
-
-    def encode_one(self, item: str) -> torch.Tensor:
-        self.single_entered.set()
-        if self.single_gate is not None:
-            self.single_gate.wait(timeout=5)
-        else:
-            pass
-        with self.single_done:
-            self.single_threads.append(threading.current_thread().name)
-            self.single_done.notify_all()
-        return super().encode_one(item)
-
-
-class FrameHoldingHook(SoloHook):
-    """A solo encode that fails holding a tensor, like a CUDA OOM."""
-
-    def __init__(self) -> None:
-        super().__init__()
-        self.frame_tensors: list[weakref.ref[torch.Tensor]] = []
-
-    def encode_one(self, item: str) -> torch.Tensor:
-        activation = torch.zeros(4)
-        self.frame_tensors.append(weakref.ref(activation))
-        raise RuntimeError("out of memory")
 
 
 def make_service(
@@ -320,7 +284,7 @@ def test_close_stops_the_batch_worker() -> None:
     assert not service.batch_thread.is_alive()
 
 
-def test_shutdown_refuses_new_requests_and_finishes_the_running_batch() -> None:
+def test_shutdown_fails_queued_waiters_instead_of_hanging() -> None:
     hook = BatchHook()
     hook.gate = threading.Event()
     service = make_service(hook, max_batch_size=2, timeout_s=30.0)
@@ -346,15 +310,17 @@ def test_shutdown_refuses_new_requests_and_finishes_the_running_batch() -> None:
             close_thread.start()
             with queue_grew:
                 assert queue_grew.wait_for(lambda: None in queued_entries, timeout=5)
-            # The sentinel is queued, so admission now fails at once.
             late = pool.submit(service.get_or_encode, "item-late")
+            with queue_grew:
+                assert queue_grew.wait_for(
+                    lambda: isinstance(queued_entries[-1], BatchQueueEntry)
+                    and queued_entries[-1].queued_input == "item-late",
+                    timeout=5,
+                )
+            hook.gate.set()
+
             with pytest.raises(RuntimeError, match="shutting down"):
                 late.result(timeout=5)
-            assert not any(
-                isinstance(entry, tuple) and entry[0] == "item-late"
-                for entry in queued_entries
-            )
-            hook.gate.set()
             assert [tuple(future.result(timeout=5).tolist()) for future in early] == [
                 (6, ord("0")),
                 (6, ord("1")),
@@ -370,33 +336,6 @@ def test_invalid_batch_settings_are_rejected() -> None:
         ReferenceEncodeService(BatchHook(), max_batch_size=0)
     with pytest.raises(ValueError, match="max_batch_wait_ms"):
         ReferenceEncodeService(BatchHook(), max_batch_wait_ms=-1)
-
-
-def test_prepare_runs_in_the_caller_thread_for_misses_only() -> None:
-    hook = PreparingHook()
-    service = make_service(hook, max_batch_wait_ms=0.0)
-    try:
-        caller_thread = threading.current_thread().name
-        first = service.get_or_encode("a")
-        service.get_or_encode("a")
-        service.get_or_encode("uncacheable-b")
-        # Hits skip prepare; misses and uncacheable inputs run it first.
-        assert hook.prepared == [("a", caller_thread), ("uncacheable-b", caller_thread)]
-        assert tuple(first.tolist()) == (len("prepared-a"), ord("a"))
-    finally:
-        service.close()
-
-
-def test_prepare_is_skipped_when_batching_is_disabled() -> None:
-    hook = PreparingHook()
-    service = make_service(hook, max_batch_size=1)
-    try:
-        result = service.get_or_encode("a")
-        assert hook.prepared == []
-        assert hook.single_calls == ["a"]
-        assert tuple(result.tolist()) == (1, ord("a"))
-    finally:
-        service.close()
 
 
 def test_exception_in_a_batch_slot_fails_only_that_item() -> None:
@@ -419,220 +358,6 @@ def test_exception_in_a_batch_slot_fails_only_that_item() -> None:
         service.close()
 
 
-def test_lone_requests_from_different_threads_encode_on_one_solo_thread() -> None:
-    hook = SoloHook()
-    # A request that reached the batch worker would sit out this whole linger.
-    service = make_service(hook, max_batch_wait_ms=5000.0)
-    try:
-        items = ["a", "uncacheable-b", "cc", "ddd"]
-        results: dict[str, torch.Tensor] = {}
-        caller_threads = []
-        # One request at a time, each from a new thread, like a rotating pool.
-        for index, item in enumerate(items):
-            caller = threading.Thread(
-                target=lambda item=item: results.update(
-                    {item: service.get_or_encode(item)}
-                ),
-                name=f"request-{index}",
-            )
-            caller.start()
-            caller.join(timeout=10)
-            caller_threads.append(caller.name)
-        assert tuple(results["a"].tolist()) == (1, ord("a"))
-        assert hook.single_calls == items
-        assert len(set(hook.single_threads)) == 1
-        assert hook.single_threads[0] not in caller_threads
-        assert service.batch_thread is not None
-        assert hook.single_threads[0] != service.batch_thread.name
-        assert hook.batch_sizes == []
-        # The solo path gets the raw item, so prepare must not run.
-        assert hook.prepared == []
-        stats = service.stats()
-        assert (stats["batches"], stats["solo_encodes"]) == (0, len(items))
-    finally:
-        service.close()
-
-
-def test_close_stops_the_solo_thread() -> None:
-    hook = SoloHook()
-    service = make_service(hook)
-    service.get_or_encode("a")
-    solo_threads = [
-        thread
-        for thread in threading.enumerate()
-        if thread.name == hook.single_threads[0]
-    ]
-    service.close()
-    assert len(solo_threads) == 1
-    solo_threads[0].join(timeout=5)
-    assert not solo_threads[0].is_alive()
-
-
-def test_close_lets_a_running_solo_encode_finish_before_the_hook_closes() -> None:
-    """A close during a solo encode waits for it, then closes the hook."""
-    hook = SoloHook()
-    hook.single_gate = threading.Event()
-    encodes_done_at_hook_close: list[list[str]] = []
-    hook.close = lambda: encodes_done_at_hook_close.append(list(hook.single_calls))
-    service = make_service(hook, timeout_s=30.0)
-    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-        lone = pool.submit(service.get_or_encode, "a")
-        assert hook.single_entered.wait(timeout=5)
-        close_thread = threading.Thread(target=service.close)
-        close_thread.start()
-        # A close that skipped the wait would finish here and close the hook.
-        close_thread.join(timeout=0.2)
-        assert close_thread.is_alive()
-        hook.single_gate.set()
-        assert tuple(lone.result(timeout=5).tolist()) == (1, ord("a"))
-    close_thread.join(timeout=5)
-    assert not close_thread.is_alive()
-    assert encodes_done_at_hook_close == [["a"]]
-
-
-def test_a_lone_request_skips_a_solo_thread_held_by_a_timed_out_encode() -> None:
-    """An orphaned solo encode must not make the next lone request wait."""
-    hook = SoloHook()
-    hook.single_gate = threading.Event()
-    service = make_service(hook, timeout_s=0.5, max_batch_wait_ms=0.0)
-    try:
-        with pytest.raises(concurrent.futures.TimeoutError):
-            service.get_or_encode("a")
-        # "a" still holds the solo thread, so lone "b" goes to the batch worker.
-        assert tuple(service.get_or_encode("b").tolist()) == (1, ord("b"))
-        assert hook.batch_sizes == [1]
-        # Read it first: the done callback clears solo_future once "a" ends.
-        orphan = service.solo_future
-        assert orphan is not None
-        hook.single_gate.set()
-        orphan.result(timeout=5)
-        # Once the solo thread is idle again, the next lone request takes it.
-        service.get_or_encode("cc")
-        assert hook.single_calls == ["a", "cc"]
-        assert len(set(hook.single_threads)) == 1
-        assert service.stats()["solo_encodes"] == 2
-    finally:
-        service.close()
-
-
-def test_a_solo_submit_that_raises_leaves_the_solo_path_on() -> None:
-    """After a solo submit raises, the next lone request still runs solo."""
-    hook = SoloHook()
-    service = make_service(hook, max_batch_wait_ms=0.0)
-    try:
-        assert service.solo_executor is not None
-        submit = service.solo_executor.submit
-
-        def refuse_once(encode_one: object, item: str) -> None:
-            service.solo_executor.submit = submit
-            raise RuntimeError("can't start new thread")
-
-        service.solo_executor.submit = refuse_once
-        with pytest.raises(RuntimeError, match="start new thread"):
-            service.get_or_encode("a")
-        assert tuple(service.get_or_encode("bb").tolist()) == (2, ord("b"))
-        assert hook.single_calls == ["bb"]
-        assert hook.batch_sizes == []
-        assert service.stats()["solo_encodes"] == 1
-    finally:
-        service.close()
-
-
-def test_hook_without_solo_opt_in_still_batches_a_lone_request() -> None:
-    hook = SoloHook(solo_opt_in=False)
-    service = make_service(hook, max_batch_wait_ms=0.0)
-    try:
-        result = service.get_or_encode("a")
-        assert tuple(result.tolist()) == (1, ord("a"))
-        assert hook.batch_sizes == [1]
-        assert hook.single_calls == []
-    finally:
-        service.close()
-
-
-def test_requests_arriving_during_a_solo_encode_join_the_batch_queue() -> None:
-    hook = SoloHook()
-    hook.single_gate = threading.Event()
-    service = make_service(hook, max_batch_size=2, max_batch_wait_ms=5000.0)
-    try:
-        with concurrent.futures.ThreadPoolExecutor(max_workers=3) as pool:
-            first = pool.submit(service.get_or_encode, "a")
-            assert hook.single_entered.wait(timeout=5)
-            # "a" holds the solo thread, so these two form a batch.
-            followers = [
-                pool.submit(service.get_or_encode, name) for name in ("bb", "ccc")
-            ]
-            results = [future.result(timeout=10) for future in followers]
-            assert [tuple(r.tolist()) for r in results] == [
-                (2, ord("b")),
-                (3, ord("c")),
-            ]
-            assert hook.batch_sizes == [2]
-            assert hook.single_calls == []
-            hook.single_gate.set()
-            assert tuple(first.result(timeout=10).tolist()) == (1, ord("a"))
-        # Once everything has finished, the next request is alone again.
-        service.get_or_encode("dddd")
-        assert hook.single_calls == ["a", "dddd"]
-        assert hook.batch_sizes == [2]
-        assert service.stats()["solo_encodes"] == 2
-    finally:
-        service.close()
-
-
-def test_failed_encodes_leave_the_service_idle_for_the_next_lone_request() -> None:
-    hook = SoloHook()
-    hook.fail_items = {"bad"}
-    hook.fail_prepare = {"bad-prepare"}
-    hook.single_gate = threading.Event()
-    service = make_service(hook, max_batch_wait_ms=0.0)
-    try:
-        hook.single_gate.set()
-        with pytest.raises(ValueError, match="bad reference"):
-            service.get_or_encode("bad")
-        hook.single_gate.clear()
-        hook.single_entered.clear()
-        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
-            held = pool.submit(service.get_or_encode, "a")
-            assert hook.single_entered.wait(timeout=5)
-            # A request that fails in prepare must still release its place.
-            with pytest.raises(ValueError, match="cannot prepare"):
-                service.get_or_encode("bad-prepare")
-            hook.single_gate.set()
-            held.result(timeout=10)
-        service.get_or_encode("ok")
-        assert hook.single_calls == ["bad", "a", "ok"]
-        assert hook.batch_sizes == []
-        stats = service.stats()
-        assert (stats["failed"], stats["solo_encodes"]) == (2, 3)
-    finally:
-        service.close()
-
-
-def test_a_request_that_times_out_in_the_queue_is_not_encoded() -> None:
-    """Queued work whose caller gave up is not encoded later."""
-    hook = BatchHook()
-    hook.gate = threading.Event()
-    service = make_service(hook, max_batch_wait_ms=0.0, timeout_s=0.3)
-    try:
-        with concurrent.futures.ThreadPoolExecutor(max_workers=3) as pool:
-            running = pool.submit(service.get_or_encode, "a")
-            assert hook.batch_entered.wait(timeout=5)
-            # "bb" and "ccc" wait behind the held forward until they time out.
-            expired = [
-                pool.submit(service.get_or_encode, name) for name in ("bb", "ccc")
-            ]
-            for future in [running, *expired]:
-                with pytest.raises(concurrent.futures.TimeoutError):
-                    future.result(timeout=5)
-        hook.gate.set()
-        assert tuple(service.get_or_encode("dddd").tolist()) == (4, ord("d"))
-        assert hook.batch_sizes == [1, 1]
-        assert service.stats()["batched_items"] == 2
-    finally:
-        service.close()
-
-
 def test_each_batch_group_is_delivered_as_soon_as_it_finishes() -> None:
     """A finished group does not wait for a slower group of its batch."""
     hook = GroupingHook()
@@ -650,23 +375,14 @@ def test_each_batch_group_is_delivered_as_soon_as_it_finishes() -> None:
         service.close()
 
 
-def test_a_failed_solo_encode_releases_its_frames() -> None:
-    """After the caller gets the error, its traceback is not kept alive."""
-    hook = FrameHoldingHook()
-    service = make_service(hook)
-    try:
-        with contextlib.suppress(RuntimeError):
-            service.get_or_encode("a")
-        gc.collect()
-        assert len(hook.frame_tensors) == 1
-        assert hook.frame_tensors[0]() is None
-    finally:
-        service.close()
-
-
-def test_a_failing_batch_split_falls_back_to_one_group() -> None:
-    """A raising batch split must not end the worker."""
-    hook = BrokenGroupingHook()
+@pytest.mark.parametrize(
+    "hook_type",
+    [BrokenGroupingHook, DroppingGroupingHook],
+    ids=["raises", "loses_an_item"],
+)
+def test_a_bad_batch_split_falls_back_to_one_group(hook_type: type[BatchHook]) -> None:
+    """A split that raises or loses an item falls back to one group."""
+    hook = hook_type()
     service = make_service(
         hook, max_batch_size=2, max_batch_wait_ms=1000.0, timeout_s=5.0
     )
@@ -680,28 +396,54 @@ def test_a_failing_batch_split_falls_back_to_one_group() -> None:
 
 
 def test_a_cancelled_entry_inside_a_drained_batch_is_skipped() -> None:
-    """A cancelled entry is skipped even between live entries."""
+    """Given-up entries between live ones are skipped and take no slot."""
     hook = BatchHook()
     hook.gate = threading.Event()
-    service = make_service(hook, max_batch_size=8, max_batch_wait_ms=0.0)
+    service = make_service(hook, max_batch_size=2, max_batch_wait_ms=0.0)
     try:
         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
             running = pool.submit(service.get_or_encode, "a")
             assert hook.batch_entered.wait(timeout=5)
-            # Timeouts jitter, so a cancelled entry can sit between live ones.
-            futures: list[concurrent.futures.Future[torch.Tensor]] = [
-                concurrent.futures.Future() for _ in range(3)
+            # Timeouts jitter, so given-up entries can sit between live ones.
+            entries: list[BatchQueueEntry[str, torch.Tensor]] = [
+                BatchQueueEntry(queued_input=name, future=concurrent.futures.Future())
+                for name in ("bb", "ccc", "dddd", "eeeee")
             ]
-            futures[1].cancel()
-            for name, future in zip(("bb", "ccc", "dddd"), futures):
-                service.batch_queue.put((name, future))
+            assert entries[1].future.cancel()
+            assert entries[2].abandon()
+            assert entries[2].queued_input is None
+            for entry in entries:
+                service.batch_queue.put(entry)
             hook.gate.set()
             assert tuple(running.result(timeout=5).tolist()) == (1, ord("a"))
-        assert tuple(futures[0].result(timeout=5).tolist()) == (2, ord("b"))
-        assert tuple(futures[2].result(timeout=5).tolist()) == (4, ord("d"))
+        assert tuple(entries[0].future.result(timeout=5).tolist()) == (2, ord("b"))
+        assert tuple(entries[3].future.result(timeout=5).tolist()) == (5, ord("e"))
         assert hook.batch_sizes == [1, 2]
     finally:
         service.close()
+
+
+def test_a_request_cancelled_while_an_earlier_group_runs_is_not_encoded() -> None:
+    """A drained request whose caller gives up before its group is skipped."""
+    hook = SlowFirstGroupingHook()
+    service = make_service(hook, max_batch_size=2, max_batch_wait_ms=5000.0)
+    try:
+        slow: BatchQueueEntry[str, torch.Tensor] = BatchQueueEntry(
+            queued_input="slow", future=concurrent.futures.Future()
+        )
+        late: BatchQueueEntry[str, torch.Tensor] = BatchQueueEntry(
+            queued_input="late", future=concurrent.futures.Future()
+        )
+        service.batch_queue.put(slow)
+        service.batch_queue.put(late)
+        assert hook.slow_entered.wait(timeout=5)
+        # The caller of "late" times out here, while "slow" is still encoding.
+        assert late.abandon()
+        hook.slow_gate.set()
+        assert tuple(slow.future.result(timeout=5).tolist()) == (4, ord("w"))
+    finally:
+        service.close()
+    assert hook.batch_sizes == [1]
 
 
 def test_a_failed_group_does_not_fail_the_other_groups() -> None:
@@ -720,48 +462,3 @@ def test_a_failed_group_does_not_fail_the_other_groups() -> None:
         assert hook.batch_sizes == [1]
     finally:
         service.close()
-
-
-def test_a_lone_request_after_close_fails_as_shutting_down() -> None:
-    """After close, a lone request gets the service's shutdown error."""
-    hook = SoloHook()
-    service = make_service(hook)
-    service.close()
-    with pytest.raises(RuntimeError, match="shutting down"):
-        service.get_or_encode("a")
-    assert service.encodes_in_flight == 0
-
-
-def test_a_request_after_close_fails_before_it_prepares() -> None:
-    """After close, a queued-path request fails before its prepare step."""
-    hook = PreparingHook()
-    service = make_service(hook)
-    service.close()
-    with pytest.raises(RuntimeError, match="shutting down"):
-        service.get_or_encode("a")
-    assert hook.prepared == []
-    assert service.encodes_in_flight == 0
-
-
-def test_a_close_during_prepare_keeps_the_request_out_of_the_queue() -> None:
-    """A close that lands while a request prepares still rejects it."""
-    hook = PreparingHook()
-    entered, release = threading.Event(), threading.Event()
-    prepare = hook.prepare_batch_input
-
-    def held_prepare(item: str) -> str:
-        entered.set()
-        assert release.wait(timeout=5)
-        return prepare(item)
-
-    hook.prepare_batch_input = held_prepare
-    service = make_service(hook, timeout_s=30.0)
-    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-        pending = pool.submit(service.get_or_encode, "a")
-        assert entered.wait(timeout=5)
-        service.close()
-        release.set()
-        with pytest.raises(RuntimeError, match="shutting down"):
-            pending.result(timeout=5)
-    assert hook.prepared == [("a", hook.prepared[0][1])]
-    assert service.encodes_in_flight == 0

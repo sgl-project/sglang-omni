@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Reference-audio conditioning through the shared content-addressed encoder cache."""
+"""Reference-audio encoders and the hook that caches their conditioning."""
 
 from __future__ import annotations
 
@@ -12,13 +12,6 @@ import torch
 
 from sglang_omni.models.firered_tts3.campp import CamppEmbedding
 from sglang_omni.models.firered_tts3.hf_config import FireRedTTS3Config
-from sglang_omni.models.firered_tts3.payload_types import (
-    LEFT_CONTEXT_METADATA_KEY,
-    MAX_EDIT_SECONDS,
-    PROMPT_CHUNK_METADATA_KEY,
-    load_firered_tts3_state,
-    store_firered_tts3_state,
-)
 from sglang_omni.models.firered_tts3.profiling import ProfilingProbe
 from sglang_omni.models.firered_tts3.redae_encoder import RedAEAudioEncoder
 from sglang_omni.models.firered_tts3.weights import load_campp, load_redae_encoder
@@ -26,12 +19,7 @@ from sglang_omni.preprocessing.cache_key import (
     hash_media_item,
     reference_path_cache_key,
 )
-from sglang_omni.proto.request import StagePayload
-from sglang_omni.scheduling.message import OutgoingMessage
-from sglang_omni.scheduling.reference_encoder import (
-    KeyedReferenceEncodeHook,
-    ReferenceEncodeService,
-)
+from sglang_omni.scheduling.reference_encoder import KeyedReferenceEncodeHook
 from sglang_omni.utils.audio import load_audio
 
 
@@ -45,8 +33,6 @@ class ReferenceAudioInput(NamedTuple):
 ReferenceConditioning = dict[str, torch.Tensor]
 
 logger = logging.getLogger(__name__)
-CACHE_MAX_ITEMS = 256
-CACHE_MAX_BYTES = 64 * 1024 * 1024
 WARMUP_AUDIO_SECONDS = 8.0
 # note (yucheng): Rows x longest clip per batched forward (8 clips of 12 s).
 MAX_BATCH_AUDIO_SECONDS = 96.0
@@ -268,10 +254,8 @@ class FireRedReferenceHook(
     def can_encode_batch(self) -> bool:
         return True
 
-    def can_encode_alone(self) -> bool:
-        return True
-
     def prepare_batch_input(self, item: ReferenceAudioInput) -> ReferenceAudioInput:
+        """Decode and pad in the caller's thread, before the item is queued."""
         normalized_audio = self.bundle.normalize(
             item.audio_path, item.max_audio_seconds
         )
@@ -306,113 +290,7 @@ class FireRedReferenceHook(
         return {name: tensor.clone() for name, tensor in stored.items()}
 
 
-class FireRedReferenceEncoder:
-    """Apply cached reference conditioning to pipeline payloads."""
-
-    def __init__(
-        self,
-        bundle: FireRedReferenceBundle,
-        *,
-        model_id: str,
-        max_batch_size: int,
-        max_batch_wait_ms: float,
-        cache_enabled: bool,
-    ) -> None:
-        self.bundle: FireRedReferenceBundle = bundle
-        self.service: ReferenceEncodeService[
-            ReferenceAudioInput,
-            ReferenceConditioning,
-            ReferenceConditioning,
-            ReferenceAudioInput,
-        ] = ReferenceEncodeService(
-            FireRedReferenceHook(
-                bundle, model_id=model_id, cache_enabled=cache_enabled
-            ),
-            max_items=CACHE_MAX_ITEMS,
-            max_bytes=CACHE_MAX_BYTES,
-            log_prefix="fireredtts3",
-            max_batch_size=max_batch_size,
-            max_batch_wait_ms=max_batch_wait_ms,
-            batch_worker_name="fireredtts3-ref-encode-batch",
-        )
-
-    def close(self) -> None:
-        self.service.close()
-
-    def encode_payload(self, payload: StagePayload) -> StagePayload:
-        state = load_firered_tts3_state(payload)
-        if state.prompt_audio_path is not None:
-            artifact = self.service.get_or_encode(
-                ReferenceAudioInput(
-                    audio_path=state.prompt_audio_path, max_audio_seconds=None
-                ),
-                desc=repr(state.prompt_audio_path),
-            )
-            state.prompt_latents = artifact["prompt_latents"]
-            state.speaker_embedding = artifact.get("speaker_embedding")
-            state.left_context_size = int(state.prompt_latents.shape[1])
-        else:
-            pass
-        if state.audio_in_path is not None:
-            artifact = self.service.get_or_encode(
-                ReferenceAudioInput(
-                    audio_path=state.audio_in_path, max_audio_seconds=MAX_EDIT_SECONDS
-                ),
-                desc=repr(state.audio_in_path),
-            )
-            state.audio_in_latents = artifact["prompt_latents"]
-        else:
-            pass
-        if state.reference_pad_token_id is not None:
-            reference_latents = (
-                state.prompt_latents
-                if state.task_type == "tts"
-                else state.audio_in_latents
-            )
-            assert reference_latents is not None
-            assert reference_latents.shape[1] % self.bundle.config.patch_size == 0
-            reference_patch_count = (
-                reference_latents.shape[1] // self.bundle.config.patch_size
-            )
-            reference_pad_position = state.input_ids.index(state.reference_pad_token_id)
-            state.input_ids[reference_pad_position : reference_pad_position + 1] = [
-                state.reference_pad_token_id
-            ] * reference_patch_count
-            state.reference_pad_token_id = None
-        else:
-            pass
-        return store_firered_tts3_state(payload, state)
-
-
-def prompt_stream_message(payload: StagePayload) -> OutgoingMessage | None:
-    """The prompt-latent chunk handed to the vocoder ahead of the talker."""
-    params = payload.request.params
-    if not isinstance(params, dict) or not params.get("stream"):
-        return None
-    else:
-        pass
-    state = load_firered_tts3_state(payload)
-    if state.prompt_latents is None or state.prompt_latents.numel() == 0:
-        return None
-    else:
-        pass
-    return OutgoingMessage(
-        request_id=payload.request_id,
-        type="stream",
-        target="vocoder",
-        data=state.prompt_latents,
-        metadata={
-            "modality": "audio_latents",
-            "stream": True,
-            PROMPT_CHUNK_METADATA_KEY: True,
-            LEFT_CONTEXT_METADATA_KEY: int(state.left_context_size),
-        },
-    )
-
-
 __all__ = [
     "FireRedReferenceBundle",
-    "FireRedReferenceEncoder",
     "FireRedReferenceHook",
-    "prompt_stream_message",
 ]

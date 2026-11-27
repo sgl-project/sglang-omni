@@ -15,9 +15,10 @@ from sglang_omni.models.firered_tts3.payload_types import FireRedTTS3State
 from sglang_omni.models.firered_tts3.preprocessing import (
     preprocess_firered_tts3_payload,
 )
-from sglang_omni.models.firered_tts3.ref_encode import (
-    FireRedReferenceBundle,
+from sglang_omni.models.firered_tts3.ref_encode import FireRedReferenceBundle
+from sglang_omni.models.firered_tts3.ref_service import (
     FireRedReferenceEncoder,
+    FireRedReferenceService,
 )
 from sglang_omni.proto.request import OmniRequest, StagePayload
 from sglang_omni.utils.json import JsonValue
@@ -41,6 +42,12 @@ class ReferenceLatentEncoder(torch.nn.Module):
             .unsqueeze(-1)
             .expand(-1, -1, self.latent_channels)
         )
+
+
+def without_solo_thread(service: FireRedReferenceService) -> FireRedReferenceService:
+    """Route every request through the batch queue."""
+    service.solo_executor = None
+    return service
 
 
 @contextmanager

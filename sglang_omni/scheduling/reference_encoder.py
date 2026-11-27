@@ -58,23 +58,12 @@ class ReferenceEncodeHook(Generic[InputT, ArtifactT, StoredT, RawInputT]):
     def can_encode_batch(self) -> bool:
         return False
 
-    def can_encode_alone(self) -> bool:
-        """Whether a lone request may run encode_one on the solo thread.
-
-        encode_one then gets an item that prepare_batch_input has not seen.
-        """
-        return False
-
-    def prepare_batch_input(self, item: InputT) -> InputT:
-        """Per-item work such as decoding, run in the caller before queueing."""
-        return item
-
     def batch_groups(self, items: list[InputT]) -> list[list[int]]:
         """Split a drained batch into groups that are encoded one by one."""
         return [list(range(len(items)))]
 
     def encode_batch(self, items: list[InputT]) -> Sequence[ArtifactT | Exception]:
-        """Encode prepared items; an Exception fails only its own slot."""
+        """Encode items; an Exception fails only its own slot."""
         return [self.encode_one(item) for item in items]
 
 
@@ -150,6 +139,22 @@ def fresh_exception(exc: BaseException) -> BaseException:
     return fresh
 
 
+@dataclass(kw_only=True, slots=True)
+class BatchQueueEntry(Generic[InputT, ArtifactT]):
+    """A queued request; a caller that gives up abandons it."""
+
+    queued_input: InputT | None
+    future: concurrent.futures.Future[ArtifactT]
+
+    def abandon(self) -> bool:
+        """Cancel if no group has claimed the request, then drop its input."""
+        if self.future.cancel():
+            self.queued_input = None
+            return True
+        else:
+            return False
+
+
 class ReferenceEncodeService(Generic[InputT, ArtifactT, StoredT, RawInputT]):
     LOG_INTERVAL_S = 60.0
 
@@ -194,34 +199,20 @@ class ReferenceEncodeService(Generic[InputT, ArtifactT, StoredT, RawInputT]):
         self.uncacheable = 0
         self.batches = 0
         self.batched_items = 0
-        self.solo_encodes = 0
         self.last_log_time = 0.0
         self.max_batch_size = int(max_batch_size)
         self.max_batch_wait_s = float(max_batch_wait_ms) / 1000.0
         self.batching = self.max_batch_size > 1 and bool(hook.can_encode_batch())
-        self.encodes_alone = bool(hook.can_encode_alone())
-        self.encodes_in_flight = 0
-        self.closing = False
         self.batch_queue: (
-            _queue_mod.Queue[tuple[InputT, concurrent.futures.Future[ArtifactT]] | None]
-            | None
+            _queue_mod.Queue[BatchQueueEntry[InputT, ArtifactT] | None] | None
         ) = None
         self.batch_thread: threading.Thread | None = None
-        self.solo_executor: concurrent.futures.ThreadPoolExecutor | None = None
-        self.solo_future: concurrent.futures.Future[ArtifactT] | None = None
         if self.batching:
             self.batch_queue = _queue_mod.Queue()
             self.batch_thread = threading.Thread(
                 target=self.batch_worker, name=batch_worker_name, daemon=True
             )
             self.batch_thread.start()
-            if self.encodes_alone:
-                # note (yucheng): Lone requests share one warm thread.
-                self.solo_executor = concurrent.futures.ThreadPoolExecutor(
-                    max_workers=1, thread_name_prefix=f"{batch_worker_name}-solo"
-                )
-            else:
-                pass
         else:
             pass
 
@@ -235,24 +226,12 @@ class ReferenceEncodeService(Generic[InputT, ArtifactT, StoredT, RawInputT]):
 
     def close(self) -> None:
         if self.batch_queue is not None:
-            # note (yucheng): Admission checks closing under this lock.
-            with self.lock:
-                self.closing = True
-                self.batch_queue.put(None)
+            self.batch_queue.put(None)
         else:
             pass
         thread = self.batch_thread
         if thread is not None and thread.is_alive():
             thread.join(timeout=5.0)
-        else:
-            pass
-        if self.solo_executor is not None:
-            self.solo_executor.shutdown(wait=False)
-            solo_future = self.solo_future
-            if solo_future is not None:
-                concurrent.futures.wait([solo_future], timeout=5.0)
-            else:
-                pass
         else:
             pass
         close = getattr(self._hook, "close", None)  # noqa: leading-underscore
@@ -266,63 +245,9 @@ class ReferenceEncodeService(Generic[InputT, ArtifactT, StoredT, RawInputT]):
             return self._hook.encode_one(item)  # noqa: leading-underscore
         else:
             pass
-        solo_future: concurrent.futures.Future[ArtifactT] | None = None
-        with self.lock:
-            if self.closing:
-                raise RuntimeError("reference encode service is shutting down")
-            else:
-                pass
-            # note (yucheng): Lone requests skip the linger unless solo is busy.
-            is_solo = (
-                self.encodes_alone
-                and self.encodes_in_flight == 0
-                and (self.solo_future is None or self.solo_future.done())
-            )
-            if is_solo:
-                assert self.solo_executor is not None
-                solo_future = self.solo_executor.submit(self.hook.encode_one, item)
-                self.solo_future = solo_future
-                self.solo_encodes += 1
-            else:
-                pass
-            # note (yucheng): After submit, so a raising submit leaks no count.
-            self.encodes_in_flight += 1
-        try:
-            if solo_future is not None:
-                # note (yucheng): A kept future's traceback can pin tensors.
-                solo_future.add_done_callback(self.release_solo_future)
-                try:
-                    return solo_future.result(timeout=self.timeout_s)
-                finally:
-                    if solo_future.done():
-                        self.release_solo_future(solo_future)
-                    else:
-                        pass
-            else:
-                pass
-            prepared_item = self.hook.prepare_batch_input(item)
-            future: concurrent.futures.Future[ArtifactT] = concurrent.futures.Future()
-            with self.lock:
-                if self.closing:
-                    raise RuntimeError("reference encode service is shutting down")
-                else:
-                    self.batch_queue.put((prepared_item, future))
-            try:
-                return future.result(timeout=self.timeout_s)
-            except concurrent.futures.TimeoutError:
-                # note (yucheng): The worker skips undrained cancelled entries.
-                future.cancel()
-                raise
-        finally:
-            with self.lock:
-                self.encodes_in_flight -= 1
-
-    def release_solo_future(self, future: concurrent.futures.Future[ArtifactT]) -> None:
-        with self.lock:
-            if self.solo_future is future:
-                self.solo_future = None
-            else:
-                pass
+        future: concurrent.futures.Future[ArtifactT] = concurrent.futures.Future()
+        self.batch_queue.put(BatchQueueEntry(queued_input=item, future=future))
+        return future.result(timeout=self.timeout_s)
 
     def drain_batch(
         self,
@@ -333,10 +258,8 @@ class ReferenceEncodeService(Generic[InputT, ArtifactT, StoredT, RawInputT]):
             entry = self.batch_queue.get()
             if entry is None:
                 return ([], True)
-            elif entry[1].set_running_or_notify_cancel():
-                first = entry
             else:
-                pass
+                first = self.live_request(entry)
         batch = [first]
         deadline = time.monotonic() + self.max_batch_wait_s
         while len(batch) < self.max_batch_size:
@@ -354,11 +277,23 @@ class ReferenceEncodeService(Generic[InputT, ArtifactT, StoredT, RawInputT]):
                     break
             if entry is None:
                 return (batch, True)
-            elif entry[1].set_running_or_notify_cancel():
-                batch.append(entry)
+            elif (request := self.live_request(entry)) is not None:
+                batch.append(request)
             else:
                 pass
         return (batch, False)
+
+    @staticmethod
+    def live_request(
+        entry: BatchQueueEntry[InputT, ArtifactT],
+    ) -> tuple[InputT, concurrent.futures.Future[ArtifactT]] | None:
+        """The entry's input and future, or None if its caller gave up."""
+        # note (yucheng): Read once; abandon() may clear it at any time.
+        queued_input = entry.queued_input
+        if queued_input is None or entry.future.cancelled():
+            return None
+        else:
+            return (queued_input, entry.future)
 
     def batch_worker(self) -> None:
         while True:
@@ -387,14 +322,24 @@ class ReferenceEncodeService(Generic[InputT, ArtifactT, StoredT, RawInputT]):
                     )
                     groups = [list(range(len(items)))]
                 for group in groups:
+                    # note (yucheng): Late claim lets timed-out callers cancel.
+                    claimed_indices = [
+                        index
+                        for index in group
+                        if batch[index][1].set_running_or_notify_cancel()
+                    ]
+                    if not claimed_indices:
+                        continue
+                    else:
+                        pass
                     try:
                         results: list[ArtifactT | BaseException] = self.encode_batch(
-                            [items[index] for index in group]
+                            [items[index] for index in claimed_indices]
                         )
                     except BaseException as exc:
                         logger.exception("reference encode batch worker: encode failed")
-                        results = [exc] * len(group)
-                    for index, outcome in zip(group, results):
+                        results = [exc] * len(claimed_indices)
+                    for index, outcome in zip(claimed_indices, results):
                         future = batch[index][1]
                         if isinstance(outcome, BaseException):
                             future.set_exception(fresh_exception(outcome))
@@ -403,7 +348,32 @@ class ReferenceEncodeService(Generic[InputT, ArtifactT, StoredT, RawInputT]):
             else:
                 pass
             if stopping:
+                self.drain_pending_on_shutdown()
                 return
+            else:
+                pass
+
+    def drain_pending_on_shutdown(self) -> None:
+        """Fail queued waiters instead of leaving them to time out."""
+        if self.batch_queue is None:
+            return
+        else:
+            pass
+        while True:
+            try:
+                entry = self.batch_queue.get_nowait()
+            except _queue_mod.Empty:
+                return
+            if entry is None:
+                continue
+            else:
+                pass
+            future = entry.future
+            # note (yucheng): Claim first, so a late cancel cannot raise.
+            if future.set_running_or_notify_cancel():
+                future.set_exception(
+                    RuntimeError("reference encode service is shutting down")
+                )
             else:
                 pass
 
@@ -518,7 +488,6 @@ class ReferenceEncodeService(Generic[InputT, ArtifactT, StoredT, RawInputT]):
                 "uncacheable": self.uncacheable,
                 "batches": self.batches,
                 "batched_items": self.batched_items,
-                "solo_encodes": self.solo_encodes,
             }
 
     @staticmethod
@@ -549,17 +518,5 @@ class ReferenceEncodeService(Generic[InputT, ArtifactT, StoredT, RawInputT]):
             else:
                 pass
             self.last_log_time = now
-            stats = {
-                "hits": self.hits,
-                "misses": self.misses,
-                "merged": self.merged,
-                "entries": len(self.cache),
-                "bytes": self.cache.current_bytes,
-                "evictions": self.cache.eviction_count,
-                "failed": self.failed,
-                "uncacheable": self.uncacheable,
-                "batches": self.batches,
-                "batched_items": self.batched_items,
-                "solo_encodes": self.solo_encodes,
-            }
-        logger.info("%s reference encode stats: %s", self.log_prefix, stats)
+        # note (yucheng): stats() takes the lock, so call it after release.
+        logger.info("%s reference encode stats: %s", self.log_prefix, self.stats())
