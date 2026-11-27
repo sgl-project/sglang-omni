@@ -14,6 +14,7 @@ from sglang_omni.client.types import (
     GenerateRequest,
     UMMGenerateChunk,
     UMMSegment,
+    UsageInfo,
 )
 from sglang_omni.native_generation.stage import data_url
 from sglang_omni.pipeline.umm import UMMRequestError
@@ -56,16 +57,17 @@ def final_result(streamed: bool) -> dict[str, object]:
 
 
 class Coordinator:
-    def __init__(self):
+    def __init__(self, reported=None):
         self.closed = False
         self.submitted = []
+        self.reported = reported or {}
 
     def health(self):
         return {"running": True}
 
     async def submit(self, request_id, request):
         self.submitted.append(request_id)
-        return final_result(streamed=False)
+        return {**final_result(streamed=False), **self.reported}
 
     async def stream(self, request_id, request):
         self.submitted.append(request_id)
@@ -79,7 +81,10 @@ class Coordinator:
                     chunk_id=segment.segment_index,
                 )
             yield CompleteMessage(
-                request_id, "output", True, result=final_result(streamed=True)
+                request_id,
+                "output",
+                True,
+                result={**final_result(streamed=True), **self.reported},
             )
         finally:
             self.closed = True
@@ -248,11 +253,15 @@ def test_interleaved_generate_refuses_requested_rollout_artifacts():
 @pytest.mark.parametrize("stream", [False, True])
 @pytest.mark.asyncio
 async def test_completion_keeps_ordered_segments_with_their_data(stream):
-    result = await Client(Coordinator()).completion(
+    usage = {"prompt_tokens": 3, "completion_tokens": 4, "total_tokens": 7}
+    coordinator = Coordinator({"finish_reason": "length", "usage": usage})
+    result = await Client(coordinator).completion(
         GenerateRequest(prompt="hello", stream=stream), request_id="r"
     )
     assert result.segments == SEGMENTS
     assert result.text == "Drawing.Finished."
+    assert result.finish_reason == "length"
+    assert result.usage == UsageInfo(**usage)
 
 
 class TextCoordinator(Coordinator):
