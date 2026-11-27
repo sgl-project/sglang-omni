@@ -83,6 +83,9 @@ func meetingOverlayView(
 		if model.AskingCard {
 			face.Padding(0, meetingOvAskPadX-layout.Border)
 		}
+		if model.ShowFinishing {
+			face.Justify(ui.Center)
+		}
 		face.DragWindow().Children(func() {
 			switch {
 			case model.ShowAsking:
@@ -460,8 +463,10 @@ func meetingAskingButton(c *ui.Context, label string, height float32, primary bo
 
 func meetingOverlayFinishing(c *ui.Context, message string, look pillLook) {
 	ui.Row(c).Height(layout.RowH).Shrink(0).Gap(8).AlignItems(ui.Center).Justify(ui.Center).Children(func() {
-		overlayLoader(c, message, look, 0)
+		overlayLoader(c, message, look, layout.LoaderDotsW)
 		ui.Text(c, message).FontSize(layout.NoticeSize).TextColor(ovText).SingleLine().Ellipsis("…").MinWidth(0).Shrink(1)
+		// Balance the loader so the message itself stays in the face's centre.
+		ui.Box(c).Width(layout.LoaderDotsW).Shrink(0)
 	})
 }
 
