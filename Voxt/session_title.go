@@ -96,6 +96,7 @@ func (a *app) renameSession(id int) {
 	if a.slotIndex(id) < 0 {
 		return
 	}
+	a.answer.ui.sessionName = ""
 	a.renaming, a.renameID = true, id
 	a.syncHotkeys()
 	a.overlaySync()

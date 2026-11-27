@@ -2,6 +2,16 @@
 
 All notable changes to Voxt. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [Semantic Versioning](https://semver.org/). Each version's section is its release notes: English first, then the same in Chinese under `### 中文`, with `####` headings below it (docs/release.md §2.1).
 
+## [Unreleased]
+
+### Fixed
+- **Session rename always starts empty** (#4005): opening Rename session again no longer brings back the last submitted or cancelled input, so an empty Return can restore the automatic title.
+
+### 中文
+
+#### 修复
+- **每次重命名会话都从空输入框开始**（#4005）：再次打开「重命名会话」时，不再残留上次提交或取消的输入，直接按回车即可恢复自动标题。
+
 ## [2.1.4] - 2026-11-26
 
 ### Added
