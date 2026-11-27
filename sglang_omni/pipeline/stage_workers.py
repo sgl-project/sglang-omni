@@ -265,12 +265,7 @@ def spawn_affinity(spec: StageWorkerProcessSpec) -> Generator[None, None, None]:
     planned_cpus = spec.cpu_affinity
     on_cpu = current_platform.is_cpu()
     if on_cpu:
-        planned_cpus = (
-            current_platform.get_process_cpu_mask(
-                os.environ, stage_gpu_ids(spec.stage_specs)
-            )
-            or planned_cpus
-        )
+        planned_cpus = current_platform.get_process_cpu_mask(os.environ) or planned_cpus
     else:
         pass
     if not planned_cpus:
@@ -343,13 +338,14 @@ def patched_spawn_env(
     )
     bound_cpus = (
         current_platform.get_process_cpu_mask(
-            {**os.environ, **env_default_updates, **worker_process_env},
-            stage_gpu_ids(spec.stage_specs),
+            {**os.environ, **env_default_updates, **worker_process_env}
         )
         if current_platform.is_cpu()
         else None
     )
     caps = [len(cpus) for cpus in (spec.cpu_affinity, bound_cpus) if cpus]
+    if current_platform.is_cpu() and spec.cpu_threads is not None:
+        caps.append(spec.cpu_threads)
     thread_cap = min(caps) if caps else None
     planned_threads = env_default_updates.get("OMP_NUM_THREADS", "")
     if (
@@ -772,7 +768,7 @@ def stage_process_main(
 
     try:
         if current_platform.is_cpu():
-            current_platform.prepare_worker_process(stage_gpu_ids(spec.stage_specs))
+            current_platform.prepare_worker_process()
         else:
             pass
         for stage_spec in spec.stage_specs:

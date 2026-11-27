@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import os
-from collections.abc import Iterable, Mapping
+from collections.abc import Mapping
 from contextlib import AbstractContextManager, nullcontext
 from typing import TYPE_CHECKING, Protocol
 
@@ -197,9 +197,7 @@ class OmniPlatform(DeviceMixin):
     ) -> None:
         """Forget placements of earlier pipelines and reserve what this pipeline's workers already pin, before any worker starts."""
 
-    def get_process_cpu_mask(
-        self, env: Mapping[str, str], gpu_ids: Iterable[int | None] = ()
-    ) -> set[int] | None:
+    def get_process_cpu_mask(self, env: Mapping[str, str]) -> set[int] | None:
         """CPUs the worker's start env binds it to, which also bound its OMP thread count, or None for no binding."""
         return None
 
@@ -207,7 +205,7 @@ class OmniPlatform(DeviceMixin):
         """Threads one worker process can use, replacing the host-wide equal share, or None to keep the share."""
         return None
 
-    def prepare_worker_process(self, gpu_ids: Iterable[int | None] = ()) -> None:
+    def prepare_worker_process(self) -> None:
         """Run once in a freshly spawned stage worker, before model construction."""
 
     def get_intra_node_transport(self) -> TransportKind:

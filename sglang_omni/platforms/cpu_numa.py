@@ -10,11 +10,13 @@ import logging
 import os
 import threading
 from collections import Counter
-from collections.abc import Iterable, Mapping
+from collections.abc import Mapping
 
 import sglang.srt.distributed.bootstrap as sglang_bootstrap
+import torch
 from sglang.srt.utils import get_cpu_ids_by_node
 
+from sglang_omni.config.schema import parse_replica_instance_name
 from sglang_omni.utils.cpu import LAUNCHER_CPUS_ENV, parse_cpu_list
 
 try:
@@ -110,7 +112,8 @@ def assign_node(
     by_load = sorted(free_nodes, key=lambda n: (node_usage[n], n))
     requested: dict[str, int] = {}
     for name in stage_names:
-        nodes = user_map.get(name)
+        # A replica instance such as talker@r0 takes its own entry, else its logical stage's.
+        nodes = user_map.get(name) or user_map.get(parse_replica_instance_name(name)[0])
         if nodes is None:
             continue
         if len(nodes) not in (1, tp_size):
@@ -161,11 +164,9 @@ def assign_node(
     return node
 
 
-def claim_explicit_nodes(
-    process_name: str, env: Mapping[str, str], gpu_ids: Iterable[int | None]
-) -> None:
+def claim_explicit_nodes(process_name: str, env: Mapping[str, str]) -> None:
     """Count the nodes a user-set bind list covers, so auto placement does not stack other workers on them."""
-    claimed = bound_cpus(env, gpu_ids)
+    claimed = bound_cpus(env)
     if not claimed:
         return
     topology = read_numa_nodes("explicit binds are not counted")
@@ -184,19 +185,18 @@ def threads_bind_env(
     stage_names: list[str],
     tp_size: int = 1,
     tp_rank: int = 0,
-    gpu_ids: Iterable[int | None] = (),
     env: Mapping[str, str] | None = None,
 ) -> dict[str, str]:
     """Return the SGLANG_CPU_OMP_THREADS_BIND override for one process.
 
-    SGLang indexes the bind list by gpu_id, so the list repeats the node once per index up to the largest gpu_id. Each tp rank is its own process and gets its own node, since every rank carries gpu_id 0 on CPU.
+    CPU engines always hand SGLang gpu_id 0, so a single entry is enough. Each tp rank is its own process and gets its own node.
     """
     source_env = env if env is not None else os.environ
     topology = read_numa_nodes(f"leaving {THREADS_BIND_ENV} unset")
     if not topology:
         return {}
     if source_env.get(THREADS_BIND_ENV):
-        claim_explicit_nodes(process_name, source_env, gpu_ids)
+        claim_explicit_nodes(process_name, source_env)
         return {}
 
     user_map = parse_numa_map(source_env.get(NUMA_MAP_ENV))
@@ -218,37 +218,24 @@ def threads_bind_env(
         node,
         len(topology),
     )
-    entry_count = (
-        max((gpu_id for gpu_id in gpu_ids if gpu_id is not None), default=0) + 1
-    )
-    return {THREADS_BIND_ENV: "|".join([topology[node]] * entry_count)}
+    return {THREADS_BIND_ENV: topology[node]}
 
 
-def bound_cpus(
-    env: Mapping[str, str], gpu_ids: Iterable[int | None] = ()
-) -> set[int] | None:
-    """CPUs SGLang binds a worker to: the bind entries its gpu ids select, or the first entry without gpu ids."""
+def bound_cpus(env: Mapping[str, str]) -> set[int] | None:
+    """CPUs SGLang binds a worker to, its first bind entry, since CPU engines always run with gpu_id 0."""
     raw = env.get(THREADS_BIND_ENV, "").strip()
     if not raw or raw == "all":
         return None
-    entries = raw.split("|")
-    indices = {gpu_id or 0 for gpu_id in gpu_ids} or {0}
     try:
-        cpus = set().union(
-            *(
-                parse_cpu_list(entries[index])
-                for index in indices
-                if index < len(entries)
-            )
-        )
+        cpus = parse_cpu_list(raw.split("|")[0])
     except ValueError:
         return None
     return cpus or None
 
 
-def apply_bound_affinity(gpu_ids: Iterable[int | None] = ()) -> None:
+def apply_bound_affinity() -> None:
     """Move the worker onto its bound CPUs before anything creates threads, for workers that never start SGLang's own pinning."""
-    cpus = bound_cpus(os.environ, gpu_ids)
+    cpus = bound_cpus(os.environ)
     # Pop even without a bind so the variable never leaks to child processes.
     launcher_cpus = os.environ.pop(LAUNCHER_CPUS_ENV, "")
     if cpus is None:
@@ -288,9 +275,9 @@ def node_core_count() -> int | None:
 
 
 def install_binding_hook() -> bool:
-    """Widen the main thread's mask right after SGLang pins it to one core.
+    """Keep SGLang's thread binding inside the worker's CPUs and thread budget.
 
-    init_cpu_threads_env pins the main thread to a single core, and every thread created afterwards inherits that mask. OMP workers keep their own per-core affinity, so widening the main thread to the bound range does not disturb them.
+    The bind list is cut to the allowed CPUs, and to OMP_NUM_THREADS of them, before SGLang pins OMP threads to it and sets the thread count to its length. init_cpu_threads_env also pins the main thread to a single core, and every thread created afterwards inherits that mask, so the main thread is widened back to the bound range. OMP workers keep their own per-core affinity, so that does not disturb them.
     """
     original = getattr(sglang_bootstrap, "_init_cpu_threads_env", None)
     if original is None:
@@ -304,17 +291,38 @@ def install_binding_hook() -> bool:
     def widen_after_binding(
         *, local_omp_cpuid: str | list[int] | None, **kwargs
     ) -> None:
-        allowed_cpus = os.sched_getaffinity(0)
-        original(local_omp_cpuid=local_omp_cpuid, **kwargs)
         if not local_omp_cpuid:
+            original(local_omp_cpuid=local_omp_cpuid, **kwargs)
             return
+        allowed_cpus = os.sched_getaffinity(0)
         cpus = (
             parse_cpu_list(local_omp_cpuid)
             if isinstance(local_omp_cpuid, str)
             else set(local_omp_cpuid)
         ) & allowed_cpus
         if not cpus:
-            return
+            raise RuntimeError(
+                f"The bound CPUs {local_omp_cpuid} are outside the CPUs this worker may use ({sorted(allowed_cpus)})."
+            )
+        # SGLang sets the OMP and torch thread count to the length of the list it pins, so hand it only as many CPUs as the thread budget.
+        threads = os.environ.get("OMP_NUM_THREADS", "")
+        pinned = (
+            sorted(cpus)[: max(1, int(threads))] if threads.isdigit() else sorted(cpus)
+        )
+        original(
+            local_omp_cpuid=(
+                ",".join(map(str, pinned))
+                if isinstance(local_omp_cpuid, str)
+                else pinned
+            ),
+            **kwargs,
+        )
+        if torch.get_num_threads() != len(pinned):
+            logger.warning(
+                "SGLang left %d compute threads for %d pinned CPUs.",
+                torch.get_num_threads(),
+                len(pinned),
+            )
         try:
             os.sched_setaffinity(0, cpus)
         except OSError as exc:

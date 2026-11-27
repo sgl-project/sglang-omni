@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import os
-from collections.abc import Iterable, Mapping
+from collections.abc import Mapping
 from typing import TYPE_CHECKING
 
 from sglang.srt.arg_groups.model_override_base import (
@@ -48,8 +48,8 @@ class CPUOmniPlatform(CpuDeviceMixin, OmniPlatform):
             pass
         return effective_quantization
 
-    def prepare_worker_process(self, gpu_ids: Iterable[int | None] = ()) -> None:
-        cpu_numa.apply_bound_affinity(gpu_ids)
+    def prepare_worker_process(self) -> None:
+        cpu_numa.apply_bound_affinity()
         cpu_numa.install_binding_hook()
 
     def plan_process_placement(
@@ -63,11 +63,7 @@ class CPUOmniPlatform(CpuDeviceMixin, OmniPlatform):
                 env.update(stage_spec.env_defaults)
             env = {**env, **os.environ}
             spec_envs.append((spec, env))
-            cpu_numa.claim_explicit_nodes(
-                spec.process_name,
-                env,
-                [stage_spec.gpu_id for stage_spec in spec.stage_specs],
-            )
+            cpu_numa.claim_explicit_nodes(spec.process_name, env)
         # Tensor-parallel groups need several nodes at once, so they pick before single-process stages take the free ones, whatever the start order.
         for spec, env in spec_envs:
             if any(stage_spec.tp_size > 1 for stage_spec in spec.stage_specs):
@@ -78,10 +74,8 @@ class CPUOmniPlatform(CpuDeviceMixin, OmniPlatform):
     def get_process_thread_budget(self) -> int | None:
         return cpu_numa.node_core_count()
 
-    def get_process_cpu_mask(
-        self, env: Mapping[str, str], gpu_ids: Iterable[int | None] = ()
-    ) -> set[int] | None:
-        return cpu_numa.bound_cpus(env, gpu_ids)
+    def get_process_cpu_mask(self, env: Mapping[str, str]) -> set[int] | None:
+        return cpu_numa.bound_cpus(env)
 
     def get_process_placement_env(
         self,
@@ -96,6 +90,5 @@ class CPUOmniPlatform(CpuDeviceMixin, OmniPlatform):
             stage_names=[spec.stage_name for spec in stage_specs],
             tp_size=max(spec.tp_size for spec in stage_specs),
             tp_rank=stage_specs[0].tp_rank,
-            gpu_ids=[spec.gpu_id for spec in stage_specs],
             env=env,
         )

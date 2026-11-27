@@ -381,6 +381,12 @@ def test_cpu_plan_fallback_is_capped_to_the_bound_node(monkeypatch) -> None:
     assert _spawned_omp_threads(monkeypatch, spec) == "10"
 
 
+def test_derived_omp_default_is_capped_to_the_quota_share(monkeypatch) -> None:
+    spec = _spawn_spec({"OMP_NUM_THREADS": "28"}, cpu_threads=4)
+
+    assert _spawned_omp_threads(monkeypatch, spec) == "4"
+
+
 def test_node_cap_never_raises_an_affinity_capped_default(monkeypatch) -> None:
     spec = _spawn_spec({"OMP_NUM_THREADS": "192"})
     spec.cpu_affinity = frozenset(range(4))
@@ -455,12 +461,11 @@ def test_a_worker_without_sglang_is_still_moved_onto_its_node(monkeypatch) -> No
     )
     monkeypatch.setattr(cpu_numa, "get_cpu_ids_by_node", lambda: [])
     monkeypatch.delenv(cpu_numa.LAUNCHER_CPUS_ENV, raising=False)
-    monkeypatch.setenv(_BIND, "4-6|10-12")
+    monkeypatch.setenv(_BIND, "4-6")
 
     cpu_numa.apply_bound_affinity()
-    cpu_numa.apply_bound_affinity([1])
 
-    assert applied == [{4, 5, 6}, {10, 11, 12}]
+    assert applied == [{4, 5, 6}]
 
 
 def test_affinity_is_left_alone_when_the_topology_cannot_be_cached(
@@ -485,12 +490,9 @@ def test_affinity_is_left_alone_when_the_topology_cannot_be_cached(
     assert applied == []
 
 
-def test_a_workers_gpu_id_selects_its_bind_entry() -> None:
-    env = {_BIND: "0-3|4-35"}
-
-    assert len(cpu_numa.bound_cpus(env, [1])) == 32
-    assert len(cpu_numa.bound_cpus(env, [0, 1])) == 36
-    assert cpu_numa.bound_cpus(env, [5]) is None
+def test_cpu_workers_use_the_first_bind_entry() -> None:
+    """CPU engines always hand SGLang gpu_id 0, whatever the stage's configured id."""
+    assert cpu_numa.bound_cpus({_BIND: "0-3|4-35"}) == {0, 1, 2, 3}
 
 
 def test_the_child_caches_the_topology_under_the_launchers_mask(monkeypatch) -> None:
@@ -564,14 +566,15 @@ def test_bound_affinity_never_leaves_the_launchers_allocation(monkeypatch) -> No
     assert applied[-1] == {6, 7}
 
 
-def test_bind_list_covers_every_gpu_id_so_sglang_can_index_it(nodes) -> None:
-    """SGLang indexes the list by gpu_id; a one-entry list fails its assertion."""
+def test_replica_instances_use_the_logical_stage_map_entry(nodes) -> None:
     platform = CPUOmniPlatform()
-    stage = SimpleNamespace(stage_name="s", tp_size=1, tp_rank=0, gpu_id=2)
+    env = {_MAP: "talker=2,talker@r1=3"}
 
-    mask = platform.get_process_placement_env("p", [stage], env={})[_BIND]
+    replicas = [
+        _bind(platform, f"talker@r{i}", [f"talker@r{i}"], env)[_BIND] for i in range(2)
+    ]
 
-    assert mask.split("|") == [nodes[0]] * 3
+    assert replicas == [nodes[2], nodes[3]]
 
 
 def test_binding_hook_widens_the_mask_to_the_bound_range(monkeypatch) -> None:
@@ -600,6 +603,58 @@ def test_binding_hook_widens_the_mask_to_the_bound_range(monkeypatch) -> None:
 
     assert calls == ["pinned"]
     assert applied == [{0, 1, 2, 3}]
+
+
+def _install_hook(monkeypatch, pinned: list) -> None:
+    monkeypatch.setattr(
+        cpu_numa.sglang_bootstrap,
+        "_init_cpu_threads_env",
+        lambda **kwargs: pinned.append(kwargs["local_omp_cpuid"]),
+    )
+    monkeypatch.setattr(
+        cpu_numa.sglang_bootstrap, cpu_numa.WIDEN_HOOK_MARKER, False, raising=False
+    )
+    cpu_numa.install_binding_hook()
+
+
+def test_binding_hook_pins_only_the_thread_budget(monkeypatch) -> None:
+    import os
+
+    pinned: list = []
+    applied: list[set[int]] = []
+    monkeypatch.setattr(os, "sched_getaffinity", lambda _pid: set(range(40)))
+    monkeypatch.setattr(
+        os, "sched_setaffinity", lambda _pid, cpus: applied.append(cpus)
+    )
+    monkeypatch.setenv("OMP_NUM_THREADS", "4")
+    _install_hook(monkeypatch, pinned)
+
+    cpu_numa.sglang_bootstrap._init_cpu_threads_env(local_omp_cpuid="0-31")
+    cpu_numa.sglang_bootstrap._init_cpu_threads_env(local_omp_cpuid=list(range(8)))
+    monkeypatch.setenv("OMP_NUM_THREADS", "0")
+    cpu_numa.sglang_bootstrap._init_cpu_threads_env(local_omp_cpuid="0-3")
+
+    assert pinned == ["0,1,2,3", [0, 1, 2, 3], "0"]
+    assert applied == [set(range(32)), set(range(8)), set(range(4))]
+
+
+def test_binding_hook_never_pins_outside_the_allowed_cpus(monkeypatch) -> None:
+    import os
+
+    pinned: list = []
+    applied: list[set[int]] = []
+    monkeypatch.setattr(os, "sched_getaffinity", lambda _pid: {0, 1})
+    monkeypatch.setattr(
+        os, "sched_setaffinity", lambda _pid, cpus: applied.append(cpus)
+    )
+    monkeypatch.delenv("OMP_NUM_THREADS", raising=False)
+    _install_hook(monkeypatch, pinned)
+
+    cpu_numa.sglang_bootstrap._init_cpu_threads_env(local_omp_cpuid="0-3")
+    assert pinned == ["0,1"]
+
+    with pytest.raises(RuntimeError, match="outside the CPUs"):
+        cpu_numa.sglang_bootstrap._init_cpu_threads_env(local_omp_cpuid="8-9")
 
 
 def test_non_cpu_platforms_never_reach_the_cpu_hooks(monkeypatch) -> None:
