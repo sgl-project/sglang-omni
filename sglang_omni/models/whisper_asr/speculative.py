@@ -569,7 +569,7 @@ class WhisperSpeculativeWorker(BaseSpecWorker):
                 )
                 + 1
             ]
-            # note (Tz22z): the request builder reads the no-timestamps id from the same generation config and starts the timestamps right after it, so the graphs draft under the rules that verify applies.
+            # note (Tz22z): the request builder reads the no-timestamps id from the same generation config and starts the timestamps right after it.
             target_runner = self.target_worker.model_runner
             no_timestamps_token_id = int(
                 target_runner.model_config.hf_generation_config.no_timestamps_token_id
@@ -578,6 +578,7 @@ class WhisperSpeculativeWorker(BaseSpecWorker):
                 "segment_timestamps": True,
                 "timestamp_begin_id": no_timestamps_token_id + 1,
                 "no_timestamps_token_id": no_timestamps_token_id,
+                # note (Tz22z): the request builder takes eos from the tokenizer, which this worker does not hold. Verify applies the request's own rules, so a different eos here would only cost acceptance.
                 "eos_token_id": int(target_runner.model.config.eos_token_id),
                 "max_initial_timestamp_index": None,
             }
