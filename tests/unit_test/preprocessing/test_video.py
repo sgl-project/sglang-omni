@@ -14,6 +14,8 @@ import numpy as np
 import pytest
 import torch
 
+from sglang_omni.models.minicpm_o.prompt_frontend import render_ordered_chat
+from sglang_omni.models.minicpm_o.video_frontend import MAX_VIDEO_FRAMES
 from sglang_omni.preprocessing import audio, image, video
 from sglang_omni.preprocessing.resource_connector import MultiModalResourceConnector
 from sglang_omni.serve.openai_errors import is_bad_request_error
@@ -388,6 +390,65 @@ def mpeg4_video(tmp_path: Path) -> Path:
         for packet in stream.encode():
             container.mux(packet)
     return path
+
+
+@pytest.mark.parametrize(
+    "over_budget",
+    [
+        # A minimum frame size that pushes the clip past the total budget.
+        lambda path: video.load_video_path(
+            path, fps=2, min_pixels=200704, total_pixels=200704
+        ),
+        lambda path: video.check_caller_video_budget(
+            max_frames=None,
+            min_pixels=video.qwen_vision.VIDEO_MAX_PIXELS + 1,
+            total_pixels=None,
+        ),
+        lambda path: video.check_caller_video_budget(
+            max_frames=video.qwen_vision.FPS_MAX_FRAMES + 2,
+            min_pixels=None,
+            total_pixels=None,
+        ),
+        lambda path: video.check_caller_video_budget(
+            max_frames=None,
+            min_pixels=None,
+            total_pixels=video.qwen_vision.VIDEO_TOTAL_PIXELS + 1,
+        ),
+        lambda path: video.check_caller_video_budget(
+            max_frames=None,
+            min_pixels=None,
+            total_pixels=None,
+            max_pixels=602112,
+            server_max_pixels=200704,
+        ),
+        # MiniCPM-o's inline loader caps a clip at its own frame count.
+        lambda path: asyncio.run(
+            render_ordered_chat(
+                [
+                    {
+                        "role": "user",
+                        "content": [{"type": "video_url", "video_url": str(path)}],
+                    }
+                ],
+                video_max_frames=MAX_VIDEO_FRAMES + 1,
+            )
+        ),
+    ],
+    ids=[
+        "min_pixels_past_total",
+        "caller_min_pixels",
+        "caller_max_frames",
+        "caller_total_pixels",
+        "caller_max_pixels_over_server_setting",
+        "minicpmo_inline_max_frames",
+    ],
+)
+def test_video_requests_over_the_server_budget_are_rejected(
+    mpeg4_video: Path, over_budget
+) -> None:
+    with pytest.raises(video.VideoBudgetError) as excinfo:
+        over_budget(mpeg4_video)
+    assert is_bad_request_error(excinfo.value)
 
 
 @pytest.mark.parametrize("tensor_index", [0, 1, 2])
