@@ -1,6 +1,7 @@
 package compose
 
 import (
+	"encoding/json"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -80,10 +81,13 @@ func structuralControlSuffix(s string) bool {
 			continue
 		}
 		after := s[index+len(token):]
+		if trailingControlToken(token) && strings.TrimSpace(after) == "" {
+			continue
+		}
 		if !structuralControlToken(token, after) {
 			continue
 		}
-		if !strings.HasPrefix(token, "<|tool") || bracketedToolPayload(after) {
+		if !strings.HasPrefix(token, "<|tool") || toolPayload(after) {
 			return true
 		}
 		if fields := strings.Fields(after); len(fields) > 0 && strings.Contains(fields[0], "_") {
@@ -123,14 +127,11 @@ func proseTokenMention(s string, start int, token string, inputs ...string) bool
 		return false
 	}
 	if structuralControlToken(token, rest) {
-		if !strings.HasPrefix(token, "<|tool") {
+		if !strings.HasPrefix(token, "<|tool") || toolPayload(rest) {
 			return false
 		}
-		if bracketedToolPayload(rest) {
-			return false
-		}
-		if fields := strings.Fields(rest); len(fields) > 0 && strings.Contains(fields[0], "_") {
-			return false
+		if literalToolMarker(s, start, token, input, previous, false) {
+			return true
 		}
 	}
 	if !trailingControlToken(token) || turnEndLeak(rest) {
@@ -155,17 +156,93 @@ func turnEndLeak(after string) bool {
 	return unicode.IsUpper(first) || unicode.Is(unicode.Han, first)
 }
 
-func bracketedToolPayload(rest string) bool {
-	index := strings.IndexAny(rest, "{[")
-	if index < 0 {
+func toolPayload(rest string) bool {
+	for searchFrom := 0; searchFrom < len(rest); {
+		index := strings.IndexAny(rest[searchFrom:], "{[")
+		if index < 0 {
+			return false
+		}
+		index += searchFrom
+		if rest[index] == '{' {
+			after := strings.TrimLeft(rest[index+1:], " \t\r\n")
+			if strings.HasPrefix(after, "}") || strings.HasPrefix(after, "\"") || strings.HasPrefix(after, "'") {
+				return true
+			}
+			searchFrom = index + 1
+			continue
+		}
+		end, depth := -1, 0
+		for i := index; i < len(rest) && end < 0; i++ {
+			switch rest[i] {
+			case '[':
+				depth++
+			case ']':
+				depth--
+				if depth == 0 {
+					end = i
+				}
+			}
+		}
+		if end < 0 {
+			before := strings.TrimSpace(rest[:index])
+			if before == "" {
+				return true
+			}
+			last, _ := utf8.DecodeLastRuneInString(before)
+			if !strings.ContainsRune(".!?。！？", last) {
+				return true
+			}
+			searchFrom = index + 1
+			continue
+		}
+		candidate := rest[index : end+1]
+		if json.Valid([]byte(candidate)) || strings.ContainsAny(candidate, "\"{") {
+			return true
+		}
+		for index := 1; index < len(candidate)-1; index++ {
+			if candidate[index] != '\'' {
+				continue
+			}
+			before := strings.TrimSpace(candidate[:index])
+			if strings.HasSuffix(before, "[") || strings.HasSuffix(before, ",") {
+				return true
+			}
+		}
+		searchFrom = end + 1
+	}
+	return false
+}
+
+func controlMarkerCue(field string) bool {
+	field = strings.ToLower(strings.TrimFunc(field, func(r rune) bool {
+		return unicode.IsPunct(r) || unicode.IsSpace(r) || r == '`'
+	}))
+	switch field {
+	case "token", "tokens", "tag", "tags", "marker", "markers":
+		return true
+	default:
+		return strings.Contains(field, "标记") || strings.Contains(field, "标签")
+	}
+}
+
+func literalToolMarker(s string, start int, token, input string, previous []string, allowAnswerStart bool) bool {
+	if !preservedControlToken(token, input) && !previousControlToken(token, previous) {
 		return false
 	}
-	before := strings.TrimSpace(rest[:index])
-	if before == "" {
-		return true
+	rest := s[start+len(token):]
+	fields := strings.Fields(rest)
+	if len(fields) > 0 && strings.Contains(fields[0], "_") {
+		return false
 	}
-	last, _ := utf8.DecodeLastRuneInString(before)
-	return !strings.ContainsRune(".!?。！？", last)
+	beforeFields := strings.Fields(s[:start])
+	afterCue := len(fields) > 0 && controlMarkerCue(fields[0])
+	beforeCue := len(beforeFields) > 0 && controlMarkerCue(beforeFields[len(beforeFields)-1])
+	before, _ := utf8.DecodeLastRuneInString(s[:start])
+	after, _ := utf8.DecodeRuneInString(rest)
+	beforeProse := start > 0 && (unicode.Is(unicode.Han, before) || unicode.IsSpace(before) || unicode.IsPunct(before))
+	afterProse := unicode.Is(unicode.Han, after) || unicode.IsSpace(after) || unicode.IsPunct(after)
+	// Keep the explicit prose scope: plain arguments must remain tool payloads.
+	return (beforeCue || afterCue) && (beforeProse || allowAnswerStart && start == 0) && afterProse
 }
 
 func exactThinkingPair(pair string, input string, previous []string) bool {

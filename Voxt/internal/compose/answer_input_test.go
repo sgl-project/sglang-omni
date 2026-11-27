@@ -57,7 +57,8 @@ func TestAnswerCleanupWithPreviousInput(t *testing.T) {
 		{name: "literal opener before real block", text: "The <think> tag <think>private</think>", previous: "<think>", want: "The"},
 		{name: "two inline literals", text: "Use <|im_end|> <think> tag", previous: "explain <|im_end|> and <think>", want: "Use"},
 		{name: "literal channel opener", text: "The <|channel> tag wraps reasoning.", previous: "explain <|channel>", want: "The"},
-		{name: "literal tool call opener", text: "The <|tool_call|> tag starts a call.", previous: "explain <|tool_call|>", want: "The"},
+		{name: "literal tool call opener", text: "The <|tool_call|> tag starts a call.", previous: "explain <|tool_call|>", want: "The <|tool_call|> tag starts a call."},
+		{name: "literal tool call opener at answer start", text: "<|tool_call|> token usage.", previous: "explain <|tool_call|>", want: "<|tool_call|> token usage."},
 		{name: "literal thinking opener at answer start", text: "<think> tag wraps reasoning.", previous: "explain <think>", want: ""},
 		{name: "literal thinking opener after a newline", text: "Markers:\n<think> tag opens reasoning.", previous: "explain <think>", want: "Markers:"},
 		{name: "literal thinking closer at answer start", text: "</think> tag ends reasoning.", previous: "explain </think>", want: "</think> tag ends reasoning."},
@@ -72,6 +73,7 @@ func TestAnswerCleanupWithPreviousInput(t *testing.T) {
 			assertAnswerCleanupWithPrevious(t, tc.text, tc.previous, tc.want)
 		})
 	}
+	assertAnswerCleanup(t, "reasoning</think><|tool_call|> tag", "explain <|tool_call|>", "")
 }
 
 func TestPartialAnswerWithPreviousInput(t *testing.T) {
@@ -100,6 +102,23 @@ func TestAnswerCleanupPreservesLiteralControlMarkup(t *testing.T) {
 	}{
 		{"end token", "Explain <|im_end|> literally", "Use <|im_end|> literally"},
 		{"thinking tags", "Explain <think> and </think> literally", "Keep <think>this</think> whole"},
+		{"tool call token at answer start", "<|tool_call|> token usage.", "<|tool_call|> token usage."},
+		{"Chinese tool call token at answer start", "<|tool_call|> 这个标记。", "<|tool_call|> 这个标记。"},
+		{"dictated tool call token", "Use the <|tool_call|> token carefully.", "Use the <|tool_call|> token carefully."},
+		{"Chinese tool call token", "解释 <|tool_call|> 这个标记。", "解释 <|tool_call|> 这个标记。"},
+		{"Chinese tool call token without spaces", "解释<|tool_call|>这个标记。", "解释<|tool_call|>这个标记。"},
+		{"Chinese tool call token with right space", "解释<|tool_call|> 这个标记。", "解释<|tool_call|> 这个标记。"},
+		{"Chinese tool call token with left space", "解释 <|tool_call|>这个标记。", "解释 <|tool_call|>这个标记。"},
+		{"English tool call token at sentence end", "Use the <|tool_call|> token.", "Use the <|tool_call|> token."},
+		{"Chinese tool call token after a colon", "注意：<|tool_call|> 标记。", "注意：<|tool_call|> 标记。"},
+		{"Chinese tool call token after a comma", "例如，<|tool_call|> 这个标记。", "例如，<|tool_call|> 这个标记。"},
+		{"plural English tool call token", "Use the <|tool_call|> tokens carefully.", "Use the <|tool_call|> tokens carefully."},
+		{"English cue before the tool call token", "The token <|tool_call|> stays.", "The token <|tool_call|> stays."},
+		{"Chinese label after the tool call token", "说明 <|tool_call|> 这个标签。", "说明 <|tool_call|> 这个标签。"},
+		{"parenthesized English cue", "Use the <|tool_call|> (token) carefully.", "Use the <|tool_call|> (token) carefully."},
+		{"bracketed documentation after the tool call token", "Use the <|tool_call|> token, see [docs].", "Use the <|tool_call|> token, see [docs]."},
+		{"non-JSON placeholder after bracketed documentation", "Use the <|tool_call|> token, see [docs]. Use {name} as a placeholder.", "Use the <|tool_call|> token, see [docs]. Use {name} as a placeholder."},
+		{"apostrophe in bracketed documentation", "Use the <|tool_call|> token, see [Alice's notes].", "Use the <|tool_call|> token, see [Alice's notes]."},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := Clean(tc.text, tc.input); got != tc.text {
@@ -124,6 +143,23 @@ func TestAnswerCleanupPreservesLiteralControlMarkup(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestAnswerCleanupPreservesLiteralToolMarkerBeforeTurnEnd(t *testing.T) {
+	const said = "Use the <|tool_call|> token carefully."
+	for _, end := range []string{"<|im_end|>", "<|eot_id|>", "<|endoftext|>", "<end_of_turn>"} {
+		t.Run(end, func(t *testing.T) {
+			assertAnswerCleanup(t, said+end, said, said)
+			wrapped := "<output>" + said + "</output>" + end
+			if got := CleanOutput(wrapped, said, false); got != said {
+				t.Errorf("CleanOutput(%q) = %q, want %q", wrapped, got, said)
+			}
+			if got := PartialOutput(wrapped, said, false); got != said {
+				t.Errorf("PartialOutput(%q) = %q, want %q", wrapped, got, said)
+			}
+		})
+	}
+	assertAnswerCleanup(t, `Use the <|tool_call|> "token" carefully.`, `Use the <|tool_call|> "token" carefully.`, `Use the <|tool_call|> "token" carefully.`)
 }
 
 func TestFinalAnswerKeepsPartialControlMarker(t *testing.T) {
@@ -442,6 +478,89 @@ func TestAnswerCleanupStripsStructuralMarkupFromLiteralInput(t *testing.T) {
 			}
 			if got := PartialOutput(tc.text, tc.input, false); got != "Visible" {
 				t.Errorf("PartialOutput(%q) = %q, want Visible", tc.text, got)
+			}
+		})
+	}
+	for _, tc := range []struct{ text, want string }{
+		{"<|tool_call|> search images now", ""},
+		{`<|tool_call|> tokens ['/private/secret.png']`, ""},
+		{`<|tool_call|> tokens [[1], [2]]`, ""},
+		{`<|tool_call|> tokens [[1], ['/private/secret.png']]`, ""},
+		{"<|tool_call|> token carefully. {\"name\":\"view_image\"}", ""},
+		{"Visible <|tool_call|> search images now", "Visible"},
+		{"Visible <|tool_call|> search images now. 这个标记会显示。", "Visible"},
+		{"Visible <|tool_call|> token carefully. {\"name\":\"view_image\"}", "Visible"},
+		{"Use the <|tool_call|> token carefully. {\"name\":\"view_image\"}", "Use the"},
+	} {
+		assertAnswerCleanupWithPrevious(t, tc.text, "explain <|tool_call|>", tc.want)
+		if got := CleanOutput(tc.text, "explain <|tool_call|>", false); got != tc.want {
+			t.Errorf("CleanOutput(%q) = %q, want %q", tc.text, got, tc.want)
+		}
+		if got := PartialOutput(tc.text, "explain <|tool_call|>", false); got != tc.want && got != tc.want+" " {
+			t.Errorf("PartialOutput(%q) = %q, want %q or %q", tc.text, got, tc.want, tc.want+" ")
+		}
+	}
+}
+
+func TestAnswerCleanupRejectsStructuralToolPayloads(t *testing.T) {
+	for _, tc := range []struct{ name, text, input, want string }{
+		{
+			name:  "structured payload after bracketed prose",
+			text:  `Use the <|tool_call|> token, see [docs]. {"name":"view_image"}`,
+			input: "Use the <|tool_call|> token, see [docs].",
+			want:  "Use the",
+		},
+		{
+			name:  "empty object after bracketed prose",
+			text:  `Use the <|tool_call|> token, see [docs]. {}`,
+			input: "Use the <|tool_call|> token, see [docs].",
+			want:  "Use the",
+		},
+		{
+			name:  "structured payload after unmatched bracketed prose",
+			text:  `Use the <|tool_call|> token. [notes {"name":"view_image","path":"/private/secret.png"}`,
+			input: "explain <|tool_call|>",
+			want:  "Use the",
+		},
+		{
+			name:  "structured array after two bracketed prose references",
+			text:  `Use the <|tool_call|> token, see [docs] and [notes]. ["/private/secret.png"]`,
+			input: "Use the <|tool_call|> token, see [docs] and [notes].",
+			want:  "Use the",
+		},
+		{
+			name:  "structural marker after an orphan close and space",
+			text:  "reasoning</think> <|tool_call|> tag",
+			input: "explain <|tool_call|>",
+			want:  "",
+		},
+		{
+			name:  "structural marker after an orphan close and newline",
+			text:  "reasoning</think>\n<|tool_call|> tag",
+			input: "explain <|tool_call|>",
+			want:  "",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := Clean(tc.text, tc.input); got != tc.want {
+				t.Errorf("Clean(%q) = %q, want %q", tc.text, got, tc.want)
+			}
+			if got := PartialClean(tc.text, tc.input); got != tc.want {
+				t.Errorf("PartialClean(%q) = %q, want %q", tc.text, got, tc.want)
+			}
+			structured := `{"title":"T","content":` + strconv.Quote(tc.text) + `}`
+			wantAnswer := Answer{Title: "T", Content: tc.want}
+			if got, ok := ParseAnswer(structured, tc.input); !ok || got != wantAnswer {
+				t.Errorf("ParseAnswer(%q) = %+v, %v, want %+v", structured, got, ok, wantAnswer)
+			}
+			if got := PartialAnswer(structured, tc.input); got.Title != "T" || strings.TrimSpace(got.Content) != tc.want {
+				t.Errorf("PartialAnswer(%q) = %+v, want %+v", structured, got, wantAnswer)
+			}
+			if got := CleanOutput(tc.text, tc.input, false); got != tc.want {
+				t.Errorf("CleanOutput(%q) = %q, want %q", tc.text, got, tc.want)
+			}
+			if got := PartialOutput(tc.text, tc.input, false); got != tc.want && got != tc.want+" " {
+				t.Errorf("PartialOutput(%q) = %q, want %q or %q", tc.text, got, tc.want, tc.want+" ")
 			}
 		})
 	}

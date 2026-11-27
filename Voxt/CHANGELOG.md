@@ -2,6 +2,16 @@
 
 All notable changes to Voxt. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [Semantic Versioning](https://semver.org/). Each version's section is its release notes: English first, then the same in Chinese under `### 中文`, with `####` headings below it (docs/release.md §2.1).
 
+## [Unreleased]
+
+### Fixed
+- **Dictated literal tool markers keep the rest of the sentence**: when the recognised text and the answer contain a literal `<|tool_call|>` token, clean-up no longer treats it as the start of a tool call and drops everything after it. Real tool-call payloads are still removed.
+
+### 中文
+
+#### 修复
+- **口述的字面工具标记不再截掉后半句**：识别原文和语言模型的答案里有字面 `<|tool_call|>` 标记时，整理不再把它当成工具调用的开头而删掉后面的文字；真正的工具调用内容仍会被去掉。
+
 ## [2.1.4] - 2026-11-26
 
 ### Added
