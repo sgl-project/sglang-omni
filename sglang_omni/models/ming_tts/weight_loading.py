@@ -205,9 +205,11 @@ class MingTTSWeightReport:
             else:
                 pass
             size = float(size_bytes)
-            for unit in ("B", "KiB", "MiB", "GiB"):
-                if size < 1024.0 or unit == "GiB":
-                    return f"{size:.2f}{unit}"
+            units = ("B", "KiB", "MiB", "GiB")
+            for unit in units:
+                label = f"{size:.2f}"
+                if float(label) < 1024.0 or unit == "GiB":
+                    return f"{label}{unit}"
                 else:
                     pass
                 size /= 1024.0
