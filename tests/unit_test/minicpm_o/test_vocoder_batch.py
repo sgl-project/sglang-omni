@@ -295,12 +295,14 @@ def speech_append(
     is_listen: bool,
     end_of_turn: bool = False,
     eos: bool = False,
+    delegates: list[str] | None = None,
 ) -> SessionAppend:
     return SessionAppend(
         chunk=TimedChunk("text", 0, 1000, 0, None, eos=eos),
         payload=SimpleNamespace(
             data=dict(
                 text="hi",
+                delegates=delegates or [],
                 codec_tokens=codec_tokens,
                 talker_conditions=[] if is_listen else [object()],
                 is_listen=is_listen,
@@ -396,6 +398,7 @@ def run_speech_stage(
             append = message(f"{session_id}{seq}", "append", session_id, seq)
             append.data.data = dict(
                 text=session_id,
+                delegates=[],
                 codec_tokens=list(range(100 * offset, 100 * offset + talker_tokens)),
                 talker_conditions=[object()],
                 is_listen=False,
@@ -536,3 +539,36 @@ def test_speech_after_the_model_ends_its_turn_stays_in_that_turn_until_a_new_rep
     ]
     assert chunks[3].payload["is_speech_cut"] is True
     assert chunks[4].payload["pcm"] == fresh_chunks[0].payload["pcm"]
+
+
+def test_a_units_delegates_ride_its_own_voice_chunk_not_the_turn_end_it_closes() -> (
+    None
+):
+    """The client runs each task the model hands it once, from the unit that wrote it, and the end of the turn that unit closes carries none."""
+    hooks = speech_hooks(open_runtime([]))
+    session_identity = SessionIdentity("s")
+    hooks.open(session_identity, SimpleNamespace(params={}))
+    chunks: list[TimedChunk] = []
+    hooks.append_batch(
+        [
+            speech_append(
+                session_identity, chunks, codec_tokens=SPEAKING_TOKENS, is_listen=False
+            )
+        ]
+    )
+    append = speech_append(
+        session_identity,
+        chunks,
+        codec_tokens=SPEAKING_TOKENS,
+        is_listen=False,
+        delegates=["weather in Nanjing"],
+    )
+    append.payload.data["speech_turn_start"] = True
+    append.payload.data["ends_previous_turn"] = True
+
+    hooks.append_batch([append])
+
+    assert [
+        (chunk.turn, chunk.payload["end_of_turn"], chunk.payload["delegates"])
+        for chunk in chunks
+    ] == [(0, False, []), (0, True, []), (1, False, ["weather in Nanjing"])]

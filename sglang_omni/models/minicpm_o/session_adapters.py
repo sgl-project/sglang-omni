@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """MiniCPM-o unit conversion for the shared session runtime."""
 
+import json
 import logging
 from array import array
 from dataclasses import dataclass, field
@@ -58,6 +59,7 @@ from sglang_omni.serve.realtime.manager import (
 from sglang_omni.serve.realtime.output import (
     AudioDelta,
     AudioFinished,
+    FunctionCallFinished,
     OutputEvent,
     ResponseFinished,
     ResponseStarted,
@@ -71,6 +73,7 @@ logger = logging.getLogger(__name__)
 
 # note (ruoyu): A client's truncate follows its stop within a unit or two; this many listen units after a reply's last spoken unit, a cut would re-feed more audio than any stop needs, so the reply is no longer cut.
 TRUNCATE_WINDOW_UNITS = 10
+DELEGATE_FUNCTION_NAME = "delegate"
 
 
 def keep_through_unit_of(event: TimedChunk) -> int | None:
@@ -525,6 +528,7 @@ class Reply:
     audio_samples: int = 0
     is_open: bool = True
     is_cancelled: bool = False
+    call_count: int = 0
     delivered_units: list[DeliveredUnit] = field(default_factory=list)
     keep_through_unit: int | None = None
 
@@ -549,6 +553,7 @@ class OutputConverter:
     def __init__(self) -> None:
         self.reply: Reply | None = None
         self.serial: int = 0
+        self.call_serial: int = 0
 
     def cancel(self) -> KeptReply | None:
         """Mark the open reply cancelled and keep it through the last unit the client received; None when no reply is open or it is already cancelled."""
@@ -628,7 +633,8 @@ class OutputConverter:
         ):
             # note (ruoyu): The client stopped this reply, so what the pipeline still produces for its turn is not played.
             pass
-        elif value["text"] or value["pcm"]:
+        elif value["text"] or value["pcm"] or value["delegates"]:
+            # note (cuzmi): A unit that only hands off a task still reached the client, so a stop keeps it in the history the task's result answers.
             if reply is None or not reply.is_open:
                 response_id = f"{output.session_identity.id}-response-{self.serial}"
                 reply = Reply(
@@ -668,6 +674,20 @@ class OutputConverter:
                 )
             else:
                 pass
+            for task in value["delegates"]:
+                reply.call_count += 1
+                events.append(
+                    FunctionCallFinished(
+                        reply.response_id,
+                        item_id=f"{reply.response_id}-function-call-{reply.call_count}",
+                        # note (cuzmi): The message is the response's first output item and its calls follow it.
+                        output_index=reply.call_count,
+                        call_id=f"{output.session_identity.id}-call-{self.call_serial}",
+                        name=DELEGATE_FUNCTION_NAME,
+                        arguments=json.dumps({"task": task}),
+                    )
+                )
+                self.call_serial += 1
         else:
             pass
         if value["end_of_turn"] or output.eos:

@@ -268,6 +268,7 @@ def voice(text: str, *, end_of_turn: bool, is_speech_cut: bool) -> OutputChunk:
             is_listen=False,
             model_end_of_turn=end_of_turn,
             is_speech_cut=is_speech_cut,
+            delegates=[],
         ),
         None,
         turn=1,
