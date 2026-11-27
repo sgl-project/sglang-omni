@@ -161,8 +161,10 @@ func openLive(ctx context.Context, a *ASR, l *lease, req asr.StreamRequest) (*li
 	}
 	// With LiveResult the socket's text is the result: no Final to shorten.
 	if a.spec.ASR.PiecesAfter > 0 && !(req.LiveResult && conn != nil) {
-		s.pc = &pieces{wake: make(chan struct{}, 1), exited: make(chan struct{}), tuning: *a.spec.ASR}
-		go s.recognisePieces(s.language, s.bias)
+		planningContext, cancelPlanning := context.WithCancel(sctx)
+		s.pc = &pieces{wake: make(chan struct{}, 1), exited: make(chan struct{}),
+			cancelPlanning: cancelPlanning, tuning: *a.spec.ASR}
+		go s.recognisePieces(planningContext, s.language, s.bias)
 	}
 	go func() {
 		<-sctx.Done()
@@ -386,6 +388,9 @@ func (s *live) Finish() error {
 	}
 	s.finished = true
 	pcm := s.audio
+	if s.pc != nil && s.pc.cancelPlanning != nil {
+		s.pc.cancelPlanning()
+	}
 	if s.cancelBatchPreview != nil {
 		s.cancelBatchPreview()
 	}
@@ -435,6 +440,9 @@ func (s *live) Salvage() string {
 func (s *live) Close() {
 	s.mu.Lock()
 	s.finished = true
+	if s.pc != nil && s.pc.cancelPlanning != nil {
+		s.pc.cancelPlanning()
+	}
 	s.mu.Unlock()
 	s.cancel()
 	s.end(asr.Event{})

@@ -22,8 +22,9 @@ type shellViewState struct {
 	Still         bool     `json:"still"` // no animations: tests and snapshots, Reduce motion
 	Toasts        []string `json:"toasts,omitempty"`
 
-	Nav     *navViewState     `json:"nav,omitempty"`
-	Notices []noticeViewState `json:"notices,omitempty"`
+	Nav     *navViewState           `json:"nav,omitempty"`
+	Notices []noticeViewState       `json:"notices,omitempty"`
+	Update  *sidebarUpdateViewState `json:"update,omitempty"`
 
 	// Logs is the panel under the page (nil while closed or on /logs),
 	// LogsHeight its height in DIPs at 100 %.

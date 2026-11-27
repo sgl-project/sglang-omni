@@ -175,7 +175,7 @@ func (a *app) checkHelper() {
 	}
 	st := a.helperStatus()
 	if st.Reason == helper.FailUpdated {
-		// Not the helper's fault: the update's card says what to do.
+		// Not the helper's fault: the sidebar update control and tray say what to do.
 		a.setProblem(problemHelper, "", nil)
 		a.appUpdated() // updates.go
 		return

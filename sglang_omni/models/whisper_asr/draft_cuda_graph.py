@@ -17,6 +17,12 @@ from sglang.srt.model_executor.forward_context import ForwardContext, forward_co
 from sglang.srt.model_executor.model_runner import ModelRunner
 from transformers import WhisperConfig
 
+from sglang_omni.models.whisper_asr.timestamp_logit_processor import (
+    WhisperTimestampParams,
+    apply_timestamp_rules_on_device,
+    timestamp_state_after,
+)
+
 
 class DraftDecodeAttention(AttentionBackend):
     """Decode attention of a fixed number of requests with no host-side plan, so one CUDA graph can record several decode steps.
@@ -93,14 +99,22 @@ class DraftDecodeGraph:
     """The draft decode steps after a greedy round's first draft, recorded as one CUDA graph for batch_size requests.
 
     Each step writes its K/V, takes the argmax of its biased logits and feeds it to the next step on the device, so a round replays one graph instead of building, planning and replaying every step from the host. A smaller round fills the leading rows.
+
+    A graph built with timestamp_params also drafts the rows that load_timestamp_state marks under Whisper's timestamp rules. The rules read three tokens of a row's history, which every draft moves on the device.
     """
 
     def __init__(
-        self, draft_runner: ModelRunner, num_decode_steps: int, batch_size: int
+        self,
+        draft_runner: ModelRunner,
+        num_decode_steps: int,
+        batch_size: int,
+        *,
+        timestamp_params: WhisperTimestampParams | None = None,
     ) -> None:
         self.draft_runner = draft_runner
         self.num_decode_steps = num_decode_steps
         self.batch_size = batch_size
+        self.timestamp_params = timestamp_params
         self.req_to_token = draft_runner.req_to_token_pool.req_to_token
         self.attention_backend = DraftDecodeAttention(draft_runner.token_to_kv_pool)
         config: WhisperConfig = draft_runner.model.config
@@ -122,6 +136,15 @@ class DraftDecodeGraph:
         )
         self.logit_bias = torch.zeros(
             batch_size, config.vocab_size, dtype=torch.float32, device=device
+        )
+        self.has_segment_timestamps = torch.zeros(
+            batch_size, dtype=torch.bool, device=device
+        )
+        # note (Tz22z): every row's last token, the one before it and its last timestamp after the first draft, in the order apply_timestamp_rules_on_device takes them.
+        self.timestamp_state = (
+            torch.zeros(batch_size, dtype=torch.int64, device=device),
+            torch.zeros(batch_size, dtype=torch.int64, device=device),
+            torch.full((batch_size,), -1, dtype=torch.int64, device=device),
         )
         self.graph: torch.cuda.CUDAGraph | None = None
         self.draft_token_ids = torch.empty(0, dtype=torch.int64, device=device)
@@ -145,6 +168,20 @@ class DraftDecodeGraph:
         else:
             self.logit_bias[:round_size].copy_(logit_bias)
 
+    def load_timestamp_state(
+        self,
+        timestamp_rows: torch.Tensor,
+        timestamp_state: tuple[torch.Tensor, torch.Tensor, torch.Tensor],
+    ) -> None:
+        """Mark the round's rows that have segment timestamps and load the three tokens the rules read for each after its first draft."""
+        # note (Tz22z): a row left marked from an earlier round would draft a request without timestamps under the rules.
+        self.has_segment_timestamps.zero_()
+        self.has_segment_timestamps[timestamp_rows] = True
+        for row_tokens, round_tokens in zip(
+            self.timestamp_state, timestamp_state, strict=True
+        ):
+            row_tokens[timestamp_rows] = round_tokens
+
     def run_steps(self) -> torch.Tensor:
         """Decode num_decode_steps drafts from the loaded inputs; under capture this records them."""
         request_slots = self.req_to_token[self.request_pool_indices].long()
@@ -160,6 +197,7 @@ class DraftDecodeGraph:
         )
         self.attention_backend.encoder_keys_values = {}
         token_ids = self.first_draft_token_ids
+        timestamp_state = self.timestamp_state
         step_token_ids = []
         for step in range(self.num_decode_steps):
             sequence_lengths = self.first_step_sequence_lengths + step
@@ -189,7 +227,26 @@ class DraftDecodeGraph:
                 logits = self.draft_runner.model.forward(
                     token_ids, positions, forward_batch
                 ).next_token_logits
-            token_ids = (logits + self.logit_bias).argmax(dim=-1)
+            scores = logits + self.logit_bias
+            if self.timestamp_params is None:
+                token_ids = scores.argmax(dim=-1)
+            else:
+                timestamp_scores = scores.clone()
+                last_token, penultimate_token, last_timestamp = timestamp_state
+                apply_timestamp_rules_on_device(
+                    timestamp_scores,
+                    last_token=last_token,
+                    penultimate_token=penultimate_token,
+                    last_timestamp=last_timestamp,
+                    params=self.timestamp_params,
+                )
+                # note (Tz22z): one graph serves a round that mixes requests with and without timestamps, so the rules run on every row and only the marked rows keep them.
+                token_ids = torch.where(
+                    self.has_segment_timestamps[:, None], timestamp_scores, scores
+                ).argmax(dim=-1)
+                timestamp_state = timestamp_state_after(
+                    timestamp_state, token_ids, self.timestamp_params
+                )
             step_token_ids.append(token_ids)
         return torch.stack(step_token_ids, dim=1)
 
