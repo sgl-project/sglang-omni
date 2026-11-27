@@ -108,6 +108,33 @@ public func bindsChosenInput(_ device: UInt32, defaultInput: UInt32) -> Bool {
     device != defaultInput
 }
 
+/// The engine kept ready (built and prepared, not started) for the next
+/// recording: a new AVAudioEngine takes 370–450 ms to its first buffer, a
+/// prepared one about 275 ms. A prepared engine does not open the input,
+/// so the microphone is not in use and its indicator stays off until a
+/// recording starts. It is taken only for the same input bound the same
+/// way; a configuration change drops it.
+public struct ParkedInput: Equatable, Sendable {
+    public var device: UInt32
+    public var bound: Bool
+
+    public init(device: UInt32, bound: Bool) {
+        self.device = device
+        self.bound = bound
+    }
+
+    /// Whether a new recording on device (bound or not) takes it.
+    public func serves(device: UInt32, bound: Bool) -> Bool {
+        device == self.device && bound == self.bound
+    }
+}
+
+/// Whether a recording that ended this way keeps its engine ready for the
+/// next one: a stop or a cancel by the user, not an input that failed.
+public func parksInput(after reason: String) -> Bool {
+    reason == CaptureReason.stopped || reason == CaptureReason.maxSeconds
+}
+
 /// Counts the engines of one recording that delivered no audio: the
 /// watchdog's silent engine and any engine rebuilt (a configuration
 /// change, a lost input) before its first buffer count the same, so an

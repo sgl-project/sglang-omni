@@ -41,6 +41,8 @@ final class CaptureManager: @unchecked Sendable {
     let systemFile: CaptureFileConfig?
     private let lock = NSLock()
     private var runs = CaptureSlots<CaptureRun>()
+    /// The input the last recording left running (ParkedInput).
+    private let warm = WarmInput()
 
     init(out: Writer, environment env: [String: String] = ProcessInfo.processInfo.environment) {
         self.out = out
@@ -65,7 +67,7 @@ final class CaptureManager: @unchecked Sendable {
             }
         }
         let r: CaptureRun = try lock.withLock {
-            let r = CaptureRun(out: out, job: job, params: p, system: system, file: system ? systemFile : file, t0: clock.received) { [weak self] ended in
+            let r = CaptureRun(out: out, job: job, params: p, system: system, file: system ? systemFile : file, warm: warm, t0: clock.received) { [weak self] ended in
                 self?.lock.withLock { self?.runs.release(ended) }
             }
             try runs.claim(system ? Method.captureSystem : Method.captureStart, job: job, r)
@@ -96,6 +98,64 @@ final class CaptureManager: @unchecked Sendable {
     }
 }
 
+/// Holds the engine kept ready for the next recording (ParkedInput):
+/// stopped and prepared, so the microphone is off until it starts.
+final class WarmInput: @unchecked Sendable {
+    private let lock = NSLock()
+    private var engine: AVAudioEngine?
+    private var parked: ParkedInput?
+    private var observer: NSObjectProtocol?
+
+    /// Stops e (the input closes) and keeps it prepared for device.
+    func park(_ e: AVAudioEngine, device: AudioObjectID, bound: Bool) {
+        e.stop()
+        e.prepare()
+        let o = NotificationCenter.default.addObserver(forName: .AVAudioEngineConfigurationChange, object: e, queue: nil) { [weak self] _ in
+            self?.drop(e)
+        }
+        let (old, oldObserver): (AVAudioEngine?, NSObjectProtocol?) = lock.withLock {
+            let r = (engine, observer)
+            engine = e
+            parked = ParkedInput(device: device, bound: bound)
+            observer = o
+            return r
+        }
+        if let oldObserver { NotificationCenter.default.removeObserver(oldObserver) }
+        if let old, old !== e { old.reset() }
+    }
+
+    /// The ready engine for device, bound or not, else nil (and the
+    /// parked one, if any, is let go).
+    func take(device: AudioObjectID, bound: Bool) -> AVAudioEngine? {
+        let (e, p, o): (AVAudioEngine?, ParkedInput?, NSObjectProtocol?) = lock.withLock {
+            let r = (engine, parked, observer)
+            engine = nil
+            parked = nil
+            observer = nil
+            return r
+        }
+        if let o { NotificationCenter.default.removeObserver(o) }
+        guard let e, let p else { return nil }
+        if p.serves(device: device, bound: bound) { return e }
+        e.reset()
+        return nil
+    }
+
+    /// A configuration change (a new default input, a device gone) makes
+    /// the prepared engine stale.
+    private func drop(_ e: AVAudioEngine) {
+        let o: NSObjectProtocol? = lock.withLock {
+            guard engine === e else { return nil }
+            let o = observer
+            engine = nil
+            parked = nil
+            observer = nil
+            return o
+        }
+        if let o { NotificationCenter.default.removeObserver(o) }
+    }
+}
+
 /// An input to try: a chosen device, or the default input (id nil).
 private struct Candidate {
     var uid: String?
@@ -109,6 +169,8 @@ final class CaptureRun: @unchecked Sendable {
     /// capture.system: the default output's tap (SystemTap) instead of an engine.
     let system: Bool
     let file: CaptureFileConfig?
+    /// Where a stopped microphone engine stays ready for the next one.
+    let warm: WarmInput?
     let onEnd: (CaptureRun) -> Void
     private let rate: Int
     private let maxSamples: Int?
@@ -150,12 +212,14 @@ final class CaptureRun: @unchecked Sendable {
     private var configObserver: NSObjectProtocol?
     private var watcher: DispatchSourceTimer?
 
-    init(out: Writer, job: String, params: CaptureParams, system: Bool, file: CaptureFileConfig?, t0: Double, onEnd: @escaping (CaptureRun) -> Void) {
+    init(out: Writer, job: String, params: CaptureParams, system: Bool, file: CaptureFileConfig?, warm: WarmInput? = nil, t0: Double,
+         onEnd: @escaping (CaptureRun) -> Void) {
         self.out = out
         self.job = job
         self.params = params
         self.system = system
         self.file = file
+        self.warm = system || file != nil ? nil : warm
         self.t0 = t0
         self.onEnd = onEnd
         rate = max(8000, params.sampleRate ?? 16000)
@@ -217,10 +281,11 @@ final class CaptureRun: @unchecked Sendable {
             guard def != 0, ids.contains(def) else { throw RPCError(Code.deviceUnavailable, "no default input") }
             device = def
         }
-        let engine = AVAudioEngine()
-        let input = engine.inputNode
         let bind = uid != nil && bindsChosenInput(device, defaultInput: def)
-        if bind, let unit = input.audioUnit {
+        let reused = warm?.take(device: device, bound: bind)
+        let engine = reused ?? AVAudioEngine()
+        let input = engine.inputNode
+        if reused == nil, bind, let unit = input.audioUnit {
             var id = device
             let status = AudioUnitSetProperty(unit, kAudioOutputUnitProperty_CurrentDevice, kAudioUnitScope_Global, 0,
                                               &id, UInt32(MemoryLayout<AudioObjectID>.size))
@@ -248,12 +313,14 @@ final class CaptureRun: @unchecked Sendable {
         input.installTap(onBus: 0, bufferSize: 1024, format: format) { [weak self] buffer, _ in
             self?.receive(buffer, generation: gen)
         }
-        engine.prepare()
         do {
+            if reused == nil { engine.prepare() }
             try engine.start()
         } catch {
             input.removeTap(onBus: 0)
             lock.withLock { if self.engine === engine { self.engine = nil } }
+            // A kept engine that went stale: a new one (take emptied WarmInput).
+            if reused != nil { return try startEngine(uid: uid) }
             throw RPCError(Code.deviceUnavailable, "\(deviceName(device)) did not start (\((error as NSError).code))")
         }
         armWatchdog(generation: gen)
@@ -436,9 +503,10 @@ final class CaptureRun: @unchecked Sendable {
         watcher = t
     }
 
-    private func stopEngine() {
-        let (e, t, tp): (AVAudioEngine?, DispatchSourceTimer?, SystemTap?) = lock.withLock {
-            let r = (engine, fileTimer, tap)
+    /// Stops the source; park keeps a microphone engine ready (WarmInput).
+    private func stopEngine(park: Bool = false) {
+        let (e, t, tp, device, bound): (AVAudioEngine?, DispatchSourceTimer?, SystemTap?, AudioObjectID, Bool) = lock.withLock {
+            let r = (engine, fileTimer, tap, deviceID, self.bound)
             engine = nil
             fileTimer = nil
             tap = nil
@@ -448,11 +516,15 @@ final class CaptureRun: @unchecked Sendable {
         tp?.stop()
         guard let e else { return }
         e.inputNode.removeTap(onBus: 0)
+        if park, let warm {
+            warm.park(e, device: device, bound: bound)
+            return
+        }
         e.stop()
         e.reset()
     }
 
-    private func stopSource() {
+    private func stopSource(park: Bool = false) {
         if system && file == nil {
             // The tap and the timer can also be used by work on this queue.
             queue.sync {
@@ -461,7 +533,7 @@ final class CaptureRun: @unchecked Sendable {
                 stopEngine()
             }
         } else {
-            stopEngine()
+            stopEngine(park: park)
         }
     }
 
@@ -529,10 +601,10 @@ final class CaptureRun: @unchecked Sendable {
         }
     }
 
-    private func teardown() {
+    private func teardown(park: Bool = false) {
         watcher?.cancel()
         if let o = configObserver { NotificationCenter.default.removeObserver(o) }
-        stopSource()
+        stopSource(park: park)
         onEnd(self)
     }
 
@@ -560,7 +632,8 @@ final class CaptureRun: @unchecked Sendable {
     func finish(reason: String) -> Bool {
         guard markEnded() else { return false }
         let stoppedAt = monotonicMs()
-        stopSource()
+        // The input stops here; a stop keeps the engine ready for the next recording.
+        stopSource(park: parksInput(after: reason))
         // Buffers already queued still convert: queue.sync runs after them.
         let result: CaptureResult = queue.sync {
             if let clock = systemClock {
@@ -581,7 +654,7 @@ final class CaptureRun: @unchecked Sendable {
     /// Discards the recording and answers the job cancelled.
     func cancel() -> Bool {
         guard markEnded() else { return false }
-        teardown()
+        teardown(park: true)
         out.fail(job, RPCError(Code.cancelled, "The recording was cancelled"))
         return true
     }
