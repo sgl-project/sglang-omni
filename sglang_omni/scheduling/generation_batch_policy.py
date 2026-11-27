@@ -39,18 +39,30 @@ _PREFILL_PADDING_FACTOR = 2
 FULL_PREFILL_ATTENTION_BACKENDS = frozenset({"fa3", "fa4", "flashinfer"})
 
 
-def falls_back_to_breakable_prefill(server_args: ServerArgs, model_name: str) -> bool:
-    """Whether this prefill attention backend needs the breakable graph instead."""
+def prefill_graph_fallback(
+    server_args: ServerArgs, model_name: str, *, supports_breakable: bool
+) -> CudaGraphBackend | None:
+    """The backend for a default full prefill graph this attention backend cannot
+    capture: breakable where the model adopted that contract, else eager; None if
+    it can capture it."""
     attention_backend = attention_backends_of(resolved_view(server_args))[0]
     if attention_backend in FULL_PREFILL_ATTENTION_BACKENDS:
-        return False
+        return None
     else:
         pass
-    logger.info(
-        f"{model_name}: prefill attention backend {attention_backend!r} cannot "
-        "capture a full prefill graph; using the breakable prefill graph"
-    )
-    return True
+    if supports_breakable:
+        logger.info(
+            f"{model_name}: prefill attention backend {attention_backend!r} cannot "
+            "capture a full prefill graph; using the breakable prefill graph"
+        )
+        return CudaGraphBackend.BREAKABLE
+    else:
+        logger.info(
+            f"{model_name}: prefill attention backend {attention_backend!r} cannot "
+            "capture a full prefill graph, and the model has not adopted the "
+            "breakable prefill graph contract; running prefill eagerly"
+        )
+        return CudaGraphBackend.DISABLED
 
 
 def get_decode_cuda_graph_max_bs(server_args: ServerArgs) -> int | None:

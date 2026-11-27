@@ -698,6 +698,19 @@ def test_builder_wires_payload_slot_and_attestation(monkeypatch) -> None:
         )
     assert len(attest_calls) == attests
 
+    # note (Yuanfan Chen): MOSS-TTS Local refused to start on a B200, whose
+    # trtllm_mha default cannot capture its full default; it now prefills eagerly.
+    class FullOnlyBuilder(FullBuilder):
+        supports_breakable_prefill_cuda_graph = False
+
+    FullOnlyBuilder().build(
+        "model", server_args_overrides={"attention_backend": "trtllm_mha"}
+    )
+
+    assert infra_prefill_backends[-1] == "disabled"
+    assert "enable_prefill_input_embeds" not in infra_kwargs_seen[-1]
+    assert len(attest_calls) == attests
+
 
 def test_builder_rejects_breakable_without_model_opt_in(monkeypatch) -> None:
     from sglang_omni.scheduling import sglang_backend
