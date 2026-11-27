@@ -36,6 +36,7 @@ public:
           const asr_service::FormFields &form) const override {
     // note (XXXXRT666): a request does not wait behind a session's shadow
     // Final, which is only background work.
+    qwen3_asr::NoteForegroundRequest();
     CancelShadowFinals();
     TranscriptionOptions options;
     const auto language = asr_service::TextField(form, "language");

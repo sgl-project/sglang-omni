@@ -57,6 +57,10 @@ struct FinalReuse {
 std::vector<int> MergedGuesses(const std::vector<int> &shadow_ids,
                                const std::vector<int> &preview_ids);
 
+// A request came: shadow Finals neither start nor queue for a while, so none
+// runs ahead of it on the worker.
+void NoteForegroundRequest();
+
 // Qwen3-ASR manual-turn session: audio becomes one segment, cut every max
 // segment length, with preview decodes on a cadence. A Final's prompt, sent as
 // final_prompt, is prefilled in the background over the recording's complete

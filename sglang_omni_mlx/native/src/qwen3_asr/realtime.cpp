@@ -2,6 +2,8 @@
 #include "qwen3_asr/realtime.h"
 
 #include <algorithm>
+#include <atomic>
+#include <chrono>
 #include <cmath>
 #include <cstdlib>
 #include <iostream>
@@ -47,7 +49,26 @@ constexpr long kShadowDelaySamples = omni_common::kSampleRate / 10;
 // tokens before them that find where the preview goes on.
 constexpr int kShadowUnsettledTokens = 4;
 constexpr int kShadowAnchorTokens = 3;
+// How long after a request shadow Finals wait: a request prepared but not yet
+// queued would otherwise wait behind one queued meanwhile.
+constexpr std::chrono::seconds kShadowQuietTime{2};
+
+std::atomic<std::chrono::steady_clock::rep> last_foreground_request{0};
+
+bool IsShadowQuiet() {
+  return std::chrono::steady_clock::now().time_since_epoch().count() -
+             last_foreground_request.load() <
+         std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+             kShadowQuietTime)
+             .count();
+}
+
 } // namespace
+
+void NoteForegroundRequest() {
+  last_foreground_request.store(
+      std::chrono::steady_clock::now().time_since_epoch().count());
+}
 
 std::vector<int> MergedGuesses(const std::vector<int> &shadow_ids,
                                const std::vector<int> &preview_ids) {
@@ -376,7 +397,7 @@ void RealtimeSession::MaybeStartShadowFinal() {
     const long recording_end = static_cast<long>(recording_samples_.size());
     if (!should_prefill_final_ || !has_preview_ || is_shadowing_ ||
         finalizing_ || is_recording_cut_off_ || final_start_sample_ != 0 ||
-        !segment_.has_value() ||
+        IsShadowQuiet() || !segment_.has_value() ||
         recording_end <
             std::max(next_shadow_sample_,
                      kShadowIntervalSamples + kShadowDelaySamples) ||
@@ -414,6 +435,10 @@ void RealtimeSession::MaybeStartShadowFinal() {
        options = std::move(options), preview_text = std::move(preview_text),
        preview_language,
        shadow_guess](const std::atomic<bool> &cancel) mutable {
+        if (IsShadowQuiet()) {
+          return TranscriptionResult();
+        } else {
+        }
         const auto guesses = [&](const std::optional<std::string> &language,
                                  const std::string &text) {
           return options.language.has_value()
