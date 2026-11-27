@@ -8,27 +8,35 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from sglang.srt.arg_groups.model_override_base import resolved_view
 from sglang.srt.configs.model_config_parser_registry import (
     ModelConfigParserBase,
     register_model_config_parser,
 )
+from sglang.srt.model_executor.cuda_graph_config import Phase, with_phase
 from sglang.srt.server_args import ServerArgs
 from torch import Tensor
 from transformers import PretrainedConfig
 
 from sglang_omni.model_runner.model_worker import ModelWorker
-from sglang_omni.models.voxtral_tts import request_builders
+from sglang_omni.models.voxtral_tts import CAPABILITIES, request_builders
 from sglang_omni.models.voxtral_tts.model_runner import VoxtralTTSModelRunner
 from sglang_omni.models.voxtral_tts.pipeline import stages as voxtral_stages
 from sglang_omni.models.voxtral_tts.request_builders import VoxtralSGLangRequestData
+from sglang_omni.platforms import current_platform
 from sglang_omni.proto.request import StagePayload
 from sglang_omni.scheduling.engine_factory import (
     GenerationDefaults,
     SchedulerExtras,
     TtsEngineBuilder,
 )
-from sglang_omni.scheduling.generation_batch_policy import get_decode_cuda_graph_bs
+from sglang_omni.scheduling.generation_batch_policy import (
+    CudaGraphBackend,
+    get_decode_cuda_graph_bs,
+    nested_prefill_overrides,
+)
 from sglang_omni.scheduling.sglang_backend.output_processor import SGLangOutputProcessor
+from sglang_omni.vendor.sglang.server_args import override_server_args
 
 if TYPE_CHECKING:
 
@@ -56,6 +64,7 @@ class VoxtralConfigParser(ModelConfigParserBase):
 class VoxtralTtsEngineBuilder(TtsEngineBuilder[VoxtralSGLangRequestData]):
     model_name = "Voxtral TTS"
     context_length = 8192
+    supports_full_prefill_cuda_graph = CAPABILITIES.supports_full_prefill_cuda_graph
 
     def __init__(self) -> None:
         self.voice_embeddings: dict[str, Tensor] = {}
@@ -80,11 +89,36 @@ class VoxtralTtsEngineBuilder(TtsEngineBuilder[VoxtralSGLangRequestData]):
             "mem_fraction_static": 0.85,
             "max_prefill_tokens": 8192,
             "sampling_backend": "pytorch",
+            "cuda_graph_backend_prefill": (
+                CudaGraphBackend.FULL
+                if current_platform.is_cuda()
+                else CudaGraphBackend.DISABLED
+            ),
         }
 
     def customize_server_args(self, server_args: ServerArgs) -> None:
         if server_args.enable_torch_compile:
             voxtral_stages.enable_inductor_gemm_autotune()
+        else:
+            pass
+        resolved = resolved_view(server_args)
+        graph_config = resolved.cuda_graph_config
+        prefill = graph_config.prefill
+        if (
+            prefill.backend == CudaGraphBackend.FULL
+            and prefill.bs
+            and prefill.bs[0] != 1
+            and self.server_args_overrides.get("cuda_graph_bs_prefill") is None
+            and "bs" not in nested_prefill_overrides(self.server_args_overrides)
+        ):
+            # note (Rongwen Zhao): a preset-voice prompt the radix cache holds re-prefills one token, which bucket 4 pads past the 2x replay limit and runs eagerly.
+            override_server_args(
+                server_args,
+                "voxtral_tts.prefill_cuda_graph_shape",
+                cuda_graph_config=with_phase(
+                    graph_config, Phase.PREFILL, bs=[1, *prefill.bs]
+                ),
+            )
         else:
             pass
 
