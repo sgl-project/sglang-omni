@@ -32,13 +32,18 @@ class Qwen3ASRProcessor(ProcessorMixin):
     @classmethod
     def from_pretrained(cls, pretrained_model_name_or_path, **kwargs):
         trust_remote_code = kwargs.pop("trust_remote_code", True)
+        load_kwargs = {"trust_remote_code": trust_remote_code}
+        if "revision" in kwargs:
+            load_kwargs["revision"] = kwargs["revision"]
+        else:
+            pass
         feature_extractor = AutoFeatureExtractor.from_pretrained(
             pretrained_model_name_or_path,
-            trust_remote_code=trust_remote_code,
+            **load_kwargs,
         )
         tokenizer = AutoTokenizer.from_pretrained(
             pretrained_model_name_or_path,
-            trust_remote_code=trust_remote_code,
+            **load_kwargs,
         )
         return cls(feature_extractor=feature_extractor, tokenizer=tokenizer)
 
@@ -156,13 +161,68 @@ class Qwen3ASRConfig(PretrainedConfig):
         "thinker_config": Qwen3ASRThinkerConfig,
     }
 
-    def __init__(self, thinker_config=None, **kwargs):
+    def __init__(
+        self,
+        thinker_config: Qwen3ASRThinkerConfig | dict[str, object] | None = None,
+        audio_config: PretrainedConfig | dict[str, object] | None = None,
+        text_config: PretrainedConfig | dict[str, object] | None = None,
+        audio_token_id: int | None = None,
+        audio_start_token_id: int | None = None,
+        audio_end_token_id: int | None = None,
+        **kwargs: object,
+    ) -> None:
         if thinker_config is None:
-            thinker_config = {}
-            logger.info(
-                "thinker_config is None. "
-                "Initializing Qwen3-ASR thinker with default values"
-            )
+            if audio_config is not None or text_config is not None:
+                # note (Nathan Roll): native Hugging Face Qwen3-ASR checkpoints place audio_config and text_config at the top level without a thinker_config wrapper.
+                thinker_kwargs: dict[str, object] = {}
+                if audio_config is not None:
+                    thinker_kwargs["audio_config"] = audio_config
+                else:
+                    pass
+                if text_config is not None:
+                    if isinstance(text_config, dict):
+                        copied_text_config = dict(text_config)
+                        for attribute in (
+                            "tie_word_embeddings",
+                            "eos_token_id",
+                            "pad_token_id",
+                        ):
+                            if (
+                                copied_text_config.get(attribute) is None
+                                and kwargs.get(attribute) is not None
+                            ):
+                                copied_text_config[attribute] = kwargs[attribute]
+                            else:
+                                pass
+                        thinker_kwargs["text_config"] = copied_text_config
+                    else:
+                        thinker_kwargs["text_config"] = text_config
+                else:
+                    pass
+                if audio_token_id is not None:
+                    thinker_kwargs["audio_token_id"] = audio_token_id
+                else:
+                    pass
+                if audio_start_token_id is not None:
+                    thinker_kwargs["audio_start_token_id"] = audio_start_token_id
+                else:
+                    pass
+                if audio_end_token_id is not None:
+                    thinker_kwargs["audio_end_token_id"] = audio_end_token_id
+                else:
+                    pass
+                for attribute in ("dtype", "torch_dtype", "initializer_range"):
+                    if attribute in kwargs:
+                        thinker_kwargs[attribute] = kwargs[attribute]
+                    else:
+                        pass
+                thinker_config = thinker_kwargs
+            else:
+                thinker_config = {}
+                logger.info(
+                    "thinker_config is None. "
+                    "Initializing Qwen3-ASR thinker with default values"
+                )
         else:
             pass
         if isinstance(thinker_config, dict):
@@ -171,11 +231,40 @@ class Qwen3ASRConfig(PretrainedConfig):
             self.thinker_config = thinker_config
         super().__init__(**kwargs)
 
+    @property
+    def audio_config(self) -> PretrainedConfig:
+        return self.thinker_config.audio_config
+
+    @audio_config.setter
+    def audio_config(self, value: PretrainedConfig) -> None:
+        self.thinker_config.audio_config = value
+
+    @property
+    def text_config(self) -> PretrainedConfig:
+        return self.thinker_config.text_config
+
+    @text_config.setter
+    def text_config(self, value: PretrainedConfig) -> None:
+        self.thinker_config.text_config = value
+
+    @property
+    def audio_token_id(self) -> int:
+        return self.thinker_config.audio_token_id
+
+    @audio_token_id.setter
+    def audio_token_id(self, value: int) -> None:
+        self.thinker_config.audio_token_id = value
+
     def get_text_config(self, decoder=False) -> PretrainedConfig:
         return self.thinker_config.text_config
 
 
-# note (ratish): the installed transformers may map these types to its own
-# classes; the model reads this package's layout, so the mapping is replaced.
-AutoConfig.register("qwen3_asr", Qwen3ASRConfig, exist_ok=True)
-AutoConfig.register("qwen3_asr_thinker", Qwen3ASRThinkerConfig, exist_ok=True)
+def register_qwen3_asr_hf_config() -> None:
+    """Register Qwen3-ASR config classes in AutoConfig."""
+    # note (ratish): the installed transformers may map these types to its own
+    # classes; the model reads this package's layout, so the mapping is replaced.
+    AutoConfig.register("qwen3_asr", Qwen3ASRConfig, exist_ok=True)
+    AutoConfig.register("qwen3_asr_thinker", Qwen3ASRThinkerConfig, exist_ok=True)
+
+
+register_qwen3_asr_hf_config()
