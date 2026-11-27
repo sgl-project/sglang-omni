@@ -81,3 +81,4 @@ report	fix	symptom	level	check
 #4493	#4514	The preview-drain regression waits on real Final and drain delays instead of a controlled deadline	L	TestLiveFinalFailsWhenTheDrainTimesOut
 #4067	#4687	The Speech context note said no speech model in use takes the context while a meeting's speech model did	L	TestSpeechContextNoteMeetingTaker
 #4067	#4687	The Speech context note said no speech model in use takes the context while a meeting's automatic MOSS-Transcribe-Diarize diarizer read it	L	TestSpeechContextNoteAutomaticDiarizer
+#4067	#4687	The Speech context note trusted a meeting's deleted speech model selection instead of the installed model the meeting falls back to	L	TestSpeechContextNoteDeletedMeetingModel

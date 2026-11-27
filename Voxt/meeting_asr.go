@@ -98,11 +98,12 @@ func (a *app) meetingLang() string {
 }
 
 // meetingASRModel is the speech model a meeting uses: its own choice,
-// else Automatic's language-gated pick for the meeting's language
-// (meetingTrackASR's rule), without opening it.
+// resolved as meetingTrackASR opens it (a deleted selection falls back
+// to an installed model), else Automatic's language-gated pick for the
+// meeting's language (meetingTrackASR's rule), without opening it.
 func (a *app) meetingASRModel() (local.Model, bool) {
 	if id := strings.TrimSpace(a.prefs.Features.Meeting.ASR); id != "" {
-		return local.Model{Kind: local.ASR, ID: id}, true
+		return local.Choose(a.installed(local.ASR), id)
 	}
 	return local.Choose(automaticSpeechFor(a.meetingLang(), a.installed(local.ASR)), "")
 }
