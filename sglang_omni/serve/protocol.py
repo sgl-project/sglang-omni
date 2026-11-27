@@ -859,3 +859,38 @@ class DestroyWeightsUpdateGroupRequest(AdminRequestBase):
 
 class WeightsCheckerRequest(AdminRequestBase):
     action: str = "checksum"
+
+
+class StartLoRAUpdateRequest(AdminRequestBase):
+    update_id: str
+
+
+class UpdateLoRAWeightsRequest(AdminRequestBase):
+    update_id: str
+    adapter_id: str
+    target_modules: list[str] | str
+    tensors: dict[str, dict[str, object]]
+    alpha: float | None = None
+    scale: float = 1.0
+    restore_omitted: bool = True
+
+
+class FinishLoRAUpdateRequest(AdminRequestBase):
+    update_id: str
+    flush_cache: bool = True
+    abort_all_requests: bool = False
+    keep_pause: bool = False
+    weight_version: str | None = None
+    torch_empty_cache: bool = False
+
+
+class AbortLoRAUpdateRequest(AdminRequestBase):
+    update_id: str | None = None
+
+
+class RestoreBaseWeightsRequest(AdminRequestBase):
+    flush_cache: bool = True
+    abort_all_requests: bool = False
+    keep_pause: bool = False
+    weight_version: str | None = None
+    torch_empty_cache: bool = False

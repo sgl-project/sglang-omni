@@ -679,6 +679,71 @@ class Client:
             timeout_s=timeout_s,
         )
 
+    async def start_lora_update(
+        self,
+        payload: dict[str, object],
+        *,
+        stages: list[str] | None = None,
+        timeout_s: float = 120.0,
+    ) -> AdminResponse:
+        return await self.coordinator.start_lora_update(
+            payload,
+            stages=stages,
+            timeout_s=timeout_s,
+        )
+
+    async def update_lora_weights(
+        self,
+        payload: dict[str, object],
+        *,
+        stages: list[str] | None = None,
+        timeout_s: float = 300.0,
+    ) -> AdminResponse:
+        return await self.coordinator.update_lora_weights(
+            payload,
+            stages=stages,
+            timeout_s=timeout_s,
+        )
+
+    async def finish_lora_update(
+        self,
+        payload: dict[str, object],
+        *,
+        stages: list[str] | None = None,
+        timeout_s: float = 120.0,
+    ) -> AdminResponse:
+        return await self.coordinator.finish_lora_update(
+            payload,
+            stages=stages,
+            timeout_s=timeout_s,
+        )
+
+    async def abort_lora_update(
+        self,
+        payload: dict[str, object],
+        *,
+        stages: list[str] | None = None,
+        timeout_s: float = 120.0,
+    ) -> AdminResponse:
+        return await self.coordinator.abort_lora_update(
+            payload,
+            stages=stages,
+            timeout_s=timeout_s,
+        )
+
+    async def restore_base_weights(
+        self,
+        payload: dict[str, object],
+        *,
+        stages: list[str] | None = None,
+        timeout_s: float = 120.0,
+    ) -> AdminResponse:
+        return await self.coordinator.restore_base_weights(
+            payload,
+            stages=stages,
+            timeout_s=timeout_s,
+        )
+
     # ------------------------------------------------------------------
     # Internals
     # ------------------------------------------------------------------

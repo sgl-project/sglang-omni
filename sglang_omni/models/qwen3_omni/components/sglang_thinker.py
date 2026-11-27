@@ -37,6 +37,7 @@ from sglang.srt.runtime_context import get_exec, max_prefill_buffer_tokens
 from sglang.srt.utils import add_prefix, logger
 from transformers import PretrainedConfig
 
+from sglang_omni.lora.capability import MergedLoRASpec
 from sglang_omni.models.qwen3_omni.components.thinker_fused_rope import (
     install_thinker_fused_rope,
 )
@@ -497,6 +498,26 @@ class Qwen3OmniThinkerForCausalLM(nn.Module):
                         )
                     else:
                         pass
+
+    def merged_lora_spec(self) -> MergedLoRASpec:
+        """Declare engine-side merged LoRA bindings for the thinker text model."""
+        packed: dict[str, tuple[str, ...]] = {
+            "qkv_proj": ("q_proj", "k_proj", "v_proj"),
+        }
+        has_dense_gate_up = any(
+            name.rsplit(".", 1)[-1] == "gate_up_proj"
+            for name, _ in self.model.named_modules()
+        )
+        if has_dense_gate_up:
+            packed["gate_up_proj"] = ("gate_proj", "up_proj")
+        else:
+            pass
+        return MergedLoRASpec(
+            target_module_root="model",
+            packed_modules_mapping=packed,
+            strip_prefixes=("thinker.model.", "model."),
+            allow_plain_linear=False,
+        )
 
 
 EntryClass = Qwen3OmniThinkerForCausalLM

@@ -50,6 +50,8 @@ from sglang.srt.server_args import ServerArgs
 from sglang.srt.speculative.spec_info import SpeculativeAlgorithm
 from torch import nn
 
+from sglang_omni.lora.merged_manager import MergedLoRAManager
+from sglang_omni.lora.weight_transfer import MergedLoRAWorkerSession
 from sglang_omni.model_runner.prefill_inputs import get_omni_prefill_inputs
 from sglang_omni.utils.gpu_memory import (
     calculate_stage_budget_available_bytes,
@@ -880,6 +882,70 @@ class SGLModelRunner(ModelRunner):
 
     def destroy_weights_update_group(self, *args, **kwargs):
         return self.weight_updater.destroy_weights_update_group(*args, **kwargs)
+
+    def get_merged_lora_session(self) -> MergedLoRAWorkerSession:
+        session = getattr(self, "merged_lora_session", None)
+        if session is None:
+            manager = MergedLoRAManager(self.model)
+            session = MergedLoRAWorkerSession(manager)
+            self.merged_lora_session = session
+        else:
+            pass
+        return session
+
+    def start_lora_update(self, update_id: str) -> tuple[bool, str, dict[str, object]]:
+        reason = self.weight_update_blocked_reason()
+        if reason is not None:
+            return False, reason, {}
+        else:
+            pass
+        data = self.get_merged_lora_session().start_update(update_id)
+        return True, "ok", data
+
+    def update_lora_weights(
+        self, update_id: str, payload: dict[str, object]
+    ) -> tuple[bool, str, dict[str, object]]:
+        reason = self.weight_update_blocked_reason()
+        if reason is not None:
+            return False, reason, {}
+        else:
+            pass
+        data = self.get_merged_lora_session().stage_update(update_id, payload)
+        return True, "ok", data
+
+    def finish_lora_update(self, update_id: str) -> tuple[bool, str, dict[str, object]]:
+        reason = self.weight_update_blocked_reason()
+        if reason is not None:
+            return False, reason, {}
+        else:
+            pass
+        data = self.get_merged_lora_session().finish_update(update_id)
+        return True, "ok", data
+
+    def abort_lora_update(
+        self, update_id: str | None = None
+    ) -> tuple[bool, str, dict[str, object]]:
+        session = getattr(self, "merged_lora_session", None)
+        if session is None:
+            return True, "ok", {"aborted_update_id": None, "committed": False}
+        else:
+            pass
+        data = session.abort_update(update_id)
+        return True, "ok", data
+
+    def restore_base_weights(self) -> tuple[bool, str, dict[str, object]]:
+        reason = self.weight_update_blocked_reason()
+        if reason is not None:
+            return False, reason, {}
+        else:
+            pass
+        session = getattr(self, "merged_lora_session", None)
+        if session is None:
+            return True, "ok", {"restored_params": 0}
+        else:
+            pass
+        data = session.restore_base()
+        return True, "ok", data
 
     def register_omni_model(self):
         # Register sglang_omni model classes directly in SGLang's model registry.
