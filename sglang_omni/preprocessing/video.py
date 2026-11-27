@@ -45,6 +45,11 @@ FFMPEG_MAX_DECODER_THREADS = 16
 logger = logging.getLogger(__name__)
 
 
+def reader_ffmpeg_threads() -> int:
+    """FFmpeg threads the torchcodec reader opens a video with, TORCHCODEC_NUM_THREADS when set."""
+    return int(os.environ.get("TORCHCODEC_NUM_THREADS", READER_FFMPEG_THREADS))
+
+
 class VideoDecodeError(RuntimeError):
     """Raised when video decoding fails."""
 
@@ -473,8 +478,11 @@ def read_video_torchcodec(
 ) -> tuple[torch.Tensor, float]:
     """The qwen-vl-utils torchcodec reader's frames (T, C, H, W) and sample fps, keyframe groups split across decoders sharing decode_threads FFmpeg threads, on frame_pool when given."""
     video_path = str(video_options["video"])
-    reader_thread_count = int(
-        os.environ.get("TORCHCODEC_NUM_THREADS", READER_FFMPEG_THREADS)
+    # note (ratish): every video running on a frame pool opens a reader, so there a reader keeps to its video's share of FFmpeg threads, and at least one, since torchcodec reads 0 as FFmpeg's own count.
+    reader_thread_count = (
+        reader_ffmpeg_threads()
+        if frame_pool is None
+        else min(reader_ffmpeg_threads(), max(decode_threads, 1))
     )
     first_decoder = VideoDecoder(video_path, num_ffmpeg_threads=reader_thread_count)
     video_fps = first_decoder.metadata.average_fps

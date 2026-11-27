@@ -2997,13 +2997,15 @@ def test_preprocessing_serial_requests_keep_arrival_order_on_the_scheduler_threa
     assert {call[1] for call in calls} == {worker.ident}
 
 
-def test_preprocessing_runs_no_more_videos_than_its_threads(
-    monkeypatch: pytest.MonkeyPatch,
+@pytest.mark.parametrize(
+    ("video_request_worker_count", "stage_cpu_count"), [(2, 8), (4, 2)]
+)
+def test_preprocessing_runs_no_more_videos_than_its_limit_or_the_stage_cpus(
+    video_request_worker_count: int, stage_cpu_count: int
 ) -> None:
-    both_running = threading.Barrier(2, timeout=5)
-    running_lock = threading.Lock()
-    running = 0
-    most_running = 0
+    """A stage with fewer CPUs than its video request limit ran a video for each request up to the limit, each opening its own decoders on CPUs the running videos already filled."""
+    entered = threading.Semaphore(0)
+    release = threading.Event()
 
     class Preprocessor:
         async def process(
@@ -3012,33 +3014,43 @@ def test_preprocessing_runs_no_more_videos_than_its_threads(
             request_inputs: RequestInputs,
             video_lane: preprocessor_mod.VideoLane | None,
         ) -> str:
-            nonlocal running, most_running
-            with running_lock:
-                running += 1
-                most_running = max(most_running, running)
-            both_running.wait()
-            with running_lock:
-                running -= 1
+            if video_lane is not None:
+                entered.release()
+                assert release.wait(timeout=5)
+            else:
+                pass
             return payload.request_id
 
-    monkeypatch.setattr(
-        qwen_stages, "Qwen3OmniPreprocessor", lambda **_: Preprocessor()
-    )
-    scheduler = qwen_stages.create_preprocessing_executor(
-        "model", max_running_video_requests=2
+    threads_before = set(threading.enumerate())
+    scheduler = qwen_stages.PreprocessingScheduler(
+        Preprocessor(),
+        video_request_worker_count=video_request_worker_count,
+        stage_intraop_threads=1,
+        stage_cpu_count=stage_cpu_count,
+        video_decode_threads=None,
     )
     worker = threading.Thread(target=scheduler.start, daemon=True)
     worker.start()
     try:
         for index in range(4):
             scheduler.inbox.put(video_request(f"video-{index}"))
+        scheduler.inbox.put(text_request("text"))
+        assert scheduler.outbox.get(timeout=5).data == "text"
+        assert entered.acquire(timeout=5) and entered.acquire(timeout=5)
+        video_threads = [
+            thread
+            for thread in threading.enumerate()
+            if thread not in threads_before and thread.name.startswith("prep-video")
+        ]
+        release.set()
         results = {scheduler.outbox.get(timeout=5).data for _ in range(4)}
     finally:
+        release.set()
         scheduler.stop()
         worker.join(timeout=3)
 
     assert results == {f"video-{index}" for index in range(4)}
-    assert most_running == 2
+    assert len(video_threads) == 2
 
 
 @pytest.mark.parametrize(
@@ -3053,7 +3065,7 @@ def test_preprocessing_runs_no_more_videos_than_its_threads(
     [
         (8, 6, None, (6, 3), 2, 3),
         (2, 64, 5, (5, 5), 2, 2),
-        (8, 1, None, (1, 1), 1, 1),
+        (8, 2, None, (2, 1), 2, 1),
     ],
 )
 def test_preprocessing_video_lane_splits_the_stage_cpus_among_its_threads(

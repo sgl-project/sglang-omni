@@ -49,7 +49,7 @@ from sglang_omni.models.qwen3_omni.request_builders import (
     build_encoder_request,
 )
 from sglang_omni.preprocessing.resource_connector import FramePool
-from sglang_omni.preprocessing.video import READER_FFMPEG_THREADS
+from sglang_omni.preprocessing.video import reader_ffmpeg_threads
 from sglang_omni.profiler.event_recorder import emit as _emit_event
 from sglang_omni.proto import StagePayload
 from sglang_omni.scheduling.generation_batch_policy import (
@@ -1069,19 +1069,20 @@ class PreprocessingScheduler(SimpleScheduler[StagePayload, StagePayload]):
         super().__init__(preprocessor, shutdown_callback=self.shut_down_video_lane)
         # note (ratish): the threads share one preprocessor, since the HF processor writes none of its own state while it runs and its tokenizer keeps one padding and truncation setting.
         self.preprocessor = preprocessor
+        # note (ratish): a running video decodes on at least one of the stage's CPUs, so videos past them would only hold their frames while they wait for one.
+        video_worker_count = min(video_request_worker_count, stage_cpu_count)
         # note (ratish): Linux keeps 15 bytes of a thread's name, so the video lane's pools take short prefixes that stay apart in top and traces.
         self.video_executor = ThreadPoolExecutor(
-            max_workers=video_request_worker_count,
+            max_workers=video_worker_count,
             thread_name_prefix="prep-video",
             initializer=name_native_thread,
         )
         # note (ratish): a lone video's frame slices keep every frame thread busy at once, so the frame threads split the stage's CPUs, each with at most the stage's intra-op threads.
-        frame_worker_count = min(video_request_worker_count, stage_cpu_count)
         video_intraop_threads = min(
-            stage_intraop_threads, stage_cpu_count // frame_worker_count
+            stage_intraop_threads, stage_cpu_count // video_worker_count
         )
         self.media_executor = thread_pool_with_intraop_threads(
-            max_workers=video_request_worker_count,
+            max_workers=video_worker_count,
             intraop_threads=video_intraop_threads,
             thread_name_prefix="prep-media",
         )
@@ -1093,17 +1094,17 @@ class PreprocessingScheduler(SimpleScheduler[StagePayload, StagePayload]):
         )
         self.frame_pool = FramePool(
             decode_executor=thread_pool_with_intraop_threads(
-                max_workers=video_request_worker_count
-                * max(1 + lone_video_decode_threads - READER_FFMPEG_THREADS, 1),
+                max_workers=video_worker_count
+                * max(1 + lone_video_decode_threads - reader_ffmpeg_threads(), 1),
                 intraop_threads=1,
                 thread_name_prefix="prep-decode",
             ),
             frame_executor=thread_pool_with_intraop_threads(
-                max_workers=frame_worker_count,
+                max_workers=video_worker_count,
                 intraop_threads=video_intraop_threads,
                 thread_name_prefix="prep-frames",
             ),
-            frame_workers=frame_worker_count,
+            frame_workers=video_worker_count,
         )
         self.stage_cpu_count = stage_cpu_count
         self.video_decode_threads = video_decode_threads

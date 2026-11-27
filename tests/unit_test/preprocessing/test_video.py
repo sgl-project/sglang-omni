@@ -536,6 +536,35 @@ def test_a_frame_pool_decodes_every_share_of_a_split_video_on_its_threads(
 @pytest.mark.skipif(
     video.VideoDecoder is None, reason="the torchcodec native decoder is unavailable"
 )
+@pytest.mark.parametrize(("decode_threads", "reader_threads"), [(3, 3), (0, 1)])
+def test_a_frame_pool_video_opens_its_reader_on_its_share_of_the_decode_threads(
+    mpeg4_video: Path,
+    opened_decoders: list[tuple[int, list[int]]],
+    decode_threads: int,
+    reader_threads: int,
+) -> None:
+    """A video on a frame pool opened its reader on the reader's own 8 FFmpeg threads whatever its share, so the videos running together on a stage with few CPUs took several times its CPUs."""
+    video_options = {"video": str(mpeg4_video), "fps": 4.0}
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        frames, sample_fps = video.read_video_torchcodec(
+            dict(video_options),
+            decode_threads,
+            FramePool(
+                decode_executor=executor, frame_executor=executor, frame_workers=1
+            ),
+        )
+    expected_frames, expected_fps = video.qwen_vision.VIDEO_READER_BACKENDS[
+        "torchcodec"
+    ](dict(video_options))
+
+    assert torch.equal(frames, expected_frames)
+    assert sample_fps == expected_fps
+    assert [thread_count for thread_count, _ in opened_decoders] == [reader_threads]
+
+
+@pytest.mark.skipif(
+    video.VideoDecoder is None, reason="the torchcodec native decoder is unavailable"
+)
 def test_videos_of_one_request_share_its_decode_threads(
     mpeg4_video: Path, opened_decoders: list[tuple[int, list[int]]]
 ) -> None:
