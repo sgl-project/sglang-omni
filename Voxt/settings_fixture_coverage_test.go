@@ -385,7 +385,7 @@ func checkSettingsAboutFixtures(t *testing.T, locale string, fixtures map[string
 		!checkOnly.AutoCheck || checkOnly.AutoInstall || !checkOnly.Beta {
 		t.Errorf("%s: check-only updater fixture has unexpected state %+v", locale, checkOnly)
 	}
-	if checkOnly.CheckDescription != expectedDescription || checkOnly.AutomaticDescription != translator.T("Once a day. A card says when a new version is out.") ||
+	if checkOnly.CheckDescription != expectedDescription || checkOnly.AutomaticDescription != translator.T("Once a day. An Update button shows when a new version is out.") ||
 		checkOnly.BetaNote != translator.T("Betas and releases, whichever is newer.") {
 		t.Errorf("%s: check-only updater fixture has unexpected text %+v", locale, checkOnly)
 	}

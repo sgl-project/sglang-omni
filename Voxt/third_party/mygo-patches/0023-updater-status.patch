@@ -1,0 +1,188 @@
+diff --git a/plugins/updater/updater.go b/plugins/updater/updater.go
+index d7fa49f..0d2431f 100644
+--- a/plugins/updater/updater.go
++++ b/plugins/updater/updater.go
+@@ -176,6 +176,37 @@ func LastCheck() time.Time {
+ // returns a function that removes fn.
+ func OnChange(fn func()) (off func()) { return used().onChange(fn) }
+ 
++// AvailableVersion returns the version of an update found by the latest
++// check that has not been skipped or installed yet, or empty.
++func AvailableVersion() string {
++	u := used()
++	u.mu.Lock()
++	defer u.mu.Unlock()
++	if u.available == nil {
++		return ""
++	}
++	return u.available.version
++}
++
++// InstalledVersion returns the version of an update installed while the
++// app runs (waiting for a relaunch), or empty.
++func InstalledVersion() string {
++	u := used()
++	u.mu.Lock()
++	defer u.mu.Unlock()
++	if u.installed == nil {
++		return ""
++	}
++	return u.installed.version
++}
++
++// CheckBackground checks for updates in the background without opening a
++// window unless an update requires the user's choice.
++func CheckBackground() {
++	u := used()
++	go u.begin(false)
++}
++
+ // active is the plugin that was used.
+ var active atomic.Pointer[updater]
+ 
+@@ -267,6 +298,7 @@ type updater struct {
+ 	// session is the check in progress; installed the update installed
+ 	// while the app runs, which runs at the next launch.
+ 	session   *session
++	available *release
+ 	installed *release
+ }
+ 
+@@ -333,15 +365,19 @@ func (u *updater) update(fn func(*state)) {
+ 	}
+ 	u.mu.Unlock()
+ 	if len(changes) > 0 {
+-		// From a goroutine of its own: no caller waits for the main thread.
+-		go runOnMain(func() {
+-			for _, fn := range changes {
+-				(*fn)()
+-			}
+-		})
++		dispatchChanges(changes)
+ 	}
+ }
+ 
++func dispatchChanges(changes []*func()) {
++	// From a goroutine of its own: no caller waits for the main thread.
++	go runOnMain(func() {
++		for _, fn := range changes {
++			(*fn)()
++		}
++	})
++}
++
+ // save writes the state file. u.mu is held.
+ func (u *updater) save() {
+ 	if u.file == "" {
+@@ -481,6 +517,20 @@ func (u *updater) run(s *session) {
+ 	if s.ctx.Err() != nil {
+ 		return // canceled
+ 	}
++	var skipped, automatic bool
++	if err == nil {
++		u.mu.Lock()
++		if r != nil {
++			skipped = u.state.SkippedVersion == r.version
++			automatic = u.state.AutomaticDownloads
++		}
++		if r != nil && (s.User() || !skipped) {
++			u.available = r
++		} else {
++			u.available = nil
++		}
++		u.mu.Unlock()
++	}
+ 	u.checked(err)
+ 	switch {
+ 	case err != nil:
+@@ -497,10 +547,6 @@ func (u *updater) run(s *session) {
+ 		return
+ 	}
+ 
+-	u.mu.Lock()
+-	skipped := u.state.SkippedVersion == r.version
+-	automatic := u.state.AutomaticDownloads
+-	u.mu.Unlock()
+ 	if !s.User() {
+ 		if skipped {
+ 			return
+@@ -520,6 +566,7 @@ func (u *updater) run(s *session) {
+ 		st.AutomaticDownloads = resp.automaticDownloads
+ 		if resp.action == actionSkip {
+ 			st.SkippedVersion = r.version
++			u.available = nil
+ 		}
+ 	})
+ 	if resp.action == actionInstall {
+@@ -551,8 +598,13 @@ func (u *updater) install(s *session, r *release) {
+ 		return
+ 	}
+ 	u.mu.Lock()
++	u.available = nil
+ 	u.installed = r
++	changes := slices.Clone(u.changes)
+ 	u.mu.Unlock()
++	if len(changes) > 0 {
++		dispatchChanges(changes)
++	}
+ 	if s.User() || s.isShown() {
+ 		u.offerRelaunch(s, r)
+ 	}
+diff --git a/plugins/updater/updater_test.go b/plugins/updater/updater_test.go
+index 80b4fc7..15f0a7b 100644
+--- a/plugins/updater/updater_test.go
++++ b/plugins/updater/updater_test.go
+@@ -566,3 +566,53 @@ func TestNotPublished(t *testing.T) {
+ 		t.Errorf("checkRelease = %v, want offline", err)
+ 	}
+ }
++
++func TestUpdaterStatus(t *testing.T) {
++	h := newHarness(t, Options{})
++	prev := active.Swap(h.u)
++	t.Cleanup(func() { active.Store(prev) })
++
++	if AvailableVersion() != "" || InstalledVersion() != "" {
++		t.Fatalf("initial status: avail=%q inst=%q", AvailableVersion(), InstalledVersion())
++	}
++
++	// Finding an update records AvailableVersion even if the user chooses Remind Me Later.
++	h.result = func(context.Context) (*release, error) {
++		return newRelease("2.1.4", nil), nil
++	}
++	done := h.begin(false)
++	s := h.shown()
++	v := waitView(t, s, "A new version of")
++	if got := AvailableVersion(); got != "2.1.4" {
++		t.Fatalf("available %q, want 2.1.4", got)
++	}
++	s.Respond(v.Prompt, actionLater, false)
++	waitDone(t, done)
++	if got := AvailableVersion(); got != "2.1.4" {
++		t.Fatalf("after Remind Later: available %q, want 2.1.4", got)
++	}
++
++	// Skipping clears AvailableVersion.
++	done = h.begin(true)
++	s = h.shown()
++	v = waitView(t, s, "A new version of")
++	s.Respond(v.Prompt, actionSkip, false)
++	waitDone(t, done)
++	if got := AvailableVersion(); got != "" {
++		t.Fatalf("after Skip: available %q, want empty", got)
++	}
++
++	// Background automatic install clears AvailableVersion and sets InstalledVersion.
++	SetAutomaticDownloads(true)
++	h.result = func(context.Context) (*release, error) {
++		return newRelease("2.1.5", nil), nil
++	}
++	done = h.begin(false)
++	waitDone(t, done)
++	if got := AvailableVersion(); got != "" {
++		t.Fatalf("after install: available %q, want empty", got)
++	}
++	if got := InstalledVersion(); got != "2.1.5" {
++		t.Fatalf("after install: installed %q, want 2.1.5", got)
++	}
++}

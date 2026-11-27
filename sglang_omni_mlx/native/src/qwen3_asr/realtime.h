@@ -99,17 +99,17 @@ private:
   long LockedEndSample();
   std::vector<float> SegmentSamples(const Segment &segment,
                                     long end_sample) const;
-  // Builds the request for a decode of segment through end_sample, a refresh
-  // or its final decode, and counts it.
-  TranscriptionOptions DecodeOptions(Segment &segment, bool is_refresh,
-                                     long end_sample);
+  // note (chenye): Builds refresh or final options through end_sample and
+  // increments the segment decode count.
+  TranscriptionOptions DecodeOptions(Segment &segment, long end_sample);
   std::shared_ptr<RealtimeDecodeTiming>
   NewDecodeTiming(const Segment &segment, std::string kind, long end_sample,
                   int audio_sample_count) const;
-  // A refresh passes its segment's reuse; the final decode passes none.
+  // note (chenye): Finals snapshot shared reuse on the worker; refreshes update
+  // it.
   omni_server::Transcription
   Decode(std::vector<float> samples, TranscriptionOptions options,
-         std::shared_ptr<RefreshReuse> reuse,
+         std::shared_ptr<RefreshReuse> reuse, bool snapshot_reuse,
          std::shared_ptr<RealtimeDecodeTiming> timing = nullptr) const;
   void ApplyResult(Segment &segment,
                    const omni_common::TranscriptionResult &result,

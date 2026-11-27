@@ -1,6 +1,9 @@
 package llm
 
-import "maps"
+import (
+	"maps"
+	"strings"
+)
 
 // Generation is a remote model's request settings, field for field as
 // Voxt 1.x's service dialog had them (Generation Settings, Advanced,
@@ -233,6 +236,7 @@ func applyThinking(b map[string]any, id, model string, t Thinking) {
 				b["max_tokens"] = t.Budget + 1
 			}
 		}
+		claudeThinkingOff(b, model)
 	case "gemini":
 		switch t.Mode {
 		case ThinkOff:
@@ -247,5 +251,21 @@ func applyThinking(b map[string]any, id, model string, t Thinking) {
 		case ThinkEffort:
 			effort()
 		}
+	}
+}
+
+// claudeThinkingOff rewrites thinking off (the preset's or ThinkOff) for
+// the Claude models that refuse type disabled: Claude Sonnet 5.5 turns
+// thinking off with between_tools, and Claude Opus 5.5 and the Fable and
+// Mythos models always think, so they get no thinking field.
+func claudeThinkingOff(b map[string]any, model string) {
+	if t, _ := b["thinking"].(map[string]any); t["type"] != "disabled" {
+		return
+	}
+	switch m := strings.ToLower(strings.TrimSpace(model)); {
+	case strings.HasPrefix(m, "claude-sonnet-5-5"):
+		b["thinking"] = map[string]any{"type": "between_tools"}
+	case strings.HasPrefix(m, "claude-opus-5-5"), strings.HasPrefix(m, "claude-fable-"), strings.HasPrefix(m, "claude-mythos-"):
+		delete(b, "thinking")
 	}
 }

@@ -21,26 +21,28 @@ import (
 // shellFixtureScenario is the app configuration a shell fixture is
 // built from.
 type shellFixtureScenario struct {
-	readyLocal   bool     // speech and language models installed
-	hidden       []string // features hidden (their pages leave the sidebar)
-	closed       []string // sidebar sections closed
-	rail         bool     // the user's layout choice: icons only
-	sidebarWidth float64  // DIPs at 100 %
-	suggestions  int      // dictionary suggestions (the Dictionary item's badge)
-	settingsOpen bool
-	current      string // the router's page ("/home" when "")
-	toasts       []string
-	logsPanel    bool
-	logEntries   []core.LogEntry
-	logsSource   string
-	logsQuery    string
-	paletteOpen  bool
-	paletteQuery string
-	sheetOpen    bool
-	notices      []core.Notification
-	problem      string // "models-both", "models-asr", "models-llm", "models-pending", "helper-<reason>"
-	announcement *core.Notification
-	noHotkeys    bool // the features have no shortcuts (the sheet's "—")
+	readyLocal      bool     // speech and language models installed
+	hidden          []string // features hidden (their pages leave the sidebar)
+	closed          []string // sidebar sections closed
+	rail            bool     // the user's layout choice: icons only
+	sidebarWidth    float64  // DIPs at 100 %
+	suggestions     int      // dictionary suggestions (the Dictionary item's badge)
+	settingsOpen    bool
+	current         string // the router's page ("/home" when "")
+	toasts          []string
+	logsPanel       bool
+	logEntries      []core.LogEntry
+	logsSource      string
+	logsQuery       string
+	paletteOpen     bool
+	paletteQuery    string
+	sheetOpen       bool
+	notices         []core.Notification
+	problem         string // "models-both", "models-asr", "models-llm", "models-pending", "helper-<reason>"
+	announcement    *core.Notification
+	noHotkeys       bool   // the features have no shortcuts (the sheet's "—")
+	updateAvailable string // sidebar update control: version available
+	updateInstalled string // sidebar update control: version installed, waiting to restart
 }
 
 // shellFixtureScenarios are the shell's fixtures, one per state the
@@ -115,6 +117,9 @@ func shellFixtureScenarios() []meetingFixtureScenario {
 		Time: meetingFixtureNow, Version: "2.1.0", Link: linkAnnouncement,
 	}})
 	add("shell", "shell-rail-notices", shellFixtureScenario{readyLocal: true, rail: true, notices: shellFixtureNotices(2)})
+	add("shell", "shell-update-available", shellFixtureScenario{readyLocal: true, updateAvailable: "2.1.4"})
+	add("shell", "shell-update-ready", shellFixtureScenario{readyLocal: true, updateInstalled: "2.1.4"})
+	add("shell", "shell-rail-update-ready", shellFixtureScenario{readyLocal: true, rail: true, updateInstalled: "2.1.4"})
 	return scenarios
 }
 
@@ -228,6 +233,14 @@ func shellFixtureApply(t *testing.T, a *app, in shellFixtureScenario) {
 	if in.announcement != nil {
 		a.announceShown, a.announceShownOpen = *in.announcement, true
 	}
+	if in.updateInstalled != "" {
+		a.updPrefs.InstalledVersion = in.updateInstalled
+		a.updKnown = true
+		a.bundleUpdated = true
+	} else if in.updateAvailable != "" {
+		a.updPrefs.AvailableVersion = in.updateAvailable
+		a.updKnown = true
+	}
 }
 
 // buildShellFixture drives a scenario through the shell's model
@@ -291,6 +304,7 @@ func TestShellFixtureCoverage(t *testing.T) {
 	severities := map[string]bool{}
 	levels := map[string]bool{}
 	problems := map[string]bool{}
+	var hasUpdateAvail, hasUpdateReady bool
 	for _, locale := range i18n.Supported() {
 		i18n.SetLocale(locale)
 		for _, scenario := range shell {
@@ -302,6 +316,13 @@ func TestShellFixtureCoverage(t *testing.T) {
 			if fixture.Shell != nil {
 				for _, n := range fixture.Shell.Notices {
 					severities[n.Severity] = true
+				}
+				if u := fixture.Shell.Update; u != nil {
+					if u.Ready {
+						hasUpdateReady = true
+					} else {
+						hasUpdateAvail = true
+					}
 				}
 			}
 			if fixture.Logs != nil {
@@ -315,6 +336,12 @@ func TestShellFixtureCoverage(t *testing.T) {
 		}
 	}
 	i18n.SetLocale("en")
+	if !hasUpdateAvail {
+		t.Error("no shell update-available fixture")
+	}
+	if !hasUpdateReady {
+		t.Error("no shell update-ready fixture")
+	}
 	for _, kind := range []string{"shell", "shell-nav", "shell-notices", "shell-logs", "shell-palette", "shell-sheet", "shell-announcement"} {
 		if !kinds[kind] {
 			t.Errorf("no fixture of kind %s", kind)

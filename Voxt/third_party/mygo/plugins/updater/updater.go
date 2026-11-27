@@ -176,6 +176,37 @@ func LastCheck() time.Time {
 // returns a function that removes fn.
 func OnChange(fn func()) (off func()) { return used().onChange(fn) }
 
+// AvailableVersion returns the version of an update found by the latest
+// check that has not been skipped or installed yet, or empty.
+func AvailableVersion() string {
+	u := used()
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	if u.available == nil {
+		return ""
+	}
+	return u.available.version
+}
+
+// InstalledVersion returns the version of an update installed while the
+// app runs (waiting for a relaunch), or empty.
+func InstalledVersion() string {
+	u := used()
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	if u.installed == nil {
+		return ""
+	}
+	return u.installed.version
+}
+
+// CheckBackground checks for updates in the background without opening a
+// window unless an update requires the user's choice.
+func CheckBackground() {
+	u := used()
+	go u.begin(false)
+}
+
 // active is the plugin that was used.
 var active atomic.Pointer[updater]
 
@@ -267,6 +298,7 @@ type updater struct {
 	// session is the check in progress; installed the update installed
 	// while the app runs, which runs at the next launch.
 	session   *session
+	available *release
 	installed *release
 }
 
@@ -333,13 +365,17 @@ func (u *updater) update(fn func(*state)) {
 	}
 	u.mu.Unlock()
 	if len(changes) > 0 {
-		// From a goroutine of its own: no caller waits for the main thread.
-		go runOnMain(func() {
-			for _, fn := range changes {
-				(*fn)()
-			}
-		})
+		dispatchChanges(changes)
 	}
+}
+
+func dispatchChanges(changes []*func()) {
+	// From a goroutine of its own: no caller waits for the main thread.
+	go runOnMain(func() {
+		for _, fn := range changes {
+			(*fn)()
+		}
+	})
 }
 
 // save writes the state file. u.mu is held.
@@ -481,6 +517,20 @@ func (u *updater) run(s *session) {
 	if s.ctx.Err() != nil {
 		return // canceled
 	}
+	var skipped, automatic bool
+	if err == nil {
+		u.mu.Lock()
+		if r != nil {
+			skipped = u.state.SkippedVersion == r.version
+			automatic = u.state.AutomaticDownloads
+		}
+		if r != nil && (s.User() || !skipped) {
+			u.available = r
+		} else {
+			u.available = nil
+		}
+		u.mu.Unlock()
+	}
 	u.checked(err)
 	switch {
 	case err != nil:
@@ -497,10 +547,6 @@ func (u *updater) run(s *session) {
 		return
 	}
 
-	u.mu.Lock()
-	skipped := u.state.SkippedVersion == r.version
-	automatic := u.state.AutomaticDownloads
-	u.mu.Unlock()
 	if !s.User() {
 		if skipped {
 			return
@@ -520,6 +566,7 @@ func (u *updater) run(s *session) {
 		st.AutomaticDownloads = resp.automaticDownloads
 		if resp.action == actionSkip {
 			st.SkippedVersion = r.version
+			u.available = nil
 		}
 	})
 	if resp.action == actionInstall {
@@ -551,8 +598,13 @@ func (u *updater) install(s *session, r *release) {
 		return
 	}
 	u.mu.Lock()
+	u.available = nil
 	u.installed = r
+	changes := slices.Clone(u.changes)
 	u.mu.Unlock()
+	if len(changes) > 0 {
+		dispatchChanges(changes)
+	}
 	if s.User() || s.isShown() {
 		u.offerRelaunch(s, r)
 	}

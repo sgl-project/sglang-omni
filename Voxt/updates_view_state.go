@@ -55,7 +55,7 @@ func buildUpdatesViewState(translator *i18n.Translator, input updatesViewStateIn
 	}
 	state.AutomaticDescription = translator.T("Once a day. Voxt asks before installing.")
 	if input.Prefs.CheckOnly {
-		state.AutomaticDescription = translator.T("Once a day. A card says when a new version is out.")
+		state.AutomaticDescription = translator.T("Once a day. An Update button shows when a new version is out.")
 	}
 	state.BetaNote = translator.T("Releases only.")
 	switch {
@@ -117,4 +117,38 @@ func releaseErrTextFor(translator *i18n.Translator, err error) string {
 		return translator.T("GitHub did not answer in time. Check your connection, or the proxy in Speech models → Network.")
 	}
 	return translator.T("Voxt could not read the list of releases on GitHub: %v", err)
+}
+
+// sidebarUpdateViewState is the update control at the foot of the sidebar
+// (a translucent or solid bar when expanded, a circular icon button in the
+// collapsed icon rail): nil when up to date, else "Update …" or
+// "Restart to update".
+type sidebarUpdateViewState struct {
+	Ready   bool   `json:"ready,omitempty"`
+	Version string `json:"version,omitempty"`
+	Label   string `json:"label"`
+	Tooltip string `json:"tooltip"`
+}
+
+func buildSidebarUpdateViewState(translator *i18n.Translator, bundleUpdated bool, installedVersion, availableVersion string) *sidebarUpdateViewState {
+	if bundleUpdated {
+		tip := translator.T("Restart Voxt to finish updating.")
+		if installedVersion != "" {
+			tip = translator.T("Voxt %s is ready. Restart to finish updating.", installedVersion)
+		}
+		return &sidebarUpdateViewState{
+			Ready:   true,
+			Version: installedVersion,
+			Label:   translator.T("Restart to update"),
+			Tooltip: tip,
+		}
+	}
+	if availableVersion == "" {
+		return nil
+	}
+	return &sidebarUpdateViewState{
+		Version: availableVersion,
+		Label:   translator.T("Update %s", availableVersion),
+		Tooltip: translator.T("Voxt %s is available", availableVersion),
+	}
 }
