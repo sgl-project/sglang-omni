@@ -53,8 +53,8 @@ type Preset struct {
 	// Generation is the user's request settings (ProviderConfig), not
 	// the preset's.
 	Generation Generation `json:"-"`
-	// API is the API format: "" chat completions, APIResponses; the
-	// user's ProviderConfig.API replaces it.
+	// API is the API format: "" chat completions, APIResponses or
+	// APIMessages; the user's ProviderConfig.API replaces it.
 	API string `json:"api,omitempty"`
 }
 
@@ -102,9 +102,9 @@ type ProviderConfig struct {
 
 // Resolve merges cfg over its preset and checks the address: HTTP is
 // allowed for API-key services, while sign-in tokens require HTTPS off
-// this Mac. URLs cannot contain a user or password. A full chat completions
-// or Responses URL is taken for its API root; a host on this Mac with no
-// path gets the preset's.
+// this Mac. URLs cannot contain a user or password. A full chat
+// completions, Responses or Messages URL is taken for its API root; a host
+// on this Mac with no path gets the preset's.
 func (cfg ProviderConfig) Resolve() (Preset, error) {
 	p, ok := LookupPreset(cfg.ID)
 	if !ok {
@@ -121,7 +121,10 @@ func (cfg ProviderConfig) Resolve() (Preset, error) {
 	if cfg.API != "" {
 		p.API = cfg.API
 	}
-	p.BaseURL = strings.TrimSuffix(strings.TrimSuffix(strings.TrimRight(p.BaseURL, "/"), "/chat/completions"), "/responses")
+	p.BaseURL = strings.TrimRight(p.BaseURL, "/")
+	for _, endpoint := range []string{"/chat/completions", "/responses", "/messages"} {
+		p.BaseURL = strings.TrimSuffix(p.BaseURL, endpoint)
+	}
 	if p.BaseURL == "" {
 		return Preset{}, newErr(CodeConfig, "provider", p.ID, "field", "baseURL")
 	}
