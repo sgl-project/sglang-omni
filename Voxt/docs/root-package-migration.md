@@ -19,6 +19,7 @@ The blocking PR column comes from the complete, paginated file lists of every op
 | Phase | Root files | Target | Files | Blocking PRs |
 |---|---|---|---:|---|
 | 1 | `legacy_openai.go` | `providers` | 1 | None |
+| 2 | `legacy_hotkey.go` | `hotkey` | 2 | None |
 | With consumers | `ui_*`, `find_marks*`, `floating*`, `helpers.go` | `main` | 16 | 3856, 3861, 4073, 4174, 4186 |
 | 2 | `history*` | `main + pages/history` | 27 | 3861, 3959, 4070, 4073, 4101, 4163, 4174, 4186, 4240, 4291 |
 | 2 | `meeting*`, `settings_meeting*`, except `meeting_demo*`, `meeting_fixture*` | `main + pages/meeting` | 34 | 3861, 4069, 4073, 4098, 4141, 4162, 4172, 4174, 4178 |
@@ -35,7 +36,7 @@ The blocking PR column comes from the complete, paginated file lists of every op
 | 6 | `onboarding*`, `opening*` | `main + pages/onboarding`; keep embedded assets with their view | 20 | 3861, 4056, 4069, 4070, 4073, 4162, 4172, 4243, 4268, 4291 |
 | 6 | `settings*`, `shell_settings*`, `permissions*`, `key_recorder*`, `shortcuts_snapshot_test.go`, `sounds_*`, `sync_sounds_test.go`, `dock_test.go`, except `settings_meeting*`, `settings_about_models*`, `settings_demo_host.go`, `settings_fixture_build_test.go` | `main + pages/settings` | 72 | 3856, 3861, 4049, 4056, 4070, 4073, 4101, 4163, 4172, 4174, 4175, 4178, 4186, 4238, 4240, 4241, 4254, 4275, 4283, 4287, 4291 |
 | 7 | `shell*`, `announcements*`, `tray*`, `pages.go`, `window_close_test.go`, except `shell_settings*`, `shell_demo_host.go` | `main + pages/shell` | 35 | 3856, 3861, 4049, 4056, 4073, 4098, 4162, 4172, 4174, 4175, 4178, 4230, 4241, 4254, 4287, 4291 |
-| 7 | `legacy*`, except `legacy_openai.go` | `main + pages/legacy` | 14 | 3861, 4056, 4122, 4170, 4241, 4279, 4291 |
+| 7 | `legacy*`, except `legacy_openai.go`, `legacy_hotkey.go` | `main + pages/legacy` | 12 | 3861, 4056, 4122, 4170, 4241, 4279, 4291 |
 | 7 | `meeting_demo*`, `meeting_fixture*`, `settings_demo_host.go`, `shell_demo_host.go`, `settings_fixture_build_test.go` | `main` | 13 | 4070, 4073, 4163, 4175, 4178, 4186 |
 | 7 | `app.go`, `main.go`, `library.go`, `events.go`, `helperlink.go`, `family.go`, `family_runtime.go`, `logs_check.go`, `smoke.go`, `sysinfo.go` | `main` | 10 | 3975, 4048, 4070, 4073, 4101, 4141, 4162 |
 | With its feature | `eval_*`, `mac_e2e_*`, `access_reach_test.go`, `button_heights_test.go`, `dialogs_*`, `family_runtime_test.go`, `family_ui_test.go`, `live_text_test.go`, `local_fakes_test.go`, `name_test.go`, `render_bench_test.go`, `resource_bench_test.go`, `snapshot_*`, `testutil_test.go`, `text_fit_test.go` | `main` | 25 | 3861, 3959, 4047, 4056, 4069, 4070, 4073, 4101, 4103, 4162, 4174, 4175, 4198, 4242, 4254, 4273, 4274, 4291 |
@@ -45,11 +46,12 @@ A set-partition check over these include and exclude patterns assigned all 505 f
 ## Move order
 
 1. Move `legacy_openai.go` into `internal/providers`. Export only `LegacyModelIs`, `LegacyOpenAIGeneration`, and `LegacyResponsesAPI`; keep `legacyOpenAIEfforts` private. The only external caller is `legacy_settings.go`, which already imports `providers`. This move adds no internal import edge and touches no file in an open PR.
-2. Extract leaf logic from History, Meeting, App enhancement, Dictionary, and Models after their blockers clear. Keep each feature's views and app adapters in root. Use one package per commit.
-3. Move Updates, Remote, and file transcription next. Leave release checks, startup hooks, and CLI dispatch in root.
-4. Split Session workflows. Rewrite, Transcribe, and Translate stay in the Session and Feature packages rather than starting duplicate packages around the same workflow.
-5. Move the Session overlay and Feature pages after the Session interfaces stabilize.
-6. Move Home, Onboarding, and Settings after their Session and Feature dependencies have stable interfaces.
-7. Finish Shell, the remaining legacy import code, shared demos, and app composition last. Keep integration tests in root and move a test only with the package that owns its API.
+2. Move `legacy_hotkey.go` and its test into `internal/hotkey`. Export only `ParseLegacyMeetingHotkeys`; root passes `legacyPreference` so OS preference reads stay at the app boundary. This adds no internal import edge.
+3. Extract leaf logic from History, Meeting, App enhancement, Dictionary, and Models after their blockers clear. Keep each feature's views and app adapters in root. Use one package per commit.
+4. Move Updates, Remote, and file transcription next. Leave release checks, startup hooks, and CLI dispatch in root.
+5. Split Session workflows. Rewrite, Transcribe, and Translate stay in the Session and Feature packages rather than starting duplicate packages around the same workflow.
+6. Move the Session overlay and Feature pages after the Session interfaces stabilize.
+7. Move Home, Onboarding, and Settings after their Session and Feature dependencies have stable interfaces.
+8. Finish Shell, the remaining legacy import code, shared demos, and app composition last. Keep integration tests in root and move a test only with the package that owns its API.
 
 Use `git mv` for whole-file moves and export only declarations that external callers need. Do not add forwarding wrappers to bypass a blocked caller. For a same-package move, compare `declhash` output exactly. For a package extraction, use a comparison that normalizes only the new package qualifiers and exported names, then prove that the remaining source is identical. Run the Go tests, `go tool mygo vet .`, `internal/archtest`, `TestKeyParity`, and `pre-commit` after every package.

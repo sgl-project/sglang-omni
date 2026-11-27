@@ -309,14 +309,18 @@ type Dictionary struct {
 // Setup: the first-run guide.
 type Setup struct {
 	Done bool `json:"done,omitempty"`
-	// Tried: a session (a try or a real one, any feature) has given a
-	// result once, or the history had one: Home stops offering its Try
-	// area. It stays when the history is cleared.
+	// Tried is the legacy flag for Home's removed Try area. Keep loading
+	// old settings without changing their meaning.
 	Tried bool `json:"tried,omitempty"`
 	// RewriteBoxOpens counts successful input-box opens, capped at three;
 	// RewriteBoxTipDismissed independently hides the guidance for good.
 	RewriteBoxOpens        int  `json:"rewriteBoxOpens,omitempty"`
 	RewriteBoxTipDismissed bool `json:"rewriteBoxTipDismissed,omitempty"`
+	// SessionSwitchTotal counts every session switch and SessionReturns
+	// those that came back to a session holding a card: how often people
+	// go back and forth (#4005). They stay on this Mac.
+	SessionSwitchTotal int `json:"sessionSwitchTotal,omitempty"`
+	SessionReturns     int `json:"sessionReturns,omitempty"`
 }
 
 // Updates: what the updater offers (Settings → About → Updates). With an
@@ -333,8 +337,12 @@ type Updates struct {
 	// default); LastCheck is when one last succeeded.
 	NoAutoCheck bool      `json:"noAutoCheck,omitempty"`
 	LastCheck   time.Time `json:"lastCheck,omitzero"`
-	// Dismissed is the version whose "is available" card the user
-	// dismissed: no card for it again, one for a newer version.
+	// Available is the newest GitHub release found by a check without an
+	// update feed, kept across restarts until a check clears it or Voxt
+	// updates to that version or newer.
+	Available string `json:"available,omitempty"`
+	// Dismissed is the legacy version whose "is available" card the user
+	// dismissed: kept so previously dismissed versions stay quiet.
 	Dismissed string `json:"dismissed,omitempty"`
 }
 
@@ -382,6 +390,7 @@ func Defaults() Settings {
 			PasteLast:      Hotkey{Keys: DefaultPasteLast, Trigger: TriggerTap},
 			Cancel:         Hotkey{Keys: DefaultCancel, Trigger: TriggerTap},
 			Note:           Hotkey{Keys: DefaultNote, Trigger: TriggerTap},
+			Sessions:       [4]Hotkey{3: {Keys: DefaultSessionNext, Trigger: TriggerTap}},
 			ReturnFinishes: true,
 		},
 		AppEnhancement: AppEnhancement{Enabled: true},
@@ -413,6 +422,7 @@ func Migrate(data []byte) (Settings, error) {
 		migrateShortcuts(&s.Features)
 	}
 	migrateNoteKeys(data, &s.Features)
+	migrateSessionKeys(data, &s.Features)
 	migrateShowCard(data, &s.Features)
 	migrateReturnFinishes(data, &s.Features)
 	migrateSoundPreset(&s.Audio)
@@ -541,51 +551,4 @@ type Service interface {
 	// Update applies fn to a copy, saves it, swaps it in and publishes
 	// Changed; a no-op change publishes nothing. fn must not block.
 	Update(ctx context.Context, fn func(*Settings)) error
-}
-
-// Network: how model downloads reach the Hub, VoxtNew's own values (used
-// while it does not follow the ActNow family's, Family.Follow). Proxy is
-// "" (automatic: the environment's, else the Mac's), "direct" or a proxy
-// URL; HFEndpoints "" or "auto" (the Hub and hf-mirror.com raced),
-// "official", "mirror", or URLs (family spec §9.1).
-type Network struct {
-	Proxy       string `json:"proxy,omitempty"`
-	HFEndpoints string `json:"hfEndpoints,omitempty"`
-	// ProxyUser is a custom proxy's user name and ProxyAuthHost the proxy
-	// host it and its password (the Keychain's "proxy.<host>") are for:
-	// Voxt's only, never the family's (models_proxy_auth.go).
-	ProxyUser     string `json:"proxyUser,omitempty"`
-	ProxyAuthHost string `json:"proxyAuthHost,omitempty"`
-}
-
-// Family is VoxtNew's part in the ActNow family (internal/actnow).
-type Family struct {
-	// Follow says, by shared key ("general.language", "network.proxy",
-	// "network.hfEndpoints", "models.root"), whether VoxtNew uses the
-	// family's value; a key that is missing follows (family spec §9.3).
-	Follow map[string]bool `json:"follow,omitempty"`
-	// Migrated: the first start with the family's protocol is done (the
-	// models on disk claimed, the shared settings merged).
-	Migrated bool `json:"migrated,omitempty"`
-	// Conflicts are the shared keys the family had another value of at the
-	// migration: their row says so once, until the user acts on it.
-	Conflicts []string `json:"conflicts,omitempty"`
-	// Prompted are the shortcut conflicts whose prompt was shown
-	// (actnowkit shortcuts.Conflict.Key): each pair once.
-	Prompted []string `json:"prompted,omitempty"`
-	// KeysSince is when each declared shortcut got its keys (by the
-	// manifest's shortcut id): the later of two conflicting apps prompts.
-	KeysSince map[string]KeysSince `json:"keysSince,omitempty"`
-}
-
-// KeysSince is a shortcut's keys and when they were set.
-type KeysSince struct {
-	Keys  string    `json:"keys"`
-	Since time.Time `json:"since"`
-}
-
-// Follows reports whether key follows the family.
-func (f Family) Follows(key string) bool {
-	v, ok := f.Follow[key]
-	return !ok || v
 }

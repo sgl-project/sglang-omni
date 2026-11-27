@@ -14,6 +14,9 @@ func (host *meetingDemoHost) resetSettingsDemo(fixture meetingDemoFixture) {
 	if state := fixture.state.Settings; state != nil {
 		host.settingsOpen = state.Open
 		host.settingsRouter = ui.NewRouter(state.Path)
+		if state.Feature != nil {
+			host.selectFeatureFixture(state.Feature)
+		}
 		if general := state.General; general != nil {
 			host.settingsForm.settingsGeneralLocalUI = settingsGeneralLocalUI{
 				language: general.Language, mainLanguage: general.MainLanguage, copyResult: general.CopyResult,
@@ -46,6 +49,9 @@ func (host *meetingDemoHost) resetSettingsDemo(fixture meetingDemoFixture) {
 		if shortcuts := state.Shortcuts; shortcuts != nil {
 			host.settingsForm.strictShortcuts, host.settingsForm.returnFinishes = shortcuts.StrictShortcuts, shortcuts.ReturnFinishes
 		}
+		if experimental := state.Experimental; experimental != nil {
+			host.settingsForm.sessionsOn = experimental.SessionsOn
+		}
 		if overlay := state.Overlay; overlay != nil {
 			host.settingsForm.ovStyle = overlayForm{
 				position: overlay.Position, opacity: overlay.Opacity, radius: overlay.Radius, margin: overlay.Margin,
@@ -71,6 +77,9 @@ func (host *meetingDemoHost) resetSettingsDemo(fixture meetingDemoFixture) {
 		Open: &host.settingsOpen, Router: host.settingsRouter, Form: &host.settingsForm,
 		HistoryAccess: &host.historyAccessUI, Storage: &host.settingsStorageUI, Updates: &host.updatesUI,
 		Models: &host.modelsUI, Remote: remoteLocalUI{wait: &host.remoteWaitUI, dialog: &host.remoteDialogUI},
+	}
+	if fixture.state.Settings != nil && fixture.state.Settings.Feature != nil {
+		host.settingsDialogUI.Feature = &host.feature.local
 	}
 }
 
@@ -161,6 +170,12 @@ func (host *meetingDemoHost) setStrictShortcuts(on bool) { host.record("setStric
 
 func (host *meetingDemoHost) setReturnFinishes(on bool) { host.record("setReturnFinishes %t", on) }
 
+func (host *meetingDemoHost) setSessionKeys(slot int, keys string) {
+	host.record("setSessionKeys %d %s", slot, keys)
+}
+
+func (host *meetingDemoHost) setSessionsOn(on bool) { host.record("setSessionsOn %t", on) }
+
 func (host *meetingDemoHost) setSendWindow(on bool) { host.record("setSendWindow %t", on) }
 func (host *meetingDemoHost) setSendClipboardImage(on bool) {
 	host.record("setSendClipboardImage %t", on)
@@ -185,6 +200,8 @@ func (host *meetingDemoHost) cancelStorageDataMove()    { host.record("cancelSto
 func (host *meetingDemoHost) cancelStorageModelMove()   { host.record("cancelStorageModelMove") }
 func (host *meetingDemoHost) resetLook()                { host.record("resetLook") }
 func (host *meetingDemoHost) resetSettings()            { host.record("resetSettings") }
+func (host *meetingDemoHost) exportLibrary()            { host.record("exportLibrary") }
+func (host *meetingDemoHost) importLibrary()            { host.record("importLibrary") }
 func (host *meetingDemoHost) askErase() {
 	host.settingsStorageUI.resetAsk = "everything"
 	host.settingsStorageUI.resetText = ""

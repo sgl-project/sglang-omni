@@ -9,6 +9,7 @@
 #include <utility>
 
 #include "common/audio.h"
+#include "common/audio_chunks.h"
 #include "common/generation.h"
 #include "common/kv_cache.h"
 #include "common/text.h"
@@ -42,6 +43,9 @@ constexpr int kReflectedTailFrames = 2;
 // Tokens of a Final's prompt head one background job prefills, so that a live
 // refresh waits for no more than this long.
 constexpr int kFinalPrefillChunkTokens = 256;
+constexpr size_t kChunkSearchSamples = 5 * omni_common::kSampleRate;
+constexpr size_t kChunkEnergyWindowSamples = omni_common::kSampleRate / 10;
+constexpr size_t kMinTailSamples = 5 * omni_common::kSampleRate;
 
 const std::map<std::string, std::string> &LanguageCodeToName() {
   static const std::map<std::string, std::string> table = {
@@ -121,17 +125,15 @@ std::optional<std::string> NormalizeLanguage(const std::string &language) {
 
 Qwen3ASRTranscriber::Qwen3ASRTranscriber(
     const std::filesystem::path &model_directory,
-    const std::filesystem::path &draft_directory, int draft_quantization_bits,
-    DraftPolicy draft_policy)
+    const omni_common::DraftOptions &draft, DraftPolicy draft_policy)
     : model_(model_directory), tokenizer_(model_directory),
       audio_pad_id_(tokenizer_.AddedTokenId(kAudioPad)),
       end_of_text_id_(tokenizer_.AddedTokenId("<|endoftext|>")),
       im_end_id_(tokenizer_.AddedTokenId("<|im_end|>")),
       asr_text_ids_(tokenizer_.Encode(kAsrTextMarker)),
       draft_policy_(draft_policy) {
-  if (!draft_directory.empty()) {
-    draft_.emplace(draft_directory, draft_quantization_bits,
-                   model_.decoder().config());
+  if (!draft.directory.empty()) {
+    draft_.emplace(draft, model_.decoder().config());
   } else {
   }
 }
@@ -180,6 +182,17 @@ Qwen3ASRTranscriber::RetainedPrefix(const std::string &text,
     }
   }
   return {{}, "", token_ids};
+}
+
+std::vector<int>
+Qwen3ASRTranscriber::AutoLanguageGuesses(const std::string &language,
+                                         const std::string &text) const {
+  const auto normalized = NormalizeLanguage(language);
+  if (!normalized.has_value() || text.empty()) {
+    return {};
+  }
+  return RetainedPrefix("language " + *normalized + kAsrTextMarker + text, 0)
+      .prefix_ids;
 }
 
 int Qwen3ASRTranscriber::MaxNewTokens(size_t sample_count,
@@ -468,6 +481,60 @@ bool Qwen3ASRTranscriber::ExtendFinalPrefill(
 TranscriptionResult Qwen3ASRTranscriber::Transcribe(
     const std::vector<float> &samples, const TranscriptionOptions &options,
     const std::atomic<bool> &cancel, RefreshReuse *reuse) const {
+  if (samples.size() <= kMaxChunkSamples || reuse != nullptr ||
+      !options.prefix_token_ids.empty()) {
+    return TranscribeChunk(samples, options, cancel, reuse);
+  } else {
+  }
+  TranscriptionResult merged;
+  merged.language = NormalizeLanguage(options.language.value_or(""));
+  merged.finish_reason = FinishReason::kStop;
+  const int max_new_tokens = options.max_new_tokens.value_or(0);
+  TranscriptionOptions chunk_options = options;
+  // The guesses are the whole recording's text, which no chunk is.
+  chunk_options.guessed_token_ids.clear();
+  std::vector<std::string> texts;
+  for (const auto &[start_sample, end_sample] :
+       omni_common::BoundedEnergyCutChunks(
+           samples, kMaxChunkSamples, kChunkSearchSamples,
+           kChunkEnergyWindowSamples, kMinTailSamples)) {
+    if (omni_common::PeakIsSilent(samples.data() + start_sample,
+                                  end_sample - start_sample, kSilentPeak)) {
+      continue;
+    } else if (max_new_tokens != 0 &&
+               merged.generated_token_count >= max_new_tokens) {
+      merged.finish_reason = FinishReason::kLength;
+      break;
+    } else if (max_new_tokens != 0) {
+      chunk_options.max_new_tokens =
+          max_new_tokens - merged.generated_token_count;
+    } else {
+    }
+    const TranscriptionResult chunk = TranscribeChunk(
+        {samples.begin() + start_sample, samples.begin() + end_sample},
+        chunk_options, cancel, nullptr);
+    texts.push_back(chunk.text);
+    if (!merged.language.has_value()) {
+      merged.language = chunk.language;
+    } else {
+    }
+    merged.generated_token_count += chunk.generated_token_count;
+    merged.verify_round_count += chunk.verify_round_count;
+    merged.proposed_draft_token_count += chunk.proposed_draft_token_count;
+    merged.accepted_draft_token_count += chunk.accepted_draft_token_count;
+    // One truncated chunk cuts the whole transcript short.
+    if (chunk.finish_reason == FinishReason::kLength) {
+      merged.finish_reason = FinishReason::kLength;
+    } else {
+    }
+  }
+  merged.text = omni_common::JoinTranscriptParts(texts);
+  return merged;
+}
+
+TranscriptionResult Qwen3ASRTranscriber::TranscribeChunk(
+    const std::vector<float> &samples, const TranscriptionOptions &options,
+    const std::atomic<bool> &cancel, RefreshReuse *reuse) const {
   if (cancel.load()) {
     throw GenerationCancelled();
   } else {
@@ -499,6 +566,8 @@ TranscriptionResult Qwen3ASRTranscriber::Transcribe(
   DraftStatistics draft_statistics;
   int reused_audio_token_count = 0;
   int reused_prompt_token_count = 0;
+  int verified_guess_token_count = 0;
+  int accepted_guess_token_count = 0;
   // note (wilsonzheng0327): a penalty would have to be applied per block
   // position with the block's own earlier tokens; a request that asks for one
   // decodes without the draft.
@@ -507,9 +576,11 @@ TranscriptionResult Qwen3ASRTranscriber::Transcribe(
   if (reuse == nullptr && uses_draft) {
     std::vector<KVCache> caches = model_.NewCaches();
     std::vector<KVCache> draft_caches = draft_->NewCaches();
+    verified_guess_token_count = static_cast<int>(guessed_ids.size());
     draft_statistics = draft_->Decode(
         model_.decoder(), BuildPrompt(samples, options).embeddings, guessed_ids,
-        max_new_tokens, 0, commit, cancel, draft_policy_, caches, draft_caches);
+        max_new_tokens, 0, commit, cancel, draft_policy_, caches, draft_caches,
+        &accepted_guess_token_count);
   } else {
     // A failed refresh leaves reuse empty, so the next one starts over.
     RefreshReuse held;
@@ -527,14 +598,17 @@ TranscriptionResult Qwen3ASRTranscriber::Transcribe(
                                      ? refresh->embeddings
                                      : BuildPrompt(samples, options).embeddings;
     if (uses_draft) {
+      verified_guess_token_count = static_cast<int>(guessed_ids.size());
       draft_statistics = draft_->Decode(
           model_.decoder(), embeddings, guessed_ids, max_new_tokens, 0, commit,
-          cancel, draft_policy_, caches, held.draft_caches);
+          cancel, draft_policy_, caches, held.draft_caches,
+          &accepted_guess_token_count);
     } else {
       // A penalty would have to apply to the guesses' logits too.
       const int guessed_count = options.repetition_penalty == 1.0f
                                     ? static_cast<int>(guessed_ids.size())
                                     : 0;
+      verified_guess_token_count = guessed_count;
       std::optional<mx::array> next_token;
       bool finished = false;
       if (guessed_count == 0) {
@@ -563,6 +637,7 @@ TranscriptionResult Qwen3ASRTranscriber::Transcribe(
           finished = commit(guessed_ids[accepted_count]);
           ++accepted_count;
         }
+        accepted_guess_token_count = accepted_count;
         for (KVCache &cache : caches) {
           cache.Trim(guessed_count - accepted_count);
         }
@@ -592,6 +667,8 @@ TranscriptionResult Qwen3ASRTranscriber::Transcribe(
                      draft_statistics);
   result.reused_audio_token_count = reused_audio_token_count;
   result.reused_prompt_token_count = reused_prompt_token_count;
+  result.verified_guess_token_count = verified_guess_token_count;
+  result.accepted_guess_token_count = accepted_guess_token_count;
   return result;
 }
 

@@ -5,9 +5,8 @@ package main
 // menu and Add term; under it a line says what the page is for, then the
 // two views (terms, the personal dictionary) and their search, the
 // suggestions waiting for a click, and the terms in a card. The switches
-// that decide where terms go live in the settings dialog
-// (dictionary_settings.go). Controllers own storage, settings, files and
-// models.
+// that decide where terms go live in the settings dialog and the more menu.
+// Controllers own storage, settings, files and models.
 
 import (
 	"strings"
@@ -95,6 +94,22 @@ func dictionaryHeader(c *ui.Context, state *dictionaryViewState, actions diction
 			local.settingsOpen = true
 		}
 		moreMenu(c.Key("dict-more"), "", func(menu *ui.Menu) {
+			if menu.Item(i18n.T("Use the dictionary")).Checked(state.Enabled).Chosen() {
+				actions.setDictionaryEnabled(!state.Enabled)
+			}
+			off := !state.Enabled
+			toggle := func(label string, on bool, set func(bool)) {
+				if menu.Item(label).Checked(on).Disabled(off).Chosen() {
+					set(!on)
+				}
+			}
+			toggle(i18n.T("Speech hints"), state.ASRHints, actions.setDictionaryASRHints)
+			toggle(i18n.T("Glossary for the language model"), state.Glossary, actions.setDictionaryGlossary)
+			toggle(i18n.T("Learn from my corrections"), state.Learn, actions.setDictionaryLearn)
+			menu.Separator()
+			if menu.Item(i18n.T("Scan history…")).Disabled(!state.CanScan).Chosen() {
+				actions.openDictionaryScan()
+			}
 			if menu.Item(i18n.T("Import…")).Chosen() {
 				actions.importTerms()
 			}
@@ -114,6 +129,11 @@ func dictionaryHeader(c *ui.Context, state *dictionaryViewState, actions diction
 				}
 			}
 		})
+		infoTip(c.Key("dict-controls-info"), strings.Join([]string{
+			i18n.T("Terms go to the speech model as words to expect."),
+			i18n.T("The language model writes terms as spelled here. With more than %d terms, it uses only those in the text, up to %d.", state.GlossaryAllUpTo, state.MaxGlossaryTerms),
+			i18n.T("For %d seconds after inserting, Voxt reads the text around it. If you correct a word, it suggests your spelling. Nothing it reads is saved or sent.", state.LearnWatchSeconds),
+		}, "\n"))
 		if primaryIconButton(c.Key("dict-add"), icons.Add, i18n.T("Add term")).Clicked() {
 			actions.openDictionaryTerm("")
 		}
@@ -148,6 +168,14 @@ func dictionaryTermsView(c *ui.Context, state *dictionaryViewState, actions dict
 			actions.searchDictionary(local.query)
 		}
 	})
+	if !state.CanScan {
+		ui.Row(c).Gap(px(t, sp1)).AlignItems(ui.Center).Children(func() {
+			caption(c, i18n.T("Choose a language model for Transcribe first")).SingleLine().MinWidth(0).Shrink(1)
+			if ghostButton(c.Key("dict-scan-model"), i18n.T("Open Transcribe")).Clicked() {
+				actions.openDictionaryTranscribe()
+			}
+		})
+	}
 	if !state.Enabled {
 		notice(c, "dict-off", noticeInfo, i18n.T("The dictionary is off, so its terms are not used."), "", func() {
 			if ghostButton(c.Key("dict-turn-on"), i18n.T("Turn on")).Label(i18n.T("Turn on the dictionary")).Clicked() {

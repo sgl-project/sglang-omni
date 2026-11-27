@@ -90,92 +90,177 @@ final class TextIO: @unchecked Sendable {
     }
 
     func selection(_ p: SelectionParams) async throws -> SelectionResult {
-        let t0 = monotonicMs()
         try requireTrust()
-        var steps: [String] = []
         let pid = await front.current().pid
+        let world = SelectionWorld(
+            read: { await self.readSelectionOnce(pid: pid) },
+            now: { monotonicMs() },
+            sleep: { ns in try? await Task.sleep(nanoseconds: ns) }
+        )
+        return try await Self.selection(p, world: world)
+    }
+
+    /// One reading of the focused element for textio.selection: every
+    /// fact the loop's decisions use (readSelectionOnce on the live
+    /// element, a script in the tests).
+    static func selection(_ p: SelectionParams, world: SelectionWorld, copyWorld: CopyWorld = .live) async throws -> SelectionResult {
+        let t0 = world.now()
+        var steps: [String] = []
         func done(_ text: String?, _ via: String) -> SelectionResult {
-            SelectionResult(text: text, via: via, ms: round1(monotonicMs() - t0), steps: steps)
+            SelectionResult(text: text, via: via, ms: round1(world.now() - t0), steps: steps)
         }
         // A web editor's block selection reads as one blank space from
         // every AX attribute (Lark docs in Chrome): not text, but a sign
         // that something is selected, so the read goes on to ⌘C.
         var blankAX = false
-        if let e = focusedElement(pid: pid_t(pid)) {
-            let role = string(e, kAXRoleAttribute)
-            steps.append("focus=\(role ?? "?")")
-            if let s = string(e, kAXSelectedTextAttribute), !s.isEmpty {
-                if SelectionRead.hasText(s) { return done(s, SelectionVia.ax) }
-                blankAX = true
-            }
-            let r = range(e)
-            steps.append("range=\(r.map { "\($0.location),\($0.length)" } ?? "nil")")
-            if let r, r.length > 0 {
-                var rr = r
-                var v: CFTypeRef?
-                if let axr = AXValueCreate(.cfRange, &rr),
-                   AXUIElementCopyParameterizedAttributeValue(e, kAXStringForRangeParameterizedAttribute as CFString, axr, &v) == .success,
-                   let s = v as? String, !s.isEmpty {
+        var caretOnly = false
+        var emptyRead = false
+        var settling = false
+        while true {
+            if let r = await world.read() {
+                steps.append("focus=\(r.role ?? "?")")
+                if let s = r.selected, !s.isEmpty {
+                    if SelectionRead.hasText(s) { return done(s, SelectionVia.ax) }
+                    blankAX = true
+                }
+                steps.append("range=\(r.range.map { "\($0.location),\($0.length)" } ?? "nil")")
+                if let rr = r.range, rr.length > 0, let s = r.ranged, !s.isEmpty {
                     if SelectionRead.hasText(s) { return done(s, SelectionVia.axRange) }
                     blankAX = true
                 }
-            }
-            // WebKit's and Chromium's text markers.
-            var marker: CFTypeRef?
-            if AXUIElementCopyAttributeValue(e, "AXSelectedTextMarkerRange" as CFString, &marker) == .success, let marker {
-                var v: CFTypeRef?
-                if AXUIElementCopyParameterizedAttributeValue(e, "AXStringForTextMarkerRange" as CFString, marker, &v) == .success,
-                   let s = v as? String, !s.isEmpty {
-                    if SelectionRead.hasText(s) { return done(s, SelectionVia.axMarker) }
-                    blankAX = true
-                } else {
-                    steps.append("marker=empty")
+                if let marker = r.marker {
+                    if !marker.isEmpty {
+                        if SelectionRead.hasText(marker) { return done(marker, SelectionVia.axMarker) }
+                        blankAX = true
+                    } else {
+                        steps.append("marker=empty")
+                    }
                 }
+                caretOnly = SelectionRead.endsAtCaret(range: r.range.map { TextRange(location: $0.location, length: $0.length) },
+                                                      editable: r.editable, blankSelection: blankAX)
+                // An empty reading on a non-editable element (a page's AX
+                // or a PDF view lags the ⌘A the same way, #3835) settles
+                // too — range empty or absent (fixture c23 reads an
+                // AXGroup's range as nil); after the settle it falls
+                // through to ⌘C, while a real editable caret stays
+                // caret-only.
+                emptyRead = !blankAX && !r.editable && (r.range?.length ?? 0) == 0
+            } else {
+                // focus=nil is a state (nothing is focused: the desktop),
+                // not a value that can lag the ⌘A, so it does not settle.
+                steps.append("focus=nil")
+                caretOnly = false
+                emptyRead = false
             }
-            var settable = DarwinBoolean(false)
-            AXUIElementIsAttributeSettable(e, kAXValueAttribute as CFString, &settable)
-            if SelectionRead.endsAtCaret(range: r.map { TextRange(location: $0.location, length: $0.length) },
-                                         editable: settable.boolValue || inEditableRegion(e), blankSelection: blankAX) {
-                steps.append("caret-only")
-                return done(nil, SelectionVia.none)
-            }
-        } else {
-            steps.append("focus=nil")
+            // A caret can be the reading from before the selection: ⌘A and
+            // the shortcut leave in one motion, and the accessibility
+            // reading lags the keys. Read again for a moment before
+            // concluding that nothing is selected (#4467).
+            let settleMs = Double(p.caretSettleMs ?? Int(SelectionRead.defaultCaretSettleMs))
+            guard caretOnly || emptyRead, SelectionRead.caretPending(elapsedMs: world.now() - t0, settleMs: settleMs) else { break }
+            if !settling { steps.append(caretOnly ? "caret-settle" : "empty-settle"); settling = true }
+            let pollMs = p.caretPollMs ?? Int(SelectionRead.defaultCaretPollMs)
+            await world.sleep(UInt64(pollMs) * 1_000_000)
+        }
+        if caretOnly {
+            steps.append("caret-only")
+            return done(nil, SelectionVia.none)
         }
         guard p.allowCopy ?? false else { return done(nil, SelectionVia.none) }
-        let copied = await copySelection(timeoutMs: Double(p.copyTimeoutMs ?? 300))
+        let copied = await Self.copySelection(timeoutMs: Double(p.copyTimeoutMs ?? 300),
+                                              modifierWaitMs: Double(p.modifierWaitMs ?? Int(SelectionRead.defaultModifierWaitMs)),
+                                              world: copyWorld)
         steps.append(copied.note)
         return SelectionResult(text: copied.text, image: copied.image, via: copied.text != nil ? SelectionVia.copy : SelectionVia.none,
-                               ms: round1(monotonicMs() - t0), steps: steps)
+                               ms: round1(world.now() - t0), steps: steps)
     }
 
+    /// The focused element's facts for one selection reading; nil when
+    /// nothing is focused.
+    private func readSelectionOnce(pid: Int) async -> SelectionReading? {
+        guard let e = focusedElement(pid: pid_t(pid)) else { return nil }
+        var r = SelectionReading(role: string(e, kAXRoleAttribute), selected: string(e, kAXSelectedTextAttribute),
+                                 range: range(e), ranged: nil, marker: nil, editable: false)
+        if let cr = r.range, cr.length > 0 {
+            var rr = cr
+            var v: CFTypeRef?
+            if let axr = AXValueCreate(.cfRange, &rr),
+               AXUIElementCopyParameterizedAttributeValue(e, kAXStringForRangeParameterizedAttribute as CFString, axr, &v) == .success,
+               let s = v as? String, !s.isEmpty {
+                r.ranged = s
+            }
+        }
+        // WebKit's and Chromium's text markers: "" when reading the range
+        // failed or it is empty ("marker=empty" in the steps).
+        var marker: CFTypeRef?
+        if AXUIElementCopyAttributeValue(e, "AXSelectedTextMarkerRange" as CFString, &marker) == .success, let marker {
+            var v: CFTypeRef?
+            if AXUIElementCopyParameterizedAttributeValue(e, "AXStringForTextMarkerRange" as CFString, marker, &v) == .success,
+               let s = v as? String, !s.isEmpty {
+                r.marker = s
+            } else {
+                r.marker = ""
+            }
+        }
+        var settable = DarwinBoolean(false)
+        AXUIElementIsAttributeSettable(e, kAXValueAttribute as CFString, &settable)
+        r.editable = settable.boolValue || inEditableRegion(e)
+        return r
+    }
+
+    /// How long the clipboard stays still before the ⌘C's result is read.
+    static let copySettleMs = 50.0
+
     /// ⌘C, wait for the clipboard to change, read it, put the old one back.
-    private func copySelection(timeoutMs: Double) async -> (text: String?, image: Data?, note: String) {
-        let (snap, c0) = await onMain { (Clipboard.snapshot(NSPasteboard.general), NSPasteboard.general.changeCount) }
-        // Keys the user still holds (Control of a Control+C shortcut), for the log: the app may see them with ⌘C.
-        let held = flags(CGEventSource.flagsState(.hidSystemState))
-        postKey(UInt16(kVK_ANSI_C), flags: .maskCommand)
-        let deadline = monotonicMs() + timeoutMs
+    static func copySelection(timeoutMs: Double, modifierWaitMs: Double, world: CopyWorld = .live) async -> (text: String?, image: Data?, note: String) {
+        // Keys the user still holds (Control of a Control+C shortcut) turn
+        // the helper's ⌘C into another key in the app: wait for them to lift.
+        var f = world.heldFlags()
+        if SelectionRead.blocksCopy(f) {
+            let deadline = world.now() + modifierWaitMs
+            repeat {
+                await world.sleep(25_000_000)
+                f = world.heldFlags()
+            } while SelectionRead.blocksCopy(f) && world.now() < deadline
+            // Still held (a hold-to-record shortcut keeps its key down
+            // through the dictation): a posted ⌘C would reach the app as
+            // a chord that copies nothing (Chrome reads Control+⌘C as no
+            // copy, #3835). Skip the copy; no contaminated key is posted.
+            guard !SelectionRead.blocksCopy(f) else { return (nil, nil, "copy: skipped" + flags(f)) }
+        }
+        let held = flags(f)
+        // The snapshot comes after the wait: a clipboard change during it
+        // is someone's newer clipboard, not the ⌘C's result, and it is
+        // what the restore puts back.
+        let (snap, c0) = await world.snapshot()
+        world.postCopy()
+        let deadline = world.now() + timeoutMs
         var changed = false
-        while monotonicMs() < deadline {
-            if await onMain({ NSPasteboard.general.changeCount }) != c0 {
+        while world.now() < deadline {
+            if await world.changeCount() != c0 {
                 changed = true
                 break
             }
-            try? await Task.sleep(nanoseconds: 10_000_000)
+            await world.sleep(10_000_000)
         }
         guard changed else { return (nil, nil, "copy: clipboard unchanged" + held) }
-        let (text, types, data, file) = await onMain { () -> (String?, [String], [String: Data], URL?) in
-            let pb = NSPasteboard.general
-            let text = pb.string(forType: .string)
-            let types = (pb.types ?? []).map(\.rawValue)
-            let data = ClipboardPicture.copiedSelectionImageData(types: types, text: text) {
-                pb.data(forType: NSPasteboard.PasteboardType($0))
-            }
-            let file = (pb.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL])?.first
-            Clipboard.restore(pb, snap)
-            return (text, types, data, file)
+        // Some editors write a copied selection in more than one step (the
+        // text, then more types a moment later): read once the clipboard
+        // has been still for copySettleMs, so the restore comes after the
+        // last write and the user's clipboard ends as it was (VX-141).
+        let polls = Int(copySettleMs / 10)
+        var last = await world.changeCount(), still = 0
+        for _ in 0..<Int((timeoutMs + copySettleMs) / 10) where still < polls {
+            await world.sleep(10_000_000)
+            let c = await world.changeCount()
+            if c == last { still += 1 } else { last = c; still = 0 }
         }
+        let (text, types, data, file) = await world.readAndRestore(snap)
+        // A write that still lands just after the restore is the app's
+        // copy, not the user's: put the user's clipboard back once more.
+        let ours = await world.changeCount()
+        await world.sleep(UInt64(copySettleMs) * 1_000_000)
+        if await world.changeCount() != ours { await world.restore(snap) }
         let selected = ClipboardPicture.imageForCopiedSelection(types: types, data: data, file: file, maxSide: screenMaxSide, text: text)
         let image = selected.flatMap { ScreenWindow.jpeg($0) }
         return (text?.isEmpty == false ? text : nil, image, "copy: changed" + held)
@@ -390,7 +475,7 @@ final class TextIO: @unchecked Sendable {
     }
 
     /// The modifiers in f besides ⌘, as " held=control+shift"; "" for none.
-    private func flags(_ f: CGEventFlags) -> String {
+    private static func flags(_ f: CGEventFlags) -> String {
         let names = [(CGEventFlags.maskControl, "control"), (.maskAlternate, "option"), (.maskShift, "shift"), (.maskSecondaryFn, "fn")]
             .filter { f.contains($0.0) }.map(\.1)
         return names.isEmpty ? "" : " held=" + names.joined(separator: "+")
@@ -421,6 +506,65 @@ func postKey(_ key: UInt16, flags: CGEventFlags) {
         e.setIntegerValueField(.eventSourceUserData, value: InjectedEvent.marker)
         e.post(tap: .cghidEventTap)
     }
+}
+
+/// One reading of the focused element for textio.selection: every fact
+/// the loop's decisions use. marker is nil when the element has no text
+/// marker range, "" when reading it failed or it is empty.
+struct SelectionReading: Sendable {
+    var role: String?
+    var selected: String?
+    var range: CFRange?
+    var ranged: String?
+    var marker: String?
+    var editable: Bool
+}
+
+/// What TextIO.selection runs against: one reading of the focused
+/// element per poll, the clock and the sleep. The tests script the
+/// readings; the helper runs the live one.
+struct SelectionWorld: Sendable {
+    var read: @Sendable () async -> SelectionReading?
+    var now: @Sendable () -> Double
+    var sleep: @Sendable (UInt64) async -> Void
+}
+
+/// What TextIO.copySelection runs against: the clipboard, the keys
+/// still held, the posted ⌘C, the clock and the sleeps. The tests drive
+/// a fake one; the helper runs the live one.
+struct CopyWorld: Sendable {
+    var snapshot: @Sendable () async -> ([[NSPasteboard.PasteboardType: Data]], Int)
+    var changeCount: @Sendable () async -> Int
+    var heldFlags: @Sendable () -> CGEventFlags
+    var postCopy: @Sendable () -> Void
+    var readAndRestore: @Sendable ([[NSPasteboard.PasteboardType: Data]]) async -> (String?, [String], [String: Data], URL?)
+    /// Puts the snapshot back again (a late write by the app).
+    var restore: @Sendable ([[NSPasteboard.PasteboardType: Data]]) async -> Void = { _ in }
+    var now: @Sendable () -> Double
+    var sleep: @Sendable (UInt64) async -> Void
+
+    static let live = CopyWorld(
+        snapshot: { await onMain { (Clipboard.snapshot(NSPasteboard.general), NSPasteboard.general.changeCount) } },
+        changeCount: { await onMain { NSPasteboard.general.changeCount } },
+        heldFlags: { CGEventSource.flagsState(.hidSystemState) },
+        postCopy: { postKey(UInt16(kVK_ANSI_C), flags: .maskCommand) },
+        readAndRestore: { snap in
+            await onMain { () -> (String?, [String], [String: Data], URL?) in
+                let pb = NSPasteboard.general
+                let text = pb.string(forType: .string)
+                let types = (pb.types ?? []).map(\.rawValue)
+                let data = ClipboardPicture.copiedSelectionImageData(types: types, text: text) {
+                    pb.data(forType: NSPasteboard.PasteboardType($0))
+                }
+                let file = (pb.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL])?.first
+                Clipboard.restore(pb, snap)
+                return (text, types, data, file)
+            }
+        },
+        restore: { snap in await onMain { Clipboard.restore(NSPasteboard.general, snap) } },
+        now: { monotonicMs() },
+        sleep: { ns in try? await Task.sleep(nanoseconds: ns) }
+    )
 }
 
 /// Every item of the clipboard with every type's data, to put it back.

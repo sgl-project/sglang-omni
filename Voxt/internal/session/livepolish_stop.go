@@ -3,6 +3,7 @@ package session
 import (
 	"slices"
 	"strings"
+	"time"
 	"unicode"
 	"unicode/utf8"
 
@@ -13,13 +14,12 @@ import (
 // cleaned, aliases replaced): the clean-ups it keeps, as parts and their
 // answers; redo, the end of their cleaned text to clean again with the rest
 // (lp.reclean sentences, "" when nothing is left); and tail, the text after
-// them. Kept is the longest chain of clean-ups that start text. A request
-// under way for exactly the text after the blocks is awaited: it is ahead
-// of a new one for the same text, with the same deadlines, started earlier.
-// Any other is cancelled and not waited for: finish goes on at once. A clean-up asked
+// them. Kept is the longest chain of clean-ups that start text. A compatible
+// request for exactly the text after the blocks is adopted without waiting
+// for completion. Any other is cancelled and not waited for. A clean-up asked
 // with thinking other than the final text's (ThinkingOffUnder) does not
 // count.
-func (lp *livePolish) finish(text string) (parts []compose.Part, answers []string, redo, tail string) {
+func (lp *livePolish) finish(text string) (parts []compose.Part, answers []string, redo, tail string, flight *liveFlight) {
 	chars := utf8.RuneCountInString(text)
 	thinkOff := lp.thinkOffUnder > 0 && chars < lp.thinkOffUnder
 	lp.mu.Lock()
@@ -27,31 +27,139 @@ func (lp *livePolish) finish(text string) (parts []compose.Part, answers []strin
 	lp.cond.Broadcast()
 	cs, open, all := lp.chains(text, thinkOff)
 	keep := slices.MaxFunc(cs, func(a, b chain) int { return a.end - b.end }).results
-	var wait *liveFlight
+	var afterAdopted func()
 	if f := lp.flight; f != nil {
-		if all && f.epoch == lp.epoch && f.thinkOff == thinkOff && f.src == open {
-			wait = f
+		if all && f.epoch == lp.epoch && f.thinkOff == thinkOff && f.src == open && !f.detached && f.ctx.Err() == nil {
+			f.adopted = true
+			flight = f
+			if lp.testHooks != nil {
+				afterAdopted = lp.testHooks.afterFinishAdopted
+			}
 		} else {
+			f.detached = true
 			f.cancel()
 		}
 	}
-	blocks := slices.Clone(lp.blocks)
 	asked, dropped := lp.asked, lp.dropped
 	lp.mu.Unlock()
-	if wait != nil {
-		<-wait.done
-		if wait.ok {
-			keep = append(blocks, wait.liveResult)
-		}
+	if afterAdopted != nil {
+		afterAdopted()
 	}
-	lp.cancel()
+	if flight == nil {
+		lp.cancel()
+	}
 	parts, answers, tail = laid(keep, text)
 	if lp.reclean > 0 && len(answers) > 0 && strings.TrimSpace(tail) != "" {
 		parts, answers, redo = redoEnd(parts, answers, lp.reclean)
 	}
-	lp.r.logf("info", "the live clean-up covered %d of %d characters (%d cleaned characters asked again with the rest; %d requests while recording, %d cancelled as the text changed; awaited the request under way: %t)",
-		chars-utf8.RuneCountInString(tail), chars, utf8.RuneCountInString(redo), asked, dropped, wait != nil)
-	return parts, answers, redo, tail
+	lp.r.logf("info", "the live clean-up covered %d of %d characters (%d cleaned characters asked again with the rest; %d requests while recording, %d cancelled as the text changed; adopted the request under way: %t)",
+		chars-utf8.RuneCountInString(tail), chars, utf8.RuneCountInString(redo), asked, dropped, flight != nil)
+	return parts, answers, redo, tail, flight
+}
+
+func (lp *livePolish) adopt(text string, flight *liveFlight, request cleanupRequest) (liveResult, bool) {
+	defer lp.cancel()
+	lp.mu.Lock()
+	blocks := slices.Clone(lp.blocks)
+	lp.mu.Unlock()
+	var lastDraft string
+	var lastPublished time.Time
+	hasPublished := false
+	publish := func(draft string, final bool) bool {
+		if strings.TrimSpace(draft) == "" {
+			return true
+		}
+		if draft == lastDraft {
+			return true
+		}
+		now := lp.r.now()
+		if hasPublished && !final && now.Sub(lastPublished) < draftEvery {
+			return true
+		}
+		lp.runBeforeAdoptDraftPublish()
+		if !lp.r.publishCleanupDraft(request, draft) {
+			return false
+		}
+		lastDraft, lastPublished, hasPublished = draft, now, true
+		return true
+	}
+	for {
+		lp.mu.Lock()
+		parts := slices.Clone(flight.parts)
+		answers := slices.Clone(flight.answers)
+		partIndex := flight.partIndex
+		delta := flight.delta.String()
+		source := flight.src
+		result := flight.liveResult
+		result.parts = slices.Clone(result.parts)
+		result.answers = slices.Clone(result.answers)
+		closed := flight.streamClosed
+		detached := flight.detached
+		ok := flight.ok
+		var afterSnapshot func()
+		if lp.testHooks != nil {
+			afterSnapshot = lp.testHooks.afterAdoptSnapshot
+		}
+		lp.mu.Unlock()
+		if afterSnapshot != nil {
+			afterSnapshot()
+		}
+		if detached {
+			return liveResult{}, false
+		}
+		if closed {
+			if !ok {
+				return liveResult{}, false
+			}
+			results := append(blocks, result)
+			draftParts, draftAnswers, _ := laid(results, text)
+			draft := lp.r.draftSnippets(compose.JoinParts(draftParts, draftAnswers), draftParts)
+			if !publish(draft, true) {
+				return liveResult{}, false
+			}
+			return result, true
+		}
+		if request.ctx.Err() != nil || lp.r.ctx.Err() != nil {
+			lp.detach(flight)
+			return liveResult{}, false
+		}
+		results := slices.Clone(blocks)
+		if len(parts) > 0 {
+			if partIndex < len(parts) && delta != "" {
+				partial := compose.PartialOutput(delta, parts[partIndex].Text, parts[partIndex].Custom())
+				if partial != "" {
+					answers = append(answers, partial)
+				}
+			}
+			candidate := liveResult{src: source, parts: parts, answers: answers}
+			results = append(results, candidate)
+		}
+		draftParts, draftAnswers, _ := laid(results, text)
+		draft := lp.r.draftSnippets(compose.JoinParts(draftParts, draftAnswers), draftParts)
+		if !publish(draft, false) {
+			lp.detach(flight)
+			return liveResult{}, false
+		}
+		select {
+		case <-flight.updates:
+			continue
+		case <-flight.done:
+			continue
+		case <-request.ctx.Done():
+			lp.detach(flight)
+			return liveResult{}, false
+		case <-lp.r.ctx.Done():
+			lp.detach(flight)
+			return liveResult{}, false
+		}
+	}
+}
+
+func (lp *livePolish) detach(flight *liveFlight) {
+	lp.mu.Lock()
+	flight.detached = true
+	flight.cancel()
+	lp.mu.Unlock()
 }
 
 // note (luojiaxuan): redoEnd splits the cleaned text of parts and answers

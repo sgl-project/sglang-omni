@@ -12,6 +12,21 @@
         "english": "General language menu bar login"
       },
       {
+        "id": "transcribe",
+        "title": "转录",
+        "english": "Transcribe dictation clean-up shortcut"
+      },
+      {
+        "id": "translate",
+        "title": "翻译",
+        "english": "Translate target language shortcut"
+      },
+      {
+        "id": "rewrite",
+        "title": "改写",
+        "english": "Rewrite answer shortcut"
+      },
+      {
         "id": "models",
         "title": "语音识别模型",
         "english": "Speech models download delete install recognition"
@@ -57,6 +72,11 @@
         "english": "Storage disk data folder reset"
       },
       {
+        "id": "experimental",
+        "title": "实验功能",
+        "english": "Experimental sessions session shortcuts history"
+      },
+      {
         "id": "about",
         "title": "诊断与关于",
         "english": "Diagnostics about version bug report"
@@ -68,7 +88,6 @@
           {
             "key": "family-qwen3-asr",
             "family_name": "Qwen3-ASR",
-            "count_text": "3 个模型",
             "languages": "30 种语言和 22 种中文方言，包括中文、英语、粤语、日语和韩语",
             "rows": [
               {
@@ -78,13 +97,6 @@
                 "default": true,
                 "installed": false,
                 "size_text": "需下载 2.5 GB",
-                "about": "最准确。能识别口音、方言、人名，以及一句话里夹杂的多种语言，边说边出文字。",
-                "tags": [
-                  "本地",
-                  "准确",
-                  "实时",
-                  "支持主要语言"
-                ],
                 "actions": [
                   {
                     "kind": "hide",
@@ -108,13 +120,6 @@
                 "default": false,
                 "installed": false,
                 "size_text": "需下载 712.8 MB",
-                "about": "更快、占用内存更少，适合在安静环境中清晰地说话。",
-                "tags": [
-                  "本地",
-                  "快速",
-                  "实时",
-                  "支持主要语言"
-                ],
                 "actions": [
                   {
                     "kind": "hide",
@@ -138,13 +143,6 @@
                 "default": false,
                 "installed": false,
                 "size_text": "需下载 2.0 GB",
-                "about": "Qwen3-ASR 1.7B，比 8bit 版本占用更少内存，准确度相差无几。边说边出文字。",
-                "tags": [
-                  "本地",
-                  "准确",
-                  "实时",
-                  "支持主要语言"
-                ],
                 "actions": [
                   {
                     "kind": "hide",
@@ -164,9 +162,37 @@
             ]
           },
           {
+            "key": "model-asr.moss",
+            "rows": [
+              {
+                "id": "asr.moss",
+                "kind": "asr",
+                "name": "MOSS-Transcribe-Diarize",
+                "default": false,
+                "installed": false,
+                "size_text": "需下载 1.8 GB",
+                "languages": "中文和英语",
+                "actions": [
+                  {
+                    "kind": "hide",
+                    "model_id": "asr.moss",
+                    "label": "隐藏",
+                    "accessibility_label": "隐藏 MOSS-Transcribe-Diarize",
+                    "tooltip": "不在功能页的模型菜单里列出"
+                  },
+                  {
+                    "kind": "download",
+                    "model_id": "asr.moss",
+                    "label": "下载",
+                    "accessibility_label": "下载 MOSS-Transcribe-Diarize"
+                  }
+                ]
+              }
+            ]
+          },
+          {
             "key": "family-whisper",
             "family_name": "Whisper",
-            "count_text": "3 个模型",
             "languages": "约 100 种语言，包括中文、英语、粤语、日语和韩语",
             "rows": [
               {
@@ -176,13 +202,6 @@
                 "default": false,
                 "installed": false,
                 "size_text": "需下载 1.6 GB",
-                "about": "OpenAI 的 Whisper 加速版，多种语言都识别得好。说完片刻后出文字。",
-                "tags": [
-                  "本地",
-                  "快速",
-                  "不支持词典",
-                  "支持主要语言"
-                ],
                 "actions": [
                   {
                     "kind": "hide",
@@ -206,13 +225,6 @@
                 "default": false,
                 "installed": false,
                 "size_text": "需下载 3.1 GB",
-                "about": "最大的 Whisper，多种语言都识别得准，但更慢，内存占用大。",
-                "tags": [
-                  "本地",
-                  "准确",
-                  "不支持词典",
-                  "支持主要语言"
-                ],
                 "actions": [
                   {
                     "kind": "hide",
@@ -236,13 +248,6 @@
                 "default": false,
                 "installed": false,
                 "size_text": "需下载 481.3 MB",
-                "about": "小号 Whisper，内存占用小，准确度低一些。",
-                "tags": [
-                  "本地",
-                  "快速",
-                  "不支持词典",
-                  "支持主要语言"
-                ],
                 "actions": [
                   {
                     "kind": "hide",
@@ -271,14 +276,7 @@
                 "default": false,
                 "installed": false,
                 "size_text": "需下载 2.5 GB",
-                "about": "NVIDIA 的 Parakeet，速度很快，适合欧洲语言。不支持中文、日语和韩语。",
                 "languages": "25 种欧洲语言，包括英语、德语、法语、西班牙语和俄语",
-                "tags": [
-                  "本地",
-                  "快速",
-                  "不支持词典",
-                  "不支持主要语言"
-                ],
                 "actions": [
                   {
                     "kind": "hide",
@@ -307,14 +305,7 @@
                 "default": false,
                 "installed": false,
                 "size_text": "需下载 936.5 MB",
-                "about": "速度很快，适合中文、粤语、英语、日语和韩语。",
                 "languages": "中文、粤语、英语、日语和韩语",
-                "tags": [
-                  "本地",
-                  "快速",
-                  "不支持词典",
-                  "支持主要语言"
-                ],
                 "actions": [
                   {
                     "kind": "hide",
@@ -343,14 +334,7 @@
                 "default": false,
                 "installed": false,
                 "size_text": "需下载 4.1 GB",
-                "about": "Cohere 的模型，准确、带标点，但体积大。只识别你的主要语言，不支持时按英语识别。",
                 "languages": "14 种语言，包括中文、英语、日语和韩语",
-                "tags": [
-                  "本地",
-                  "准确",
-                  "不支持词典",
-                  "支持主要语言"
-                ],
                 "actions": [
                   {
                     "kind": "hide",
@@ -379,15 +363,7 @@
                 "default": false,
                 "installed": false,
                 "size_text": "需下载 755.8 MB",
-                "about": "NVIDIA 的流式模型，支持多种语言，边说边出文字。",
                 "languages": "28 种语言，包括中文、英语、日语和韩语",
-                "tags": [
-                  "本地",
-                  "快速",
-                  "实时",
-                  "不支持词典",
-                  "支持主要语言"
-                ],
                 "actions": [
                   {
                     "kind": "hide",
@@ -401,42 +377,6 @@
                     "model_id": "asr.nemotron",
                     "label": "下载",
                     "accessibility_label": "下载 Nemotron 3.5 ASR 0.6B (8bit)"
-                  }
-                ]
-              }
-            ]
-          },
-          {
-            "key": "model-asr.moss",
-            "rows": [
-              {
-                "id": "asr.moss",
-                "kind": "asr",
-                "name": "MOSS-Transcribe-Diarize",
-                "default": false,
-                "installed": false,
-                "size_text": "需下载 1.8 GB",
-                "about": "专为多人对话设计，边说边出文字。",
-                "languages": "中文和英语",
-                "tags": [
-                  "本地",
-                  "实时",
-                  "不支持词典",
-                  "支持主要语言"
-                ],
-                "actions": [
-                  {
-                    "kind": "hide",
-                    "model_id": "asr.moss",
-                    "label": "隐藏",
-                    "accessibility_label": "隐藏 MOSS-Transcribe-Diarize",
-                    "tooltip": "不在功能页的模型菜单里列出"
-                  },
-                  {
-                    "kind": "download",
-                    "model_id": "asr.moss",
-                    "label": "下载",
-                    "accessibility_label": "下载 MOSS-Transcribe-Diarize"
                   }
                 ]
               }
@@ -483,14 +423,13 @@
         "network": {
           "open": false,
           "proxy_mode": 0,
-          "proxy_caption": "使用这台 Mac 网络设置里的代理，或环境变量指定的代理。",
           "source": 0,
           "source_labels": [
             "自动",
             "只用 Hugging Face",
             "只用 hf-mirror.com"
           ],
-          "source_caption": "哪个先响应用哪个，每个文件都会校验。",
+          "source_caption": "",
           "proxy_family": {
             "key": "network.proxy",
             "kind": "",
@@ -502,7 +441,8 @@
             "text": ""
           }
         },
-        "speech_context": ""
+        "speech_context": "",
+        "speech_context_unused": false
       },
       "back_bar": {
         "visible": false,

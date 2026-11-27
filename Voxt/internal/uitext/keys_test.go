@@ -2,6 +2,7 @@ package uitext
 
 import (
 	"errors"
+	"slices"
 	"testing"
 
 	"github.com/sgl-project/sglang-omni/Voxt/internal/hotkey"
@@ -98,5 +99,12 @@ func TestShortcutTextExplicitLocale(t *testing.T) {
 	}
 	if got := HotkeyProblemsFor(translator, features, hotkey.Transcribe)[1]; len(got) != 1 || got[0] != "和快捷键 1 的按键相同。" {
 		t.Errorf("HotkeyProblemsFor = %q", got)
+	}
+	features.SessionsOn = true
+	features.Sessions[0] = settings.Hotkey{Keys: "Control+Option+4", Trigger: settings.TriggerTap}
+	features.Sessions[1] = features.Sessions[0]
+	conflict := "切换到会话 2 用了相同的按键和触发方式，两者只有一个会生效。"
+	if got := HotkeyProblemsFor(translator, features, hotkey.Session1)[0]; !slices.Contains(got, conflict) {
+		t.Errorf("session conflict = %q, want %q", got, conflict)
 	}
 }

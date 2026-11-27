@@ -15,7 +15,7 @@ import (
 // homeReadiness is what is still missing, a numbered line each (the whole
 // line fixes it; the next one's number is ink), and below it, quieter, what
 // is ready. Something broken has no number. Nothing when all is ready: Home
-// is then the day's numbers and the recent results.
+// is then the usage numbers and activity.
 func homeReadiness(c *ui.Context, state *homeViewState, actions homeActions) {
 	t := c.Theme()
 	k := tok(t)

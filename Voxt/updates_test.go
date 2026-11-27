@@ -17,11 +17,12 @@ import (
 // itself, checked two hours ago, automatic checks on and automatic
 // installs off (the plugin's defaults).
 type fakeUpdates struct {
-	mu      sync.Mutex
-	prefs   updatePrefs
-	pre     bool // SetPrereleases
-	checks  int
-	changes []*func()
+	mu       sync.Mutex
+	prefs    updatePrefs
+	pre      bool // SetPrereleases
+	checks   int
+	bgChecks int
+	changes  []*func()
 }
 
 func newFakeUpdates() *fakeUpdates {
@@ -58,6 +59,18 @@ func (f *fakeUpdates) CheckNow() {
 	f.mu.Lock()
 	f.checks++
 	f.mu.Unlock()
+}
+
+func (f *fakeUpdates) CheckBackground() {
+	f.mu.Lock()
+	f.bgChecks++
+	f.mu.Unlock()
+}
+
+func (f *fakeUpdates) bgChecked() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.bgChecks
 }
 
 func (f *fakeUpdates) OnChange(fn func()) func() {
@@ -259,8 +272,8 @@ func TestNoUpdateFeed(t *testing.T) {
 }
 
 // TestAppUpdated: an update installed while VoxtNew runs (the helper on
-// disk is the new version's) shows one card, not the helper's, that
-// restarts VoxtNew, on Home and in Settings → About too.
+// disk is the new version's) shows the sidebar Restart to update control
+// (not a helper error or sidebar notice card), Home readiness and Settings → About.
 func TestAppUpdated(t *testing.T) {
 	a, fs, tt := newTestApp(t)
 	relaunched := 0
@@ -270,17 +283,13 @@ func TestAppUpdated(t *testing.T) {
 
 	fs.set(helper.Status{State: helper.Failed, Reason: helper.FailUpdated, Err: "Voxt was updated"})
 	a.navigate("/home")
-	if !has(tt, "Update installed") || !has(tt, "Restart Voxt to finish updating.") || has(tt, "Helper stopped unexpectedly") {
-		t.Fatalf("card: %q", firstTexts(tt))
+	if !has(tt, "Restart to update") || has(tt, "Helper stopped unexpectedly") {
+		t.Fatalf("sidebar update button: %q", firstTexts(tt))
 	}
-	if !has(tt, "Voxt was updated. Restart it to finish.") {
-		t.Errorf("home: %q", firstTexts(tt))
+	if slices.ContainsFunc(a.notices, func(n core.Notification) bool { return n.ID == problemUpdate || n.ID == problemHelper }) {
+		t.Fatalf("unexpected sidebar notice: %+v", a.notices)
 	}
-	n := slices.IndexFunc(a.notices, func(n core.Notification) bool { return n.ID == problemUpdate })
-	if n < 0 || a.notices[n].Link != linkRelaunch || slices.ContainsFunc(a.notices, func(n core.Notification) bool { return n.ID == problemHelper }) {
-		t.Fatalf("notices %+v", a.notices)
-	}
-	a.cardAction(a.notices[n])
+	click(t, tt, "Restart to update")
 	if relaunched != 1 {
 		t.Errorf("relaunched %d", relaunched)
 	}
@@ -298,26 +307,115 @@ func TestAppUpdated(t *testing.T) {
 	}
 }
 
-// TestBundleWatch: an update installed in the background shows the card
-// once the app sees it; after the restart the kept card is gone.
+// TestBundleWatch: an update installed in the background shows the sidebar
+// Restart to update control once the app sees it; after the restart it is gone.
 func TestBundleWatch(t *testing.T) {
 	dir := t.TempDir()
 	a, _, tt := newTestAppIn(t, dir)
 	stale := false
 	a.bundleStale = func() bool { return stale }
 	a.checkBundle()
-	if a.bundleUpdated || has(tt, "Update installed") {
+	if a.bundleUpdated || has(tt, "Restart to update") {
 		t.Fatal("updated before the update")
 	}
 	stale = true
 	a.upd.(*fakeUpdates).change(func(p *updatePrefs) { p.LastCheck = time.Now() }) // a check, then the install
-	if !a.bundleUpdated || !has(tt, "Update installed") {
+	if !a.bundleUpdated || !has(tt, "Restart to update") {
 		t.Fatalf("not seen: %q", firstTexts(tt))
 	}
 	a.quit()
 	a.lib.close()
 	b, _, tt2 := newTestAppIn(t, dir)
-	if slices.ContainsFunc(b.notices, func(n core.Notification) bool { return n.ID == problemUpdate }) || has(tt2, "Update installed") {
-		t.Errorf("the card outlived the restart: %+v", b.notices)
+	if slices.ContainsFunc(b.notices, func(n core.Notification) bool { return n.ID == problemUpdate }) || has(tt2, "Restart to update") {
+		t.Errorf("update state outlived the restart: %+v", b.notices)
+	}
+}
+
+// TestSidebarUpdateControlAndTray: available and installed updates surface
+// at the foot of the sidebar (expanded bar and collapsed icon-rail circle)
+// and as the first item of the tray menu.
+func TestSidebarUpdateControlAndTray(t *testing.T) {
+	a, _, tt := newTestApp(t)
+	f := a.upd.(*fakeUpdates)
+	relaunched := 0
+	old := appRelaunch
+	appRelaunch = func() { relaunched++ }
+	t.Cleanup(func() { appRelaunch = old })
+
+	a.navigate("/home")
+	frames(tt)
+	if has(tt, "Update 2.1.4") || has(tt, "Restart to update") {
+		t.Fatalf("update button shown when up to date: %q", firstTexts(tt))
+	}
+	if first := a.trayItems()[0].Label; first == "Restart Voxt to update" {
+		t.Fatalf("unexpected tray item: %q", first)
+	}
+
+	// Stable update available: sidebar bar + tray top item trigger CheckNow.
+	f.change(func(p *updatePrefs) { p.AvailableVersion = "2.1.4" })
+	frames(tt)
+	if !has(tt, "Update 2.1.4") {
+		t.Fatalf("available button missing: %q", firstTexts(tt))
+	}
+	click(t, tt, "Update 2.1.4")
+	if f.checked() != 1 {
+		t.Fatalf("sidebar click checks = %d, want 1", f.checked())
+	}
+	top := a.trayItems()[0]
+	if top.Label != "Update available (2.1.4)…" {
+		t.Fatalf("tray top = %q", top.Label)
+	}
+	top.Click(top, nil)
+	if f.checked() != 2 {
+		t.Fatalf("tray click checks = %d, want 2", f.checked())
+	}
+
+	// Beta version keeps its version string in the sidebar bar.
+	f.change(func(p *updatePrefs) { p.AvailableVersion = "2.1.4-beta.20261125.1" })
+	frames(tt)
+	if !has(tt, "Update 2.1.4-beta.20261125.1") {
+		t.Fatalf("beta button missing: %q", firstTexts(tt))
+	}
+
+	// Changing Beta updates in either direction triggers an immediate background
+	// check (turning on finds newer betas; turning off clears a stale beta offer).
+	a.setBeta(true)
+	if f.bgChecked() != 1 {
+		t.Fatalf("setBeta(true) bgChecks = %d, want 1", f.bgChecked())
+	}
+	a.setBeta(false)
+	if f.bgChecked() != 2 {
+		t.Fatalf("setBeta(false) bgChecks = %d, want 2", f.bgChecked())
+	}
+
+	// Background install finished: sidebar switches to "Restart to update"
+	// and tray top item switches to "Restart Voxt to update (2.1.4)".
+	f.change(func(p *updatePrefs) { p.AvailableVersion = ""; p.InstalledVersion = "2.1.4" })
+	frames(tt)
+	if !has(tt, "Restart to update") {
+		t.Fatalf("restart button missing: %q", firstTexts(tt))
+	}
+	click(t, tt, "Restart to update")
+	if relaunched != 1 {
+		t.Fatalf("sidebar relaunched = %d, want 1", relaunched)
+	}
+	top = a.trayItems()[0]
+	if top.Label != "Restart Voxt to update (2.1.4)" {
+		t.Fatalf("tray restart top = %q", top.Label)
+	}
+	top.Click(top, nil)
+	if relaunched != 2 {
+		t.Fatalf("tray relaunched = %d, want 2", relaunched)
+	}
+
+	// Collapsed icon rail shows the circular Restart to update button too.
+	a.setRail(true)
+	frames(tt)
+	if err := tt.ClickControl("Restart to update"); err != nil {
+		t.Fatalf("rail click: %v (controls %q)", err, tt.AccessLabels())
+	}
+	frames(tt)
+	if relaunched != 3 {
+		t.Fatalf("rail relaunched = %d, want 3", relaunched)
 	}
 }

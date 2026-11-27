@@ -21,33 +21,49 @@ import (
 var slack = proto.App{PID: 812, BundleID: "com.tinyspeck.slackmacgap", Name: "Slack"}
 
 type harness struct {
-	t     *testing.T
+	t     testing.TB
 	m     *Manager
 	audio *fakeAudio
 	text  *fakeText
 	hist  *memHistory
 	rec   *recorder
 
-	mu         sync.Mutex
-	asr        asr.Provider
-	llm        LLM
-	fallback   LLM // Translate's fallback model (nil: none)
-	resolveErr error
+	mu          sync.Mutex
+	asr         asr.Provider
+	llm         LLM
+	resolveGate <-chan struct{}
+	fallback    LLM // Translate's fallback model (nil: none)
+	resolveErr  error
 	// speech is Resolve's speech argument, call by call.
 	speech []bool
 	logs   []string
 	// vadModel is the voice activity model the services have (nil: none).
 	vadModel vad.Model
+	// remote: the language model's requests run side by side (Model.Remote).
+	remote bool
 }
 
-func newHarness(t *testing.T, prov asr.Provider, model LLM, cfgFn func(*Config, *settings.Settings)) *harness {
+func newHarness(t testing.TB, prov asr.Provider, model LLM, cfgFn func(*Config, *settings.Settings)) *harness {
 	h := &harness{t: t, audio: newFakeAudio(), text: &fakeText{focus: proto.FocusResult{PID: 812, Role: "AXTextArea", Editable: true}},
 		hist: &memHistory{dir: t.TempDir()}, rec: newRecorder(), asr: prov, llm: model}
+	if streamer, ok := prov.(*fakeStreamer); ok {
+		streamer.ensureSignals()
+	}
+	if llm, ok := model.(*fakeLLM); ok {
+		llm.ensureSignals()
+	}
 	s := settings.Defaults()
 	s.Dictionary.Enabled = true
 	cfg := Config{
 		Audio: h.audio, Text: h.text, History: h.hist,
 		Resolve: func(ctx context.Context, kind Kind, _ settings.Settings, speech bool) (Services, error) {
+			if h.resolveGate != nil {
+				select {
+				case <-h.resolveGate:
+				case <-ctx.Done():
+					return Services{}, ctx.Err()
+				}
+			}
 			h.mu.Lock()
 			defer h.mu.Unlock()
 			h.speech = append(h.speech, speech)
@@ -59,7 +75,7 @@ func newHarness(t *testing.T, prov asr.Provider, model LLM, cfgFn func(*Config, 
 				svc = Services{ASR: h.asr, ASRInfo: Model{ID: "doubao", Name: "Doubao", Model: "seed"}, VAD: h.vadModel}
 			}
 			if h.llm != nil {
-				svc.LLM, svc.LLMInfo = h.llm, Model{ID: "deepseek", Name: "DeepSeek", Model: "deepseek-chat"}
+				svc.LLM, svc.LLMInfo = h.llm, Model{ID: "deepseek", Name: "DeepSeek", Model: "deepseek-chat", Remote: h.remote}
 			}
 			if h.fallback != nil {
 				svc.Fallback, svc.FallbackInfo = h.fallback, Model{ID: "ollama", Name: "Ollama", Model: "qwen3"}

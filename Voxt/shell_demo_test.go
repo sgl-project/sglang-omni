@@ -49,6 +49,9 @@ func TestShellDemoActionControls(t *testing.T) {
 			}
 		}},
 		{name: "shell notices", fixture: "en/shell-busy", steps: steps("Clear all"), want: []string{"clearNotices"}},
+		{name: "shell update available", fixture: "en/shell-update-available", steps: steps("Update 2.1.4"), want: []string{"checkForUpdates"}},
+		{name: "shell update ready", fixture: "en/shell-update-ready", steps: steps("Restart to update"), want: []string{"relaunch"}},
+		{name: "shell rail update ready", fixture: "en/shell-rail-update-ready", steps: steps("Restart to update"), want: []string{"relaunch"}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			host, err := loadMeetingDemoHost("testdata/meeting")

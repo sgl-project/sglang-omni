@@ -10,6 +10,7 @@ name: Voxt CI
 
 on:
   pull_request:
+    types: [opened, reopened, synchronize, ready_for_review, labeled]
     paths:
       - "Voxt/**"
       - "README.md"
@@ -26,11 +27,6 @@ on:
   workflow_dispatch:
   workflow_call:
 
-# The calling workflow's name keeps the nightly's run apart from a push to main.
-concurrency:
-  group: voxtnew-ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
-
 permissions:
   contents: read
 
@@ -40,9 +36,25 @@ defaults:
 
 jobs:
   go:
+    if: >-
+      github.event_name != 'pull_request' || github.workflow == 'Voxt Nightly' ||
+      (!github.event.pull_request.draft &&
+       contains(github.event.pull_request.labels.*.name, 'run-mac-ci') &&
+       (github.event.action != 'labeled' || github.event.label.name == 'run-mac-ci'))
+    # Only a selected job may replace another run for this PR or nightly.
+    concurrency:
+      group: voxtnew-ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}-${{ matrix.shard }}
+      cancel-in-progress: true
     # The CJK fonts below are this release's packages.
     runs-on: ubuntu-24.04
     timeout-minutes: 30
+    # The app's package holds most of the test time and runs its tests one
+    # at a time, so it runs as numbered shards beside each other
+    # (scripts/test-shard.sh). "rest" runs every other package and check.
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [rest, 0, 1, 2, 3]
     env:
       # Pango draws Chinese with what fontconfig finds, and the runner has
       # no CJK font: the overlay's ink checks of Chinese text would see
@@ -123,17 +135,20 @@ jobs:
 
       # gofmt, MyGo's vet and internal/archtest: what developers run locally.
       - name: Fast checks
+        if: matrix.shard == 'rest'
         run: scripts/check.sh
 
       # -count=1: setup-go's cache keeps the last run's test results too,
       # and a result does not change with what a test does not see (the
       # fonts, a flake): without it a run after a green one says "(cached)".
       # -cover: each package's share of statements the tests run goes to
-      # the job summary. A report only, with no threshold.
+      # the job summary. A report only, with no threshold, and without the
+      # app's package: a shard runs a part of its tests.
       - name: Go tests
+        if: matrix.shard == 'rest'
         run: |
           set -o pipefail
-          CGO_ENABLED=0 go test -count=1 -cover ./... | tee "$RUNNER_TEMP/go-test.txt"
+          CGO_ENABLED=0 go test -timeout=15m -count=1 -cover $(go list ./... | grep -vx "$(go list .)") | tee "$RUNNER_TEMP/go-test.txt"
           {
             echo "### Coverage by package"
             echo '```'
@@ -141,23 +156,42 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
+      - name: Go tests of the app's package, one shard
+        if: matrix.shard != 'rest'
+        run: |
+          set -o pipefail
+          run="$(CGO_ENABLED=0 go test -list . . | scripts/test-shard.sh ${{ matrix.shard }} $(( ${{ strategy.job-total }} - 1 )))"
+          CGO_ENABLED=0 go test -timeout=15m -count=1 -run "$run" .
+
+      # Two --smoke folders stand for two Macs: one exports the library, the
+      # other imports it and restarts (scripts/library-e2e.sh).
+      - name: Library export and import end to end
+        if: matrix.shard == 'rest'
+        run: |
+          CGO_ENABLED=0 go build -o "$RUNNER_TEMP/voxt/Voxt" .
+          scripts/library-e2e.sh "$RUNNER_TEMP/voxt/Voxt"
+
       # The test skips on a machine without Chrome. The runner has it, so a
       # skip here means the rendered preview went unchecked.
       - name: The transcript preview in a browser
+        if: matrix.shard == 'rest'
         run: |
           set -o pipefail
           CGO_ENABLED=0 go test -count=1 -v -run '^TestPageSanitizesTranscriptInBrowser$' ./internal/transcriptpreview | tee "$RUNNER_TEMP/browser.txt"
           grep -q -- '--- PASS: TestPageSanitizesTranscriptInBrowser' "$RUNNER_TEMP/browser.txt"
 
       - name: Vet the update-check build
+        if: matrix.shard == 'rest'
         run: go vet -tags updatecheck .
 
       # The fixture demo (Voxt/AGENTS.md) is this package with the tag.
       - name: Build and vet the fixture demo
+        if: matrix.shard == 'rest'
         run: |
           CGO_ENABLED=0 go build -tags meetingdemo -o /dev/null .
           CGO_ENABLED=0 go vet -tags meetingdemo .
           GOFLAGS=-tags=meetingdemo go tool mygo vet .
 
       - name: Vendored MyGo is MyGo with the patches
+        if: matrix.shard == 'rest'
         run: scripts/vendor-mygo.sh --check

@@ -246,7 +246,9 @@ func TestReopenCardAndFollowUp(t *testing.T) {
 	if len(card.turns) != 2 || !card.conversation || card.text != "two" || card.target != slack || card.turns[0].Selection != chatA {
 		t.Fatalf("restored %+v; target want %+v", card, slack)
 	}
-	if a.ov.frame != moved {
+	// Its place: the height follows what it holds (the Rewrite card quotes
+	// the first selection, the answer card names it in its input row).
+	if f := a.ov.frame; f.X != moved.X || f.Y != moved.Y || f.Width != moved.Width {
 		t.Fatalf("restored frame %+v, want the card's moved frame %+v", a.ov.frame, moved)
 	}
 	waitReopenItems(a)

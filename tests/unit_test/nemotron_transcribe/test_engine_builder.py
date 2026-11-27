@@ -2,6 +2,7 @@
 """Engine option handling without model weights or CUDA initialization."""
 
 import json
+from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -31,13 +32,17 @@ from sglang_omni.models.nemotron_transcribe.mtp_draft import NemotronTranscribeM
 from sglang_omni.models.nemotron_transcribe.speech_transformer import (
     SpeechTransformerEncoder,
 )
+from sglang_omni.models.nemotron_transcribe.stages import (
+    create_nemotron_transcribe_executor,
+)
+from sglang_omni.scheduling.bootstrap import InfrastructureOptions
 from sglang_omni.scheduling.generation_batch_policy import (
     build_generation_batch_overrides,
 )
 
 
 def make_builder(
-    compile_perception: bool = False, cuda_graphs: bool = False
+    compile_perception: bool = False, cuda_graphs: bool = False, tp_size: int = 1
 ) -> NemotronTranscribeEngineBuilder:
     configuration = NemotronTranscribePipelineConfig(model_path="unused")
     parameters = configuration.stages[0].factory.model_dump(exclude_none=True)
@@ -47,6 +52,10 @@ def make_builder(
         perception_cuda_graphs=cuda_graphs,
         mem_fraction_static=None,
         checkpoint_revision=None,
+        tp_rank=0,
+        tp_size=tp_size,
+        nccl_port=None,
+        mm_embedding_cache_size_bytes=None,
     )
     return NemotronTranscribeEngineBuilder(**parameters)
 
@@ -128,7 +137,7 @@ def test_mtp_draft_stays_unregistered_without_speculative_decoding(
     overrides: dict[str, object] = {"enable_mixed_chunk": True}
     builder.adjust_overrides(overrides)
     assert overrides == {"enable_mixed_chunk": True}
-    assert builder.infra_kwargs() == {}
+    assert builder.infra_kwargs() == {"tp_rank": 0, "nccl_port": None}
     assert (
         engine_builder.ModelRegistry.models.get("NemotronHForCausalLMMTP")
         is registered_draft
@@ -179,7 +188,11 @@ def test_supported_mtp_configurations_serve_the_bundled_draft(
     assert overrides["speculative_num_steps"] == num_steps
     assert overrides["speculative_num_draft_tokens"] == num_draft_tokens
     assert overrides["enable_mixed_chunk"] is False
-    assert builder.infra_kwargs() == {"supports_speculative_decoding": True}
+    assert builder.infra_kwargs() == {
+        "tp_rank": 0,
+        "nccl_port": None,
+        "supports_speculative_decoding": True,
+    }
     assert (
         engine_builder.ModelRegistry.models["NemotronHForCausalLMMTP"]
         is NemotronTranscribeMTPDraft
@@ -261,7 +274,7 @@ def test_unsupported_mtp_configurations_name_the_setting_to_change(
     builder.checkpoint_dir = "/checkpoints/nemotron"
     with pytest.raises(ValueError, match=message):
         builder.adjust_overrides(dict(requested))
-    assert builder.infra_kwargs() == {}
+    assert builder.infra_kwargs() == {"tp_rank": 0, "nccl_port": None}
     assert (
         engine_builder.ModelRegistry.models.get("NemotronHForCausalLMMTP")
         is registered_draft
@@ -413,6 +426,111 @@ def test_disabled_pre_lm_encoder_does_not_start_a_service(
     builder.enable_pre_lm_encoder = False
     builder.setup_runtime_resources(SimpleNamespace(), SimpleNamespace())
     assert builder.audio_encoder_service is None
+
+
+def test_multi_rank_pre_lm_encoder_does_not_start_a_service(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fail(*args: object, **kwargs: object) -> None:
+        raise AssertionError("encoder service must stay stopped")
+
+    monkeypatch.setattr(engine_builder, "NemotronTranscribePreLMEncoderService", fail)
+    monkeypatch.setattr(
+        engine_builder,
+        "build_cache_namespace",
+        lambda model, *, model_path: f"{model_path}:ns",
+    )
+    builder = make_builder(tp_size=4)
+    builder.checkpoint_dir = "checkpoint"
+    assert builder.enable_pre_lm_encoder
+    builder.setup_runtime_resources(SimpleNamespace(), SimpleNamespace())
+    assert builder.audio_encoder_service is None
+
+
+@pytest.mark.parametrize(
+    ("tp_size", "configured_bytes", "expected_bytes"),
+    [
+        (1, None, 0),
+        (4, None, engine_builder.MULTI_RANK_EMBEDDING_CACHE_BYTES),
+        (4, 0, 0),
+        (4, 7, 7),
+    ],
+)
+def test_dropped_pre_lm_encoder_keeps_an_embedding_cache(
+    monkeypatch: pytest.MonkeyPatch,
+    tp_size: int,
+    configured_bytes: int | None,
+    expected_bytes: int,
+) -> None:
+    cache_sizes_bytes: list[int] = []
+    monkeypatch.setattr(
+        engine_builder,
+        "init_mm_embedding_cache",
+        lambda size_bytes: cache_sizes_bytes.append(size_bytes),
+    )
+    builder = make_builder(tp_size=tp_size)
+    builder.mm_embedding_cache_size_bytes = configured_bytes
+    model = SimpleNamespace(perception=nn.Sequential(), encoder_max_batch_size=0)
+    builder.setup_model_resources(
+        model,
+        SimpleNamespace(max_running_requests=1),
+        generation_cuda_graph_enabled=True,
+    )
+    assert cache_sizes_bytes == [expected_bytes]
+
+
+@dataclass(kw_only=True)
+class CapturedBuildCall:
+    server_args_overrides: dict[str, int]
+    infra_kwargs: InfrastructureOptions
+
+
+@pytest.mark.parametrize(
+    ("tp_rank", "tp_size", "nccl_port"),
+    [(2, 4, 29501), (0, 1, None)],
+)
+def test_tensor_parallel_arguments_reach_server_args_and_infrastructure(
+    monkeypatch: pytest.MonkeyPatch,
+    tp_rank: int,
+    tp_size: int,
+    nccl_port: int | None,
+) -> None:
+    captured: list[CapturedBuildCall] = []
+
+    def fake_build(
+        self: NemotronTranscribeEngineBuilder,
+        model_path: str,
+        *,
+        device: str | None,
+        gpu_id: int | None,
+        dtype: str,
+        server_args_overrides: dict[str, int],
+    ) -> str:
+        captured.append(
+            CapturedBuildCall(
+                server_args_overrides=dict(server_args_overrides),
+                infra_kwargs=self.infra_kwargs(),
+            )
+        )
+        return "scheduler"
+
+    monkeypatch.setattr(NemotronTranscribeEngineBuilder, "build", fake_build)
+    configuration = NemotronTranscribePipelineConfig(model_path="unused")
+    create_nemotron_transcribe_executor(
+        "dummy",
+        **configuration.stages[0].factory.model_dump(exclude_none=True),
+        tp_rank=tp_rank,
+        tp_size=tp_size,
+        nccl_port=nccl_port,
+        server_args_overrides={"max_running_requests": 8},
+    )
+
+    (call,) = captured
+    assert call.server_args_overrides == {
+        "max_running_requests": 8,
+        "tp_size": tp_size,
+    }
+    assert call.infra_kwargs == {"tp_rank": tp_rank, "nccl_port": nccl_port}
 
 
 @pytest.mark.parametrize("decoder_slots", [None, 1, 16])

@@ -21,14 +21,16 @@ func (s *live) finalPass(pcm []byte) {
 	}
 	start := time.Now()
 	language := s.language
+	finalBias := s.a.finalBias(s.bias)
 	var texts []string
 	done, busy := 0, time.Duration(0)
 	if pc := s.pc; pc != nil {
-		select {
-		case pc.wake <- struct{}{}:
-		default:
+		s.mu.Lock()
+		activePieceDone := pc.activePieceDone
+		s.mu.Unlock()
+		if activePieceDone != nil {
+			<-activePieceDone
 		}
-		<-pc.exited
 		s.mu.Lock()
 		done, texts, busy = pc.done, slices.Clone(pc.texts), pc.busy
 		if pc.language != "" {
@@ -45,25 +47,34 @@ func (s *live) finalPass(pcm []byte) {
 			// The server has prefilled the Final's audio, from the last piece
 			// on, and its dictionary (startFinalAt).
 			known.session = s.session
-			// Without a hint the model writes the language before the text,
-			// and the preview does not hold it.
-			if done == 0 && hint != "" {
-				s.mu.Lock()
-				known.text = s.asm.text()
-				s.mu.Unlock()
+			if done == 0 {
+				if hint != "" {
+					s.mu.Lock()
+					known.text = s.asm.text()
+					s.mu.Unlock()
+				} else if !s.req.LiveResult {
+					// note (chenye): an auto-language Final generates a language
+					// header. Let the server propose it with the preview text.
+					known.guessAutoLanguage = true
+				}
 			}
 		}
-		text, language, err = s.a.final(s.ctx, s.l, tail, hint, s.bias, known)
+		text, language, err = s.a.final(s.ctx, s.l, tail, hint, finalBias, known)
 		if err != nil && s.ctx.Err() == nil && !s.l.p.alive() {
 			// The server died under the recording (a crash, memory pressure): the audio is all here, so once more on a new one.
 			if l, aerr := s.a.rt.acquire(s.ctx, s.a.spec, s.a.dir, s.a.draft); aerr == nil {
 				s.a.rt.logf("warning", "%s: its server died during the session (%v): the Final runs again on a new one", s.a.spec.ID, err)
-				text, language, err = s.a.final(s.ctx, l, tail, hint, s.bias, known)
+				text, language, err = s.a.final(s.ctx, l, tail, hint, finalBias, known)
 				l.release()
 			}
 		}
 	}
 	took := time.Since(start)
+	if err != nil {
+		s.mu.Lock()
+		s.lateCandidates = false
+		s.mu.Unlock()
+	}
 	s.logFinal(pcm, done, len(texts), busy, took, err)
 	if err != nil {
 		if s.ctx.Err() != nil {
