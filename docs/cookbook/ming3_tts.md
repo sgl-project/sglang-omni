@@ -20,6 +20,22 @@ sgl-omni serve --model-path inclusionAI/Ming-3.0-tts-tiny
 sgl-omni serve --model-path inclusionAI/Ming-3.0-tts-0.5B
 ```
 
+### Ascend NPU
+
+Start the server with the NPU pipeline configuration, selecting the checkpoint with `--model-path`:
+
+```bash
+ASCEND_RT_VISIBLE_DEVICES=0 sgl-omni serve \
+  --model-path inclusionAI/Ming-3.0-tts-0.5B \
+  --config examples/configs/ming3_tts_npu.yaml \
+  --port 8000
+```
+
+- The dense 0.5B checkpoint runs the backbone, `preprocessing` and the AudioVAE decoder on one NPU device.
+- `tts_engine` uses SGLang's `ascend` attention backend and PyTorch sampling. Decode graphs stay enabled; prefill graph capture is disabled because a multi-request prefill replay reuses one request's batch metadata on Ascend.
+- The fused flow-matching head and `torch.compile` stay off on NPU.
+- Validated on Ascend 910.
+
 The speech endpoint is `POST /v1/audio/speech`. With `stream=false`, the response is one complete waveform. With `stream=true` and `response_format="pcm"`, CUDA vocoders return incremental PCM for both Tiny and 0.5B; CPU vocoders retain complete-waveform decoding. The default decoder group is eight latents. Buffering and lookahead delay the first non-empty chunk until latent 17; shorter utterances flush when synthesis finishes. This is a decoder grouping rule, not an elapsed-time first-packet guarantee. The requests below are the same for both servers. Set `model` to the checkpoint id used at startup. The examples use `inclusionAI/Ming-3.0-tts-tiny`.
 
 ## Zero-shot speech
