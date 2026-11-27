@@ -4,35 +4,23 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 ## [Unreleased]
 
-### Changed
-- **Experimental settings**: Sessions (experimental), its history notice and the Next session shortcut move from Settings → Shortcuts to Settings → Experimental, and the switch explains what the card's session row does. The page no longer lists the Session 1/2/3 shortcuts, whose numbers shift as sessions come and go, or the switch counts. Existing session settings keep their values.
-- **Qwen3-ASR 1.7B (8bit) is the recommended speech model again**: the setup guide, Home and the feature pages download Qwen3-ASR 1.7B (8bit) with its 726 MB DFlash draft (3.2 GB together), so Faster transcription is on from the start, and Automatic picks it first once it is installed. MOSS-Transcribe-Diarize stays on the Speech models page, and a model you chose for a feature stays as chosen.
-- **Anthropic lists the current Claude models, and they answer without thinking first** (#4697): the Model menu offers Claude Haiku 5.5, Sonnet 5.5, Opus 5.5 and Fable 5.2 instead of Sonnet 4.6, Haiku 4.5 and Opus 4.6, and Claude Haiku 5.5 is the default. Claude's 5.5 models think before every answer unless asked not to, so Voxt now turns thinking off as it does for other services: Sonnet 5.5 with the setting it takes for that, while Opus 5.5 and Fable 5.2 always think. A setup that kept the default model moves to Claude Haiku 5.5; a model you chose stays.
+### Added
+- **Anthropic's Messages API** (#4747, Language models → Anthropic → Advanced → API format): Chat Completions stays the default. With Messages, Prompt caching can keep Voxt's instructions on Anthropic's side for a few minutes, so the requests after the first cost less; it is off unless you turn it on, and what you dictate is not cached.
 
-### Fixed
-- **Rewrite lost the selection in Slack, Notion and other apps that only give it by copying**: the Rewrite card took the front before Voxt copied the selection, so the copy went to Voxt and the card opened without the selected text. The card now waits until the selection is read.
+### Changed
+- **Local Qwen3-ASR's result comes even sooner after you stop** (#4747): while you speak, the speech model recognises the recording so far in the background every 8 seconds, and the result after Stop starts from that and from the live preview, picking the preview up again after a word that differs; the GPU stays at speed while you record. On an M4 MacBook Air with the 1.7B model and Faster transcription, 40 dictations of 4 to 50 seconds came in 0.29 s on average instead of 0.53 s, with the same text but for a few punctuation marks.
+- **Long dictations answer sooner too** (#4747): the stretches recognised while you speak (from 20 seconds on) now reuse what the live preview has worked out, with a dictionary of any size (before, more than 30 terms turned them off), and a stretch still being recognised at Stop no longer holds the result up. On 18 dictations of 20 to 50 seconds, the result came in 0.33 s on average instead of 0.47 s, and with a dictionary of 463 terms in 0.42 s instead of 0.53 s without the stretches.
 
 ### 中文
 
-#### 变更
-- **实验功能设置**：“会话（实验功能）”开关、历史提示和“下一个会话”快捷键从“设置 → 快捷键”移到“设置 → 实验功能”，开关说明写清卡片上的会话行能做什么。页面不再列出会话 1/2/3 的快捷键（会话编号会随新建、删除变动）和切换次数统计。已有会话设置保持不变。
-- **推荐的语音识别模型改回 Qwen3-ASR 1.7B (8bit)**：设置引导、首页和功能页下载 Qwen3-ASR 1.7B (8bit) 及其 726 MB 的 DFlash 草稿（共 3.2 GB），转录加速一开始就开着；装好后“自动”先用它。MOSS-Transcribe-Diarize 仍在语音识别模型页，功能里选过的模型不变。
-- **Anthropic 列出当前的 Claude 模型，回答前不再先思考**（#4697）：模型菜单里的 Sonnet 4.6、Haiku 4.5 和 Opus 4.6 换成 Claude Haiku 5.5、Sonnet 5.5、Opus 5.5 和 Fable 5.2，默认用 Claude Haiku 5.5。Claude 的 5.5 系列不明确关掉就会在每次回答前思考，所以 Voxt 现在像对其他服务一样关掉思考：Sonnet 5.5 用它接受的写法关掉，Opus 5.5 和 Fable 5.2 始终会思考。沿用默认模型的设置会改用 Claude Haiku 5.5，自己选过的模型不变。
-
-#### 修复
-- **在 Slack、Notion 等只能靠复制读取选区的应用里，改写读不到选中的文字**：改写卡片在 Voxt 复制选区之前就切到了前台，复制发给了 Voxt 自己，卡片里没有选中的文字。现在卡片等选区读完再切到前台。
-
-## [Unreleased]
-
-### Changed
-- **Cleaner text from the clean-up** (#4674): the clean-up rules now name the words of thinking aloud to drop ("let me think", "so", "well", 我想想, 就是), say a repeated word or phrase once, drop a correction cue ("no, sorry", 不对) together with what it cancels, put a spelled-out character together from its parts, and write counts, money, dates and times in digits. On 150 AASR-Bench dictations that were not used to write them, Claude Haiku 5.5 scored 80.6 out of 100 instead of 74.7, Chinese and English alike, with no longer wait.
-
-### 中文
+#### 新增
+- **Anthropic 的 Messages API**（#4747，语言模型 → Anthropic → 高级 → API 格式）：默认仍是 Chat Completions。选 Messages 后可以打开“提示词缓存”，Anthropic 会把 Voxt 的指令保留几分钟，之后的请求费用更低；默认关，你说的内容不会被缓存。
 
 #### 变更
-- **整理后的文字更干净**（#4674）：整理规则里写明了要删的边想边说的话（“我想想”“就是”、"so"、"well"），重复说的词只留一次，改口时把“不对”“no, sorry”这类话和被否定的部分一起删掉，按说出的偏旁部件拼出对应的字，数量、金额、日期和时间都用阿拉伯数字。在没有用来写规则的 150 条 AASR-Bench 口述上，Claude Haiku 5.5 的得分从 74.7 提到 80.6（满分 100），中英文都一样，等待时间没有变长。
+- **本地 Qwen3-ASR 松键后出结果更快了**（#4747）：你说话时，语音识别模型每 8 秒在后台把已录的部分识别一遍，松键后的结果从这份结果和实时预览接着算，预览中途有字对不上也能接回去；录音期间 GPU 保持在高速状态。M4 MacBook Air 上用 1.7B 模型并开启“转录加速”，40 段 4 到 50 秒的口述平均 0.29 秒出结果，原来 0.53 秒，文字除了个别标点都相同。
+- **长口述也更快出结果**（#4747）：说话时就识别好的分段（20 秒起）现在会复用实时预览算好的部分，词典多大都行（原来超过 30 个词条就不分段），松键时还在识别的那一段也不再拖住结果。18 段 20 到 50 秒的口述平均 0.33 秒出结果，原来 0.47 秒；词典有 463 个词条时 0.42 秒，不分段要 0.53 秒。
 
-## [2.1.4] - 2026-11-25
+## [2.1.4] - 2026-11-26
 
 ### Added
 - **Take your library to another Mac** (#4651): Settings → Storage → Another Mac exports your settings, history, meetings, dictionary and snippets as one `.voxtlibrary` file. Import library on the other Mac replaces its library with the file's and restarts; the library it replaces stays in the data folder. Recordings, models and API keys stay on each Mac.
@@ -51,6 +39,10 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 ### Changed
 
+- **Experimental settings**: Sessions (experimental), its history notice and the Next session shortcut move from Settings → Shortcuts to Settings → Experimental, and the switch explains what the card's session row does. The page no longer lists the Session 1/2/3 shortcuts, whose numbers shift as sessions come and go, or the switch counts. Existing session settings keep their values.
+- **Qwen3-ASR 1.7B (8bit) is the recommended speech model again**: the setup guide, Home and the feature pages download Qwen3-ASR 1.7B (8bit) with its 726 MB DFlash draft (3.2 GB together), so Faster transcription is on from the start, and Automatic picks it first once it is installed. MOSS-Transcribe-Diarize stays on the Speech models page, and a model you chose for a feature stays as chosen.
+- **Anthropic lists the current Claude models, and they answer without thinking first** (#4697): the Model menu offers Claude Haiku 5.5, Sonnet 5.5, Opus 5.5 and Fable 5.2 instead of Sonnet 4.6, Haiku 4.5 and Opus 4.6, and Claude Haiku 5.5 is the default. Claude's 5.5 models think before every answer unless asked not to, so Voxt now turns thinking off as it does for other services: Sonnet 5.5 with the setting it takes for that, while Opus 5.5 and Fable 5.2 always think. A setup that kept the default model moves to Claude Haiku 5.5; a model you chose stays.
+- **Cleaner text from the clean-up** (#4674): the clean-up rules now name the words of thinking aloud to drop ("let me think", "so", "well", 我想想, 就是), say a repeated word or phrase once, drop a correction cue ("no, sorry", 不对) together with what it cancels, put a spelled-out character together from its parts, and write counts, money, dates and times in digits. On 150 AASR-Bench dictations that were not used to write them, Claude Haiku 5.5 scored 80.6 out of 100 instead of 74.7, Chinese and English alike, with no longer wait.
 - **Short notices leave sooner**: Nothing was heard now fades out after 1.5 seconds and a green check (Added to the dictionary, Already in the dictionary, Saved to Notes) after 2, instead of 5; other notices still stay 5 seconds.
 - **Dictionary controls also share the overflow menu**: Use the dictionary, Speech hints, Glossary for the language model, Learn from my corrections, and Scan history are available beside Import and Export as well as in Dictionary settings. Add term stays in the header, and dictionary learning behaves as before. Adjacent help keeps the Speech hints, Glossary, and correction-learning explanations, including the privacy promise.
 - **Faster meeting proofreading on reasoning models**: each proofreading batch now asks the language model to bound its reasoning (low effort), which keeps the same prompt and output format but avoids long hidden-reasoning waits and empty answers on services that reason at length; a service without that field sees no change, and one that rejects it gets the request again without it.
@@ -70,6 +62,8 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **The first words appear sooner with MOSS-Transcribe-Diarize** (#4497): the first live preview now starts after 0.75 s of speech instead of 1.25 s, so the first text shows up about half a second earlier; the final transcript is unchanged.
 
 ### Fixed
+- **Documentation downloads stay on the latest published release**: preparing the next release no longer makes the six download pages point to a disk image that does not exist yet.
+- **Rewrite lost the selection in Slack, Notion and other apps that only give it by copying**: the Rewrite card took the front before Voxt copied the selection, so the copy went to Voxt and the card opened without the selected text. The card now waits until the selection is read.
 - **A system-audio failure no longer leaves meeting startup stuck** (#4409): if the microphone stop after a system-capture failure goes unanswered, Voxt stops waiting after five seconds and returns the original capture error instead of leaving the meeting In progress. A late Final or queued audio from a replaced track cannot appear in the next meeting's transcript or recording. A microphone lost while its speech-recognition connection hangs (after sleep, or a network loss) reconnects after five seconds instead of recording nothing more. With the final pass turned off, a last line that takes longer than five seconds to transcribe after Stop is not saved.
 - **No flash as the overlay fades out**: when a dictation ends, the overlay, or the dictation pill beside an open answer card, fades with its last words still in it; it no longer flashes the microphone row alone in the empty card first.
 
@@ -104,6 +98,10 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 #### 变更
 
+- **实验功能设置**：“会话（实验功能）”开关、历史提示和“下一个会话”快捷键从“设置 → 快捷键”移到“设置 → 实验功能”，开关说明写清卡片上的会话行能做什么。页面不再列出会话 1/2/3 的快捷键（会话编号会随新建、删除变动）和切换次数统计。已有会话设置保持不变。
+- **推荐的语音识别模型改回 Qwen3-ASR 1.7B (8bit)**：设置引导、首页和功能页下载 Qwen3-ASR 1.7B (8bit) 及其 726 MB 的 DFlash 草稿（共 3.2 GB），转录加速一开始就开着；装好后“自动”先用它。MOSS-Transcribe-Diarize 仍在语音识别模型页，功能里选过的模型不变。
+- **Anthropic 列出当前的 Claude 模型，回答前不再先思考**（#4697）：模型菜单里的 Sonnet 4.6、Haiku 4.5 和 Opus 4.6 换成 Claude Haiku 5.5、Sonnet 5.5、Opus 5.5 和 Fable 5.2，默认用 Claude Haiku 5.5。Claude 的 5.5 系列不明确关掉就会在每次回答前思考，所以 Voxt 现在像对其他服务一样关掉思考：Sonnet 5.5 用它接受的写法关掉，Opus 5.5 和 Fable 5.2 始终会思考。沿用默认模型的设置会改用 Claude Haiku 5.5，自己选过的模型不变。
+- **整理后的文字更干净**（#4674）：整理规则里写明了要删的边想边说的话（“我想想”“就是”、"so"、"well"），重复说的词只留一次，改口时把“不对”“no, sorry”这类话和被否定的部分一起删掉，按说出的偏旁部件拼出对应的字，数量、金额、日期和时间都用阿拉伯数字。在没有用来写规则的 150 条 AASR-Bench 口述上，Claude Haiku 5.5 的得分从 74.7 提到 80.6（满分 100），中英文都一样，等待时间没有变长。
 - **简短的提示更快消失**：“没有听到说话”1.5 秒后淡出，绿色对勾的提示（已加入词典、词典里已经有、已保存到笔记）2 秒后淡出，不再停 5 秒；其他提示仍是 5 秒。
 - **词典控件也能从更多操作菜单使用**：“使用词典”“语音识别提示”“语言模型术语表”“从我的改正中学习”和“扫描历史”除了“词典设置”，也能在与导入、导出同一个菜单里使用。“添加词条”仍在页头，词典学习行为不变。菜单旁边的 ⓘ 保留这三项设置的说明，包括读取内容的隐私承诺。
 - **实时文字先淡后实**（#4574）：说话时，浮窗和答案卡片里语音识别模型的实时文字用淡色显示；识别结果出来替换后，换成正常颜色。
@@ -120,6 +118,8 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **MOSS-Transcribe-Diarize 出字更早**（#4497）：第一条实时预览在说满 0.75 秒时就开始（原来是 1.25 秒），第一个字约早半秒出现；最终转录稿不变。
 
 #### 修复
+- **文档下载链接保持指向最新已发布的正式版**：准备下一版时，六个下载页面不再提前指向还不存在的安装包。
+- **在 Slack、Notion 等只能靠复制读取选区的应用里，改写读不到选中的文字**：改写卡片在 Voxt 复制选区之前就切到了前台，复制发给了 Voxt 自己，卡片里没有选中的文字。现在卡片等选区读完再切到前台。
 - **系统音频采集失败不再让会议一直停在“进行中”**（#4409）：系统音频采集失败后，如果停止麦克风的请求没有回应，Voxt 最多等待 5 秒，随后显示原来的采集错误，不再让会议启动过程卡住。被替换音轨迟到的最终结果和排队音频也不会写进下一场会议的转录稿或录音。麦克风断开时如果语音识别连接卡住（睡眠唤醒后或断网），5 秒后照样重连，不会之后什么都录不到。关掉最终转写时，停止后超过 5 秒才转写出来的最后一句不会保存。
 - **浮窗淡出时不再闪一下**：听写结束时，浮窗（包括答案卡片旁边的听写小窗）带着最后的文字淡出，不会先闪回只剩麦克风那一行的空卡片。
 

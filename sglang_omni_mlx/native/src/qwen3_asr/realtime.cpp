@@ -2,8 +2,14 @@
 #include "qwen3_asr/realtime.h"
 
 #include <algorithm>
+#include <atomic>
+#include <chrono>
 #include <cmath>
+#include <cstdlib>
 #include <iostream>
+#include <optional>
+#include <string>
+#include <vector>
 
 #include "common/audio.h"
 #include "common/generation.h"
@@ -35,8 +41,66 @@ constexpr int kPrefixedTokenSlack = 8;
 // records, and the Final that is left starts where the last piece ended.
 constexpr size_t kMaxFinalPrefillSamples = 64 * omni_common::kSampleRate;
 constexpr size_t kMaxFinalRecordingSamples = 128 * omni_common::kSampleRate;
+// A shadow Final runs once per window of the recording, a little after the
+// window completes.
+constexpr long kShadowIntervalSamples = 8 * omni_common::kSampleRate;
+constexpr long kShadowDelaySamples = omni_common::kSampleRate / 10;
+// The shadow's last tokens, which the audio after it may change, and the
+// tokens before them that find where the preview goes on.
+constexpr int kShadowUnsettledTokens = 4;
+constexpr int kShadowAnchorTokens = 3;
+// How long after a request shadow Finals wait: a request prepared but not yet
+// queued would otherwise wait behind one queued meanwhile.
+constexpr std::chrono::seconds kShadowQuietTime{2};
+
+std::atomic<std::chrono::steady_clock::rep> last_foreground_request{0};
+
+bool IsShadowQuiet() {
+  return std::chrono::steady_clock::now().time_since_epoch().count() -
+             last_foreground_request.load() <
+         std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+             kShadowQuietTime)
+             .count();
+}
 
 } // namespace
+
+void NoteForegroundRequest() {
+  last_foreground_request.store(
+      std::chrono::steady_clock::now().time_since_epoch().count());
+}
+
+std::vector<int> MergedGuesses(const std::vector<int> &shadow_ids,
+                               const std::vector<int> &preview_ids) {
+  const int settled_count =
+      static_cast<int>(shadow_ids.size()) - kShadowUnsettledTokens;
+  if (settled_count < kShadowAnchorTokens) {
+    return preview_ids.empty() ? shadow_ids : preview_ids;
+  } else {
+  }
+  const auto settled_end = shadow_ids.begin() + settled_count;
+  // The place in the preview after the anchor nearest the settled tokens'
+  // count.
+  std::optional<int> best_end;
+  for (int end = kShadowAnchorTokens;
+       end <= static_cast<int>(preview_ids.size()); ++end) {
+    if (std::equal(settled_end - kShadowAnchorTokens, settled_end,
+                   preview_ids.begin() + end - kShadowAnchorTokens) &&
+        (!best_end.has_value() ||
+         std::abs(end - settled_count) < std::abs(*best_end - settled_count))) {
+      best_end = end;
+    } else {
+    }
+  }
+  if (!best_end.has_value()) {
+    return shadow_ids;
+  } else {
+  }
+  std::vector<int> merged(shadow_ids.begin(), settled_end);
+  merged.insert(merged.end(), preview_ids.begin() + *best_end,
+                preview_ids.end());
+  return merged;
+}
 
 RealtimeSettings MakeRealtimeSettings(int decode_interval_ms,
                                       int first_decode_ms,
@@ -81,6 +145,7 @@ bool RealtimeSession::Handle(const nlohmann::json &message) {
     }
     return true;
   } else if (type == "input_audio_buffer.append") {
+    gpu_clock_.Touch();
     Append(message.value("audio", nlohmann::json()));
     return true;
   } else if (type == "input_audio_buffer.final_start") {
@@ -121,6 +186,7 @@ void RealtimeSession::Append(const nlohmann::json &audio) {
   } else {
   }
   long cut_sample = -1;
+  bool moved_final_start = false;
   {
     std::lock_guard<std::mutex> lock(mutex_);
     const long start_sample = EndSample();
@@ -133,6 +199,12 @@ void RealtimeSession::Append(const nlohmann::json &audio) {
                                   appended->end());
       } else {
       }
+    } else {
+    }
+    if (pending_final_start_sample_.has_value() &&
+        *pending_final_start_sample_ <= EndSample()) {
+      MoveFinalStart(*std::exchange(pending_final_start_sample_, std::nullopt));
+      moved_final_start = true;
     } else {
     }
     if (!segment_.has_value()) {
@@ -151,6 +223,10 @@ void RealtimeSession::Append(const nlohmann::json &audio) {
     FinalizeThrough(cut_sample);
     std::lock_guard<std::mutex> lock(mutex_);
     StartSegment(cut_sample);
+  } else {
+  }
+  if (moved_final_start) {
+    MaybeStartFinalPrefill();
   } else {
   }
   MaybeStartRefresh();
@@ -178,16 +254,7 @@ void RealtimeSession::StartFinalAt(const nlohmann::json &start_sample) {
       const long sample = start_sample.get<long>();
       is_valid = sample >= final_start_sample_ && sample <= EndSample();
       if (is_valid) {
-        if (is_recording_cut_off_) {
-          recording_samples_.clear();
-        } else {
-          recording_samples_.erase(
-              recording_samples_.begin(),
-              recording_samples_.begin() +
-                  std::min<size_t>(sample - final_start_sample_,
-                                   recording_samples_.size()));
-        }
-        final_start_sample_ = sample;
+        MoveFinalStart(sample);
       } else {
       }
     } else {
@@ -202,12 +269,49 @@ void RealtimeSession::StartFinalAt(const nlohmann::json &start_sample) {
   }
 }
 
+void RealtimeSession::MoveFinalStart(long sample) {
+  if (is_recording_cut_off_) {
+    recording_samples_.clear();
+  } else {
+    recording_samples_.erase(recording_samples_.begin(),
+                             recording_samples_.begin() +
+                                 std::min<size_t>(sample - final_start_sample_,
+                                                  recording_samples_.size()));
+  }
+  final_start_sample_ = sample;
+  // The shadow decoded the audio from the old start.
+  shadow_guess_.reset();
+  shadow_cancel_->store(true);
+}
+
+void RealtimeSession::CancelShadowFinal() {
+  std::lock_guard<std::mutex> lock(mutex_);
+  shadow_cancel_->store(true);
+}
+
 FinalReuse
 RealtimeSession::TakeFinalReuse(const std::optional<std::string> &context,
-                                bool guess_auto_language) {
+                                bool guess_auto_language,
+                                std::optional<long> piece_end_sample) {
   std::lock_guard<std::mutex> lock(mutex_);
-  if (!should_prefill_final_ || context.value_or("") != final_context_) {
-    return {recording_reuse_, false};
+  shadow_cancel_->store(true);
+  if (piece_end_sample.has_value() &&
+      *piece_end_sample <= final_start_sample_) {
+    return FinalReuse();
+  } else {
+  }
+  // A shadow that finished after the start moved decoded other audio.
+  const std::optional<FinalPreviewGuess> shadow_guess =
+      final_start_sample_ == 0 ? shadow_guess_ : std::nullopt;
+  const bool has_final_prompt =
+      should_prefill_final_ && context.value_or("") == final_context_;
+  FinalReuse reuse;
+  if (piece_end_sample.has_value()) {
+    reuse.piece = RecordingPiece{
+        std::static_pointer_cast<RealtimeSession>(shared_from_this()), context,
+        *piece_end_sample};
+  } else if (!has_final_prompt) {
+    reuse = {recording_reuse_, false};
   } else {
     // note (XXXXRT666): the prefill starts after the first preview, and without
     // a dictionary after the first segment, so a Final before it finds none
@@ -215,21 +319,54 @@ RealtimeSession::TakeFinalReuse(const std::optional<std::string> &context,
     should_prefill_final_ = false;
     std::shared_ptr<RefreshReuse> final_reuse =
         std::exchange(final_reuse_, nullptr);
-    FinalReuse reuse = final_reuse != nullptr
-                           ? FinalReuse{std::move(final_reuse), true}
-                           : FinalReuse{recording_reuse_, false};
-    // note (chenye): only use an auto-language preview of the same recording
-    // start. A committed segment or a moved start can leave a different tail.
-    if (guess_auto_language && !language_.has_value() &&
-        final_start_sample_ == 0 && committed_.empty() && !finalizing_ &&
-        segment_.has_value() && segment_->start_sample == 0 &&
-        !segment_->ran_out_of_tokens && segment_->language.has_value() &&
-        !segment_->transcript.empty()) {
-      reuse.auto_language_guess =
-          FinalPreviewGuess{*segment_->language, segment_->transcript};
-    }
-    return reuse;
+    reuse = final_reuse != nullptr ? FinalReuse{std::move(final_reuse), true}
+                                   : FinalReuse{recording_reuse_, false};
   }
+  reuse.shadow_guess = shadow_guess;
+  // note (chenye): only use an auto-language preview of the same recording
+  // start. A committed segment or a moved start can leave a different tail.
+  if (has_final_prompt && guess_auto_language && !language_.has_value() &&
+      final_start_sample_ == 0 && committed_.empty() && !finalizing_ &&
+      segment_.has_value() && segment_->start_sample == 0 &&
+      !segment_->ran_out_of_tokens && segment_->language.has_value() &&
+      !segment_->transcript.empty()) {
+    reuse.auto_language_guess =
+        FinalPreviewGuess{*segment_->language, segment_->transcript};
+  } else {
+  }
+  return reuse;
+}
+
+RefreshReuse
+RealtimeSession::TakePieceReuse(const std::optional<std::string> &context,
+                                long end_sample) {
+  RefreshReuse reuse;
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (end_sample <= final_start_sample_) {
+      return reuse;
+    } else {
+    }
+    // note (XXXXRT666): a piece leaves the prefill to the session, which moves
+    // on from the piece's end, so it decodes a snapshot; the worker runs the
+    // prefill's jobs too, so none changes it meanwhile.
+    const std::shared_ptr<RefreshReuse> &source =
+        should_prefill_final_ && context.value_or("") == final_context_ &&
+                final_reuse_ != nullptr
+            ? final_reuse_
+            : recording_reuse_;
+    if (source != nullptr) {
+      reuse = *source;
+    } else {
+    }
+    if (end_sample <= EndSample()) {
+      MoveFinalStart(end_sample);
+    } else {
+      pending_final_start_sample_ = end_sample;
+    }
+  }
+  MaybeStartFinalPrefill();
+  return reuse;
 }
 
 void RealtimeSession::MaybeStartFinalPrefill() {
@@ -307,6 +444,115 @@ void RealtimeSession::MaybeStartFinalPrefill() {
       });
 }
 
+void RealtimeSession::MaybeStartShadowFinal() {
+  std::vector<float> samples;
+  TranscriptionOptions options;
+  std::string preview_text;
+  std::optional<std::string> preview_language;
+  std::optional<FinalPreviewGuess> shadow_guess;
+  omni_server::CancelFlag cancel;
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    const long recording_end = static_cast<long>(recording_samples_.size());
+    if (!should_prefill_final_ || !has_preview_ || is_shadowing_ ||
+        finalizing_ || is_recording_cut_off_ || final_start_sample_ != 0 ||
+        IsShadowQuiet() || !segment_.has_value() ||
+        recording_end <
+            std::max(next_shadow_sample_,
+                     kShadowIntervalSamples + kShadowDelaySamples) ||
+        recording_samples_.size() > kMaxChunkSamples) {
+      return;
+    } else {
+    }
+    next_shadow_sample_ =
+        ((recording_end - kShadowDelaySamples) / kShadowIntervalSamples + 1) *
+            kShadowIntervalSamples +
+        kShadowDelaySamples;
+    samples = recording_samples_;
+    options.language = language_;
+    options.context = final_context_;
+    options.stop_at_end_of_text = true;
+    options.stop_on_token_loop = true;
+    std::vector<std::pair<int, std::string>> committed = committed_;
+    std::sort(committed.begin(), committed.end());
+    std::vector<std::string> texts;
+    for (const auto &[segment_id, text] : committed) {
+      texts.push_back(text);
+    }
+    texts.push_back(segment_->transcript);
+    preview_text = JoinTranscriptParts(texts);
+    preview_language = segment_->language;
+    shadow_guess = shadow_guess_;
+    is_shadowing_ = true;
+    shadow_cancel_ = omni_server::NewCancelFlag();
+    cancel = shadow_cancel_;
+  }
+  std::weak_ptr<RealtimeSession> weak_self =
+      std::static_pointer_cast<RealtimeSession>(shared_from_this());
+  worker_.Submit(
+      [&transcriber = transcriber_, weak_self, samples = std::move(samples),
+       options = std::move(options), preview_text = std::move(preview_text),
+       preview_language,
+       shadow_guess](const std::atomic<bool> &cancel) mutable {
+        if (IsShadowQuiet()) {
+          return TranscriptionResult();
+        } else {
+        }
+        const auto guesses = [&](const std::optional<std::string> &language,
+                                 const std::string &text) {
+          return options.language.has_value()
+                     ? transcriber.RetainedPrefix(text, 0).prefix_ids
+                 : language.has_value()
+                     ? transcriber.AutoLanguageGuesses(*language, text)
+                     : std::vector<int>();
+        };
+        const std::vector<int> preview_ids =
+            guesses(preview_language, preview_text);
+        options.guessed_token_ids =
+            shadow_guess.has_value()
+                ? MergedGuesses(
+                      guesses(shadow_guess->language, shadow_guess->text),
+                      preview_ids)
+                : preview_ids;
+        // The reuse the Final will take, copied: the shadow's decode must not
+        // change it.
+        RefreshReuse reuse;
+        if (const std::shared_ptr<RealtimeSession> self = weak_self.lock()) {
+          std::lock_guard<std::mutex> lock(self->mutex_);
+          const std::shared_ptr<RefreshReuse> &source =
+              self->final_reuse_ != nullptr ? self->final_reuse_
+                                            : self->recording_reuse_;
+          if (source == nullptr) {
+            return TranscriptionResult();
+          } else {
+          }
+          reuse = *source;
+        } else {
+          return TranscriptionResult();
+        }
+        return transcriber.Transcribe(samples, options, cancel, &reuse);
+      },
+      cancel,
+      [weak_self](std::optional<TranscriptionResult> result,
+                  std::exception_ptr error) {
+        const std::shared_ptr<RealtimeSession> self = weak_self.lock();
+        if (!self) {
+          return;
+        } else {
+        }
+        std::lock_guard<std::mutex> lock(self->mutex_);
+        self->is_shadowing_ = false;
+        // A failed or cut-short shadow leaves the last one.
+        if (error == nullptr && result.has_value() &&
+            result->finish_reason == FinishReason::kStop &&
+            !result->text.empty()) {
+          self->shadow_guess_ =
+              FinalPreviewGuess{result->language.value_or(""), result->text};
+        } else {
+        }
+      });
+}
+
 std::vector<float> RealtimeSession::SegmentSamples(const Segment &segment,
                                                    long end_sample) const {
   const long begin = segment.start_sample - buffer_start_sample_;
@@ -315,7 +561,6 @@ std::vector<float> RealtimeSession::SegmentSamples(const Segment &segment,
 }
 
 TranscriptionOptions RealtimeSession::DecodeOptions(Segment &segment,
-                                                    bool is_refresh,
                                                     long end_sample) {
   TranscriptionOptions options;
   options.language = segment.language;
@@ -339,26 +584,28 @@ TranscriptionOptions RealtimeSession::DecodeOptions(Segment &segment,
             static_cast<double>(end_sample - segment.transcript_end_sample) /
             omni_common::kSampleRate * kPrefixedTokensPerNewSecond)) +
         kPrefixedTokenSlack;
-    // Note (XXXXRT666): a refresh checks the rolled-back tokens as guesses;
-    // the final decode decodes them as before.
-    if (is_refresh) {
-      options.guessed_token_ids = std::move(retained.rest_ids);
-    } else {
-    }
+    // note (chenye): XXXXRT666's refresh path verifies rolled-back tokens on
+    // refreshes and finals.
+    options.guessed_token_ids = std::move(retained.rest_ids);
   } else {
   }
   segment.decode_count += 1;
   return options;
 }
 
-Transcription
-RealtimeSession::Decode(std::vector<float> samples,
-                        TranscriptionOptions options,
-                        std::shared_ptr<RefreshReuse> reuse) const {
+Transcription RealtimeSession::Decode(std::vector<float> samples,
+                                      TranscriptionOptions options,
+                                      std::shared_ptr<RefreshReuse> reuse,
+                                      bool snapshot_reuse) const {
   return [&transcriber = transcriber_, samples = std::move(samples),
-          options = std::move(options),
-          reuse = std::move(reuse)](const std::atomic<bool> &cancel) {
-    return transcriber.Transcribe(samples, options, cancel, reuse.get());
+          options = std::move(options), reuse = std::move(reuse),
+          snapshot_reuse](const std::atomic<bool> &cancel) {
+    if (reuse == nullptr || !snapshot_reuse) {
+      return transcriber.Transcribe(samples, options, cancel, reuse.get());
+    } else {
+      RefreshReuse snapshot = *reuse;
+      return transcriber.Transcribe(samples, options, cancel, &snapshot);
+    }
   };
 }
 
@@ -408,7 +655,7 @@ void RealtimeSession::MaybeStartRefresh() {
       return;
     } else {
     }
-    options = DecodeOptions(segment, true, end_sample);
+    options = DecodeOptions(segment, end_sample);
     reuse = segment.reuse;
     segment_id = segment.segment_id;
     refreshing_ = true;
@@ -416,7 +663,8 @@ void RealtimeSession::MaybeStartRefresh() {
   std::weak_ptr<RealtimeSession> weak_self =
       std::static_pointer_cast<RealtimeSession>(shared_from_this());
   worker_.Submit(
-      Decode(std::move(samples), std::move(options), std::move(reuse)), cancel_,
+      Decode(std::move(samples), std::move(options), std::move(reuse), false),
+      cancel_,
       [weak_self, segment_id, end_sample](
           std::optional<TranscriptionResult> result, std::exception_ptr error) {
         const std::shared_ptr<RealtimeSession> self = weak_self.lock();
@@ -445,6 +693,7 @@ void RealtimeSession::MaybeStartRefresh() {
         // note (XXXXRT666): queued before the event, so a Final sent in answer
         // to it finds the windows this refresh finished.
         self->MaybeStartFinalPrefill();
+        self->MaybeStartShadowFinal();
         if (error) {
           self->ReportDecodeFailure(error);
         } else if (preview.has_value()) {
@@ -486,6 +735,7 @@ void RealtimeSession::FinalizeThrough(long end_sample) {
       samples = SegmentSamples(segment, cut_sample);
     }
     std::optional<std::string> text;
+    std::optional<TranscriptionResult> result;
     if (omni_common::PeakIsSilent(samples.data(), samples.size(),
                                   kSilentPeak)) {
       text = std::string();
@@ -493,24 +743,35 @@ void RealtimeSession::FinalizeThrough(long end_sample) {
       TranscriptionOptions options;
       {
         std::lock_guard<std::mutex> lock(mutex_);
-        options = DecodeOptions(segment, false, cut_sample);
+        options = DecodeOptions(segment, cut_sample);
+      }
+      const bool segment_cache_reuse_eligible =
+          samples.size() <= kMaxChunkSamples;
+      const auto reuse = segment_cache_reuse_eligible ? segment.reuse : nullptr;
+      if (!segment_cache_reuse_eligible && !options.prefix_token_ids.empty()) {
+        // note (chenye): Long prefixed Finals keep the original path without
+        // rollback guesses.
+        options.guessed_token_ids.clear();
+      } else {
       }
       try {
-        TranscriptionResult result =
-            worker_.Transcribe(Decode(samples, options, nullptr), cancel_);
+        result =
+            worker_.Transcribe(Decode(samples, options, reuse, true), cancel_);
         // A final that ran out of tokens on the prefix decodes the segment
         // again without it, as the next refresh would have.
-        if (result.finish_reason == FinishReason::kLength &&
+        if (result->finish_reason == FinishReason::kLength &&
             !options.prefix_token_ids.empty()) {
           options.prefix_token_ids.clear();
           options.prefix_text.clear();
+          options.guessed_token_ids.clear();
           options.max_new_tokens.reset();
           result = worker_.Transcribe(
-              Decode(std::move(samples), std::move(options), nullptr), cancel_);
+              Decode(std::move(samples), std::move(options), reuse, true),
+              cancel_);
         } else {
         }
-        ApplyResult(segment, result, cut_sample);
-        text = result.text;
+        ApplyResult(segment, *result, cut_sample);
+        text = result->text;
       } catch (...) {
         ReportDecodeFailure(std::current_exception());
       }
@@ -522,10 +783,19 @@ void RealtimeSession::FinalizeThrough(long end_sample) {
         std::lock_guard<std::mutex> lock(mutex_);
         committed_.emplace_back(segment.segment_id, *text);
       }
-      Send({{"type", "transcription.segment"},
-            {"segment_id", segment.segment_id},
-            {"text", *text},
-            {"is_final", true}});
+      nlohmann::ordered_json event = {{"type", "transcription.segment"},
+                                      {"segment_id", segment.segment_id},
+                                      {"text", *text},
+                                      {"is_final", true}};
+      if (result.has_value()) {
+        event["generation_metadata"] = {
+            {"reused_audio_token_count", result->reused_audio_token_count},
+            {"reused_prompt_token_count", result->reused_prompt_token_count},
+            {"verified_guess_token_count", result->verified_guess_token_count},
+            {"accepted_guess_token_count", result->accepted_guess_token_count}};
+      } else {
+      }
+      Send(std::move(event));
     } else {
     }
     {
