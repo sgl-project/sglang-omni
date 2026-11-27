@@ -224,6 +224,42 @@ class ConversationItemTruncate(ClientEvent):
     audio_end_ms: int = Field(ge=0)
 
 
+class ConversationItemContent(EventBase):
+    """One part of a conversation item's content.
+
+    Only input_text parts are accepted, and the session handler decides that so
+    a rejected item reports an error event instead of failing the connection.
+    """
+
+    type: str
+    text: str | None = None
+
+
+class ConversationItemPayload(EventBase):
+    """The item a conversation.item.create carries."""
+
+    id: str | None = None
+    type: str
+    role: str | None = None
+    content: list[ConversationItemContent] | None = None
+
+
+class ConversationItemCreate(ClientEvent):
+    type: Literal["conversation.item.create"]
+    previous_item_id: str | None = None
+    item: ConversationItemPayload
+
+
+class ConversationItemRetrieve(ClientEvent):
+    type: Literal["conversation.item.retrieve"]
+    item_id: str
+
+
+class ConversationItemDelete(ClientEvent):
+    type: Literal["conversation.item.delete"]
+    item_id: str
+
+
 def make_event(event_type: str, **fields: object) -> dict[str, object]:
     """Construct a server event dict. event_id is filled in by the
     session loop so handlers don't have to."""
@@ -242,6 +278,9 @@ _CONVERSATION_CLIENT_EVENT_TYPES: dict[str, type[ClientEvent]] = {
     "input_audio_buffer.append": InputAudioBufferAppend,
     "input_audio_buffer.clear": InputAudioBufferClear,
     "response.cancel": ResponseCancel,
+    "conversation.item.create": ConversationItemCreate,
+    "conversation.item.retrieve": ConversationItemRetrieve,
+    "conversation.item.delete": ConversationItemDelete,
     "conversation.item.truncate": ConversationItemTruncate,
 }
 
