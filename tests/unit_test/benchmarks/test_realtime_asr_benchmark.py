@@ -854,6 +854,32 @@ def recorded_trace() -> TraceArtifact:
     )
 
 
+@pytest.mark.parametrize(
+    "fields",
+    [
+        {},
+        {"segment_id": None},
+        {"segment_id": False},
+        {"segment_id": "0"},
+        {"segment_id": 0.0},
+        {"segment_id": []},
+        {"segment_id": {}},
+    ],
+)
+def test_replay_rejects_invalid_segment_ids(
+    recorded_trace: TraceArtifact, fields: dict[str, JsonValue]
+) -> None:
+    for record in recorded_trace.trace.received[:3]:
+        del record.event["segment_id"]
+        record.event.update(fields)
+
+    result = replay_trace(recorded_trace)
+
+    assert result["verdict"] == "fail"
+    assert any("segment_id" in violation for violation in result["violations"])
+    assert result["metrics"]["final_latency_s"] == []
+
+
 def test_saved_trace_replays_hand_calculated_metrics(
     tmp_path: Path, recorded_trace: TraceArtifact
 ) -> None:

@@ -31,6 +31,7 @@ from __future__ import annotations
 import math
 import statistics
 from collections import defaultdict
+from dataclasses import replace
 from typing import Any
 
 from pydantic import JsonValue
@@ -38,6 +39,16 @@ from pydantic import JsonValue
 from benchmarks.metrics.wer import SampleOutput, calculate_wer_metrics
 from benchmarks.realtime_asr.client import SAMPLE_RATE, SessionTrace
 from benchmarks.tasks.asr import apply_wer
+
+
+def trace_with_valid_segment_ids(trace: SessionTrace) -> SessionTrace:
+    received = [
+        record
+        for record in trace.received
+        if record.type not in ("input_audio_buffer.committed", "transcription.segment")
+        or type(record.event.get("segment_id")) is int
+    ]
+    return replace(trace, received=received)
 
 
 def check_invariants(trace: SessionTrace) -> list[str]:
@@ -64,12 +75,19 @@ def check_invariants(trace: SessionTrace) -> list[str]:
             else:
                 pass
 
+    segment_trace = trace_with_valid_segment_ids(trace)
+    if len(segment_trace.received) != len(trace.received):
+        violations.append(
+            "segment_id missing or non-integer on committed or segment events"
+        )
+
     committed_ids = [
         record.event.get("segment_id")
-        for record in trace.events("input_audio_buffer.committed")
+        for record in segment_trace.events("input_audio_buffer.committed")
     ]
     final_ids = [
-        record.event.get("segment_id") for record in trace.segments(is_final=True)
+        record.event.get("segment_id")
+        for record in segment_trace.segments(is_final=True)
     ]
     if sorted(committed_ids, key=_sort_key) != sorted(final_ids, key=_sort_key):
         violations.append(
@@ -86,7 +104,7 @@ def check_invariants(trace: SessionTrace) -> list[str]:
     finalized: set[JsonValue] = set()
     starts_ms: dict[JsonValue, int] = {}
     completed_count = 0
-    for record in trace.received:
+    for record in segment_trace.received:
         if record.type == "input_audio_buffer.committed":
             committed.add(record.event.get("segment_id"))
         elif record.type == "transcription.completed":
@@ -174,6 +192,7 @@ def _packet_reaching(trace: SessionTrace, audio_ms: float) -> float | None:
 
 
 def latency_metrics(trace: SessionTrace) -> dict[str, Any]:
+    trace = trace_with_valid_segment_ids(trace)
     decode_interval_ms = trace.session.get("decode_interval_ms")
     partials = trace.segments(is_final=False)
     finals = trace.segments(is_final=True)
