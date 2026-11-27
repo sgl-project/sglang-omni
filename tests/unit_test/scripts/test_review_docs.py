@@ -336,13 +336,24 @@ def test_missing_checklist_is_a_follow_up(tmp_path: Path) -> None:
     assert "not a rejection" in result.report.findings[0].suggested_fix
     assert result.report.author_confirmation == "not provided"
     assert result.report.advisory is True
+    template_result = review_change(
+        repository,
+        base_commit_sha,
+        head_commit_sha,
+        tmp_path / "ledger-template.sqlite",
+        "## Motivation \nFix install.\n## Modifications\nUpdate docs.\n## Checklist\n- [x] Done.\n",
+        ScriptedReviewer(["[]"]),
+    )
+    assert template_result.report.findings == []
 
 
 def test_pure_documentation_fix_does_not_require_a_benchmark(tmp_path: Path) -> None:
     repository = tmp_path / "repo"
     base_commit_sha = start_repository(repository)
     write_file(
-        repository, "docs/guide.md", "# Guide\n\nFix the typo in the install command.\n"
+        repository,
+        "docs/guide.md",
+        "# Guide\n\nSet volume to 70% and use a 2x2 grid.\n",
     )
     head_commit_sha = commit_all(repository, "typo")
     result = review_change(
@@ -657,7 +668,7 @@ def test_head_only_style_guide_is_not_trusted(tmp_path: Path) -> None:
     repository = tmp_path / "repo"
     base_commit_sha = start_repository(repository)
     write_file(repository, "docs/guide.md", "# Guide\n\nInstall the package.\n")
-    write_file(repository, "docs/STYLE_GUIDE.md", "# Style\n\nUse H1 only.\n")
+    write_file(repository, "docs/README.md", "# Style\n\nUse H1 only.\n")
     head_commit_sha = commit_all(repository, "add style guide")
     result = review_change(
         repository,
@@ -744,6 +755,7 @@ def test_cli_writes_a_reproducible_bundle(tmp_path: Path) -> None:
     assert completed.returncode == 0, completed.stderr
     bundle = json.loads((output / "input_bundle.json").read_text(encoding="utf-8"))
     report = json.loads((output / "report.json").read_text(encoding="utf-8"))
+    assert report["findings"] == []
     assert "docs/guide.md" in bundle["reviewed_paths"]
     assert bundle["review_input_sha256"] == report["review_input_sha256"]
     assert report["execution"] == "incomplete"
@@ -895,7 +907,7 @@ def test_real_reviewer_request_includes_rules_schema_and_produces_a_finding(
     monkeypatch.setattr(
         "scripts.docs_review.transport.urllib.request.urlopen", fake_urlopen
     )
-    monkeypatch.setenv("DOCS_REVIEW_TEST_KEY", "local-test-secret")
+    monkeypatch.delenv("DOCS_REVIEW_TEST_KEY", raising=False)
     request = ReviewRequest(
         repository=repository,
         base_commit_sha=base_commit_sha,
@@ -912,7 +924,18 @@ def test_real_reviewer_request_includes_rules_schema_and_produces_a_finding(
         ),
         ledger_path=tmp_path / "ledger.sqlite",
     )
+    unavailable = run_review(request, None, FixedClock())
+    assert "Missing API key" in unavailable.report.incomplete_reason
+    assert unavailable.report.usage_cost_cents == 0
+    assert captured_requests == []
+    monkeypatch.setenv("DOCS_REVIEW_TEST_KEY", "local-test-secret")
     result = run_review(request, None, FixedClock())
+    assert result.report.model_configuration == result.payload.model_configuration
+    assert result.payload.model_configuration.model_dump() == {
+        "model_name": "gpt-6.1-terra",
+        "reasoning_effort": "medium",
+        "max_output_tokens": 512,
+    }
     assert result.report.execution == "complete"
     assert result.report.findings == [finding]
     sent_body = captured_requests[0].data

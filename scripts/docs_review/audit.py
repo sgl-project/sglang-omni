@@ -20,7 +20,7 @@ from scripts.docs_review.policy import CONTRIBUTOR_CHECKLIST, PERFORMANCE_EVIDEN
 
 CHECKLIST_HEADING = "## Contributor checklist"
 PERFORMANCE_CLAIM = re.compile(
-    r"(faster|speedup|speed-up|\d+(?:\.\d+)?\s*x|\d+(?:\.\d+)?\s*%)",
+    r"(\bfaster\b|\bspeed[- ]?up\b)",
     re.IGNORECASE,
 )
 SPEECH_WORKLOAD = re.compile(r"\b(tts|asr|speech|seedtts)\b", re.IGNORECASE)
@@ -96,6 +96,14 @@ def audit_checklist(bundle: ReviewBundle) -> list[Finding]:
     fields = parse_checklist(bundle.pull_request_text)
     findings: list[Finding] = []
     if fields is None:
+        headings = {line.strip() for line in bundle.pull_request_text.splitlines()}
+        if (
+            not bundle.pull_request_text.strip()
+            or {"## Motivation", "## Modifications", "## Checklist"} <= headings
+        ):
+            return []
+        else:
+            pass
         findings.append(
             checklist_finding(
                 bundle,

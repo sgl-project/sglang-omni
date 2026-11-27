@@ -22,7 +22,7 @@ from scripts.docs_review.models import (
 )
 
 POLICY_VERSION = "2026-11-05.1"
-STYLE_GUIDE_PATH = "docs/STYLE_GUIDE.md"
+STYLE_GUIDE_PATH = "docs/README.md"
 PROMPT_PATH = Path(__file__).resolve().parent / "prompt.md"
 
 DOCS_MATCH_CODE = "DOCS_MATCH_CODE"

@@ -124,7 +124,14 @@ class CheckView(BaseModel):
     explanation: str
 
 
+class ModelSnapshot(BaseModel):
+    model_name: str
+    max_output_tokens: int
+    reasoning_effort: ReasoningEffort | None = None
+
+
 class Report(BaseModel):
+    model_configuration: ModelSnapshot | None = None
     advisory: Literal[True]
     execution: Literal["complete", "incomplete"]
     outcome: Literal["findings", "no_findings", "incomplete"]
@@ -220,6 +227,7 @@ class SpendAuthorization:
 
 
 class BundlePayload(BaseModel):
+    model_configuration: ModelSnapshot | None = None
     repository_identity: str
     base_commit_sha: str
     head_commit_sha: str

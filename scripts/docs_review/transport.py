@@ -19,6 +19,10 @@ class ReviewerError(Exception):
     """The model call or its response could not be used."""
 
 
+class MissingApiKey(ValueError):
+    """The configured credential is unavailable."""
+
+
 class ChatMessage(BaseModel):
     role: Literal["system", "user"]
     content: str
@@ -42,6 +46,7 @@ class OpenAICompatibleReviewer:
     """Read-only model call. No shell, web search, or GitHub writes."""
 
     def __init__(self, settings: ModelSettings, prompt_text: str) -> None:
+        self.authorization = authorization_header(settings)
         self.settings = settings
         self.prompt_text = prompt_text
 
@@ -51,7 +56,7 @@ class OpenAICompatibleReviewer:
             self.settings.endpoint_url,
             data=request.to_json().encode(),
             headers={
-                "Authorization": authorization_header(self.settings),
+                "Authorization": self.authorization,
                 "Content-Type": "application/json",
             },
             method="POST",
@@ -92,12 +97,9 @@ def build_chat_request(
 
 def authorization_header(settings: ModelSettings) -> str:
     variable_name = settings.api_key_environment_variable
-    try:
-        secret = os.environ[variable_name]
-    except KeyError as error:
-        raise ReviewerError(
-            f"Missing API key environment variable {variable_name}"
-        ) from error
+    secret = os.environ.get(variable_name)
+    if not secret:
+        raise MissingApiKey(f"Missing API key environment variable {variable_name}")
     else:
         return f"Bearer {secret}"
 

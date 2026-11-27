@@ -14,6 +14,7 @@ from scripts.docs_review.models import (
     CollectedFile,
     FileChange,
     ModelSettings,
+    ModelSnapshot,
     ReviewBundle,
     ReviewRequest,
 )
@@ -161,9 +162,17 @@ def review_input_sha256(
 
 
 def bundle_payload(
-    bundle: ReviewBundle, prompt_version: str, input_hash: str
+    bundle: ReviewBundle,
+    prompt_version: str,
+    input_hash: str,
+    model_settings: ModelSettings | None,
 ) -> BundlePayload:
     return BundlePayload(
+        model_configuration=(
+            ModelSnapshot.model_validate(model_settings, from_attributes=True)
+            if model_settings
+            else None
+        ),
         repository_identity=bundle.repository_identity,
         base_commit_sha=bundle.base_commit_sha,
         head_commit_sha=bundle.head_commit_sha,

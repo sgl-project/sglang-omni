@@ -34,7 +34,11 @@ from scripts.docs_review.models import (
 )
 from scripts.docs_review.policy import KNOWN_RULE_IDS, read_prompt
 from scripts.docs_review.reporting import render_bundle
-from scripts.docs_review.transport import OpenAICompatibleReviewer, ReviewerError
+from scripts.docs_review.transport import (
+    MissingApiKey,
+    OpenAICompatibleReviewer,
+    ReviewerError,
+)
 
 FINDING_LIST = TypeAdapter(list[Finding])
 
@@ -64,7 +68,7 @@ def run_review(
     prompt_text = read_prompt()
     prompt_version = hashlib.sha256(prompt_text.encode()).hexdigest()
     input_hash = review_input_sha256(bundle, request.model_settings, prompt_version)
-    payload = bundle_payload(bundle, prompt_version, input_hash)
+    payload = bundle_payload(bundle, prompt_version, input_hash, request.model_settings)
     with closing(ReviewLedger(request.ledger_path)) as ledger:
         report = ledger.fetch(input_hash)
         if report is None:
@@ -105,9 +109,22 @@ def review_uncached(
         if authorization.allowed:
             if reviewer is None:
                 assert request.model_settings is not None
-                reviewer = OpenAICompatibleReviewer(request.model_settings, prompt_text)
+                try:
+                    reviewer = OpenAICompatibleReviewer(
+                        request.model_settings, prompt_text
+                    )
+                except MissingApiKey as error:
+                    return assemble_report(bundle, payload, [], str(error), 0)
             else:
                 pass
+            reservation = assemble_report(
+                bundle,
+                payload,
+                [],
+                "review interrupted",
+                (request.retry_count + 1) * budget.call_cost_cents,
+            )
+            ledger.store(request.pull_request_number, reservation, reviewed_at)
             findings, incomplete_reason, attempts = review_findings(
                 reviewer, render_bundle(bundle), request.retry_count
             )
@@ -118,7 +135,7 @@ def review_uncached(
         bundle, payload, findings, incomplete_reason, usage_cost_cents
     )
     if attempts:
-        ledger.store(request.pull_request_number, report, reviewed_at)
+        ledger.finish(report)
     else:
         pass
     return report
@@ -176,6 +193,7 @@ def assemble_report(
         execution = "complete"
         outcome = "no_findings"
     return Report(
+        model_configuration=payload.model_configuration,
         advisory=True,
         execution=execution,
         outcome=outcome,

@@ -68,6 +68,17 @@ class ReviewLedger:
         )
         self.connection.commit()
 
+    def finish(self, report: Report) -> None:
+        with self.connection:
+            self.connection.execute(
+                "UPDATE runs SET report_json = ?, cost_cents = ? WHERE review_input_sha256 = ?",
+                (
+                    report.model_dump_json(),
+                    report.usage_cost_cents,
+                    report.review_input_sha256,
+                ),
+            )
+
     def pull_request_spend_cents(self, pull_request_number: int) -> int:
         row = self.connection.execute(
             "SELECT COALESCE(SUM(cost_cents), 0) FROM runs WHERE pull_request_number = ?",
