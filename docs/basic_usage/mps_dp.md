@@ -19,7 +19,7 @@ replicas), pass `--mps auto`:
 sgl-omni serve --model-path <model> --mps auto
 ```
 
-Modes (`--mps` on the CLI or `mps:` in the pipeline config; default `off`, except where a measured replica profile applies, as described under [Default replica counts on a B200](#default-replica-counts-on-a-b200) and [on an RTX 4090 D](#default-replica-counts-on-an-rtx-4090-d)):
+Modes (`--mps` on the CLI or `mps:` in the pipeline config; default `off`, except where a measured replica profile applies, as described under [Default replica counts on a B200](#default-replica-counts-on-a-b200), [on an RTX 4090 D](#default-replica-counts-on-an-rtx-4090-d) and [on an H200](#default-replica-counts-on-an-h200)):
 
 * `off`: MPS is never touched.
 * `auto`: MPS is enabled on every GPU that hosts two or more single-GPU,
@@ -238,16 +238,30 @@ The measurements used sglang-omni 8848e500, sglang 0.5.23, torch 2.14.1 with CUD
 
 ## Default replica counts on an RTX 4090 D
 
-On a 24 GB NVIDIA GeForce RTX 4090 D, NVML reporting 24,564 MiB, `sgl-omni serve --model-path OpenMOSS-Team/MOSS-Transcribe-Diarize` serves 2 replicas under native MPS, under the same conditions as on a B200. Qwen3-ASR 1.7B keeps its own config there, one replica with the engine's default concurrency, because no replica count beat it, and so does CosyVoice3, where two replicas did not beat one. `examples/mps_dp/rtx4090d/moss_td_rtx4090d_dp2.yaml` is the measured config.
+On a 24 GB NVIDIA GeForce RTX 4090 D, NVML reporting 24,564 MiB, `sgl-omni serve --model-path OpenMOSS-Team/MOSS-Transcribe-Diarize` serves 2 replicas under native MPS, under the same conditions as on a B200, and so does `nvidia/nemotron-3.5-asr-streaming-0.6b`. Qwen3-ASR 1.7B keeps its own config there, one replica with the engine's default concurrency, because no replica count beat it, and so does CosyVoice3, where two replicas did not beat one. `examples/mps_dp/rtx4090d/` has the measured configs.
 
 | Model | Model's own config | Best replica count | Goodput of that count |
 |---|---:|---:|---:|
 | Qwen3-ASR 1.7B | 1571 / 1398 | 2 at 32 running requests each | 1132 / 1161 |
 | MOSS-Transcribe-Diarize | 911 / 706 / 707 | 2 | 906 / 1150 / 1146 |
+| Nemotron 3.5 ASR Streaming 0.6B | 100 / 103 / 0 | 2 | 293 / 303 / 289 |
 
-Goodput is audio seconds per second of transcribed input audio at a p99 request latency from arrival of at most 0.5 s, one value per arrival seed, counted with the rules of the B200 table. Unlike the B200 measurements, the comparison here includes the model's own config. Each MOSS-Transcribe-Diarize replica keeps the engine's 64 running requests and no queue cap, with a 32,768 token KV pool; with the B200 caps of 16 and 16, 3 replicas rejected requests from 100 requests/s and served less than one replica of the model's own config. Qwen3-ASR runs its default DFlash draft, so two replicas fit only at 32 running requests each. For CosyVoice3, at the same per replica caps, two replicas served 17.7 and 26.8 audio s/s of generated audio at a p99 stall-free start of 1 and 3 s, against 17.8 and 26.9 for one.
+Goodput is audio seconds per second of transcribed input audio at a p99 request latency from arrival of at most 0.5 s, one value per arrival seed, counted with the rules of the B200 table. Unlike the B200 measurements, the comparison here includes the model's own config. Each MOSS-Transcribe-Diarize replica keeps the engine's 64 running requests and no queue cap, with a 32,768 token KV pool; with the B200 caps of 16 and 16, 3 replicas rejected requests from 100 requests/s and served less than one replica of the model's own config. Qwen3-ASR runs its default DFlash draft, so two replicas fit only at 32 running requests each. For CosyVoice3, at the same per replica caps, two replicas served 17.7 and 26.8 audio s/s of generated audio at a p99 stall-free start of 1 and 3 s, against 17.8 and 26.9 for one. Nemotron 3.5 ASR's 2 replicas run without the B200 thread caps and also beat its own config on every seed at 1 and 3 s (362 against 123 at both).
 
-The measurements used sglang-omni a385eac6, sglang 0.5.23, torch 2.14.1 with CUDA 13.0 and NVIDIA driver 595.58.03. The host's other GPUs ran other measurements at the same time, and replicas were not pinned to cores.
+The measurements used sglang-omni a385eac6, sglang 0.5.23, torch 2.14.1 with CUDA 13.0 and NVIDIA driver 595.58.03. The host's other GPUs ran other measurements at the same time. Each Nemotron cell ran on 16 CPU threads of its GPU's NUMA node; the other models' replicas were not pinned to cores.
+
+## Default replica counts on an H200
+
+On a 141 GB NVIDIA H200, NVML reporting 143,771 MiB, the models below serve several replicas under native MPS, under the same conditions as on a B200. `examples/mps_dp/h200/` has the measured configs.
+
+| Model | Model's own config | Default replicas | Goodput of that count |
+|---|---:|---:|---:|
+| Qwen3-TTS 1.7B Base | 152 / 154 / 183 | 6 | 318 / 331 / 317 |
+| MOSS-Transcribe-Diarize | 1095 / 1139 / 1078 | 2 | 1925 / 1995 / 1929 |
+
+Goodput is one value per arrival seed at 0.5 s, counted as in the RTX 4090 D table: p99 request latency for MOSS-Transcribe-Diarize, p99 stall-free start of generated audio for Qwen3-TTS. Each entry beats the model's own config (`--mps off`) on every seed at 0.5, 1 and 3 s. Each Qwen3-TTS stage keeps its B200 budget in GB. Each MOSS-Transcribe-Diarize replica keeps the engine's 64 running requests and no queue cap, with the GPU's memory split evenly; with the B200 caps of 16, 16 and a 16,384 token pool, 4 replicas served 846 at 0.5 s, below the model's own config. 3 replicas on the engine's own settings served 1897, and 4 lost to the model's own config on two seeds. Other models keep their own config on an H200 until they have been measured there.
+
+The measurements used sglang-omni a385eac6, sglang 0.5.23, torch 2.14.1 with CUDA 13.0 and NVIDIA driver 595.71.05, with other tenants on the host's other GPUs. Each cell ran on 16 CPU threads of its GPU's NUMA node.
 
 ## Shared weights across replicas (opt-in, default off)
 
