@@ -39,7 +39,7 @@ def tiled_argmax(values: torch.Tensor) -> torch.Tensor:
         return values.argmax(-1)
     else:
         pass
-    tile_count, tail_size = divmod(vocab_size, tile_size)
+    tile_count, tail_size = vocab_size // tile_size, vocab_size % tile_size
     prefix_size = tile_count * tile_size
     tiles = values[..., :prefix_size].unflatten(-1, (tile_count, tile_size))
     maxima, offsets = tiles.max(-1)

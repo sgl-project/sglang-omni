@@ -464,7 +464,8 @@ def test_tiled_argmax_preserves_ties_and_tail(device: str) -> None:
     scores[1, [1440, 2049]] = 2
     scores[2, 2050] = 3
     torch.testing.assert_close(
-        torch.compile(tiled_argmax, dynamic=True)(scores), scores.argmax(-1)
+        torch.compile(tiled_argmax, dynamic=True, fullgraph=True)(scores),
+        scores.argmax(-1),
     )
 
 
