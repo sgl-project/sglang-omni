@@ -315,7 +315,6 @@ std::vector<float> RealtimeSession::SegmentSamples(const Segment &segment,
 }
 
 TranscriptionOptions RealtimeSession::DecodeOptions(Segment &segment,
-                                                    bool is_refresh,
                                                     long end_sample) {
   TranscriptionOptions options;
   options.language = segment.language;
@@ -339,26 +338,28 @@ TranscriptionOptions RealtimeSession::DecodeOptions(Segment &segment,
             static_cast<double>(end_sample - segment.transcript_end_sample) /
             omni_common::kSampleRate * kPrefixedTokensPerNewSecond)) +
         kPrefixedTokenSlack;
-    // Note (XXXXRT666): a refresh checks the rolled-back tokens as guesses;
-    // the final decode decodes them as before.
-    if (is_refresh) {
-      options.guessed_token_ids = std::move(retained.rest_ids);
-    } else {
-    }
+    // note (chenye): XXXXRT666's refresh path verifies rolled-back tokens on
+    // refreshes and finals.
+    options.guessed_token_ids = std::move(retained.rest_ids);
   } else {
   }
   segment.decode_count += 1;
   return options;
 }
 
-Transcription
-RealtimeSession::Decode(std::vector<float> samples,
-                        TranscriptionOptions options,
-                        std::shared_ptr<RefreshReuse> reuse) const {
+Transcription RealtimeSession::Decode(std::vector<float> samples,
+                                      TranscriptionOptions options,
+                                      std::shared_ptr<RefreshReuse> reuse,
+                                      bool snapshot_reuse) const {
   return [&transcriber = transcriber_, samples = std::move(samples),
-          options = std::move(options),
-          reuse = std::move(reuse)](const std::atomic<bool> &cancel) {
-    return transcriber.Transcribe(samples, options, cancel, reuse.get());
+          options = std::move(options), reuse = std::move(reuse),
+          snapshot_reuse](const std::atomic<bool> &cancel) {
+    if (reuse == nullptr || !snapshot_reuse) {
+      return transcriber.Transcribe(samples, options, cancel, reuse.get());
+    } else {
+      RefreshReuse snapshot = *reuse;
+      return transcriber.Transcribe(samples, options, cancel, &snapshot);
+    }
   };
 }
 
@@ -408,7 +409,7 @@ void RealtimeSession::MaybeStartRefresh() {
       return;
     } else {
     }
-    options = DecodeOptions(segment, true, end_sample);
+    options = DecodeOptions(segment, end_sample);
     reuse = segment.reuse;
     segment_id = segment.segment_id;
     refreshing_ = true;
@@ -416,7 +417,8 @@ void RealtimeSession::MaybeStartRefresh() {
   std::weak_ptr<RealtimeSession> weak_self =
       std::static_pointer_cast<RealtimeSession>(shared_from_this());
   worker_.Submit(
-      Decode(std::move(samples), std::move(options), std::move(reuse)), cancel_,
+      Decode(std::move(samples), std::move(options), std::move(reuse), false),
+      cancel_,
       [weak_self, segment_id, end_sample](
           std::optional<TranscriptionResult> result, std::exception_ptr error) {
         const std::shared_ptr<RealtimeSession> self = weak_self.lock();
@@ -486,6 +488,7 @@ void RealtimeSession::FinalizeThrough(long end_sample) {
       samples = SegmentSamples(segment, cut_sample);
     }
     std::optional<std::string> text;
+    std::optional<TranscriptionResult> result;
     if (omni_common::PeakIsSilent(samples.data(), samples.size(),
                                   kSilentPeak)) {
       text = std::string();
@@ -493,24 +496,35 @@ void RealtimeSession::FinalizeThrough(long end_sample) {
       TranscriptionOptions options;
       {
         std::lock_guard<std::mutex> lock(mutex_);
-        options = DecodeOptions(segment, false, cut_sample);
+        options = DecodeOptions(segment, cut_sample);
+      }
+      const bool segment_cache_reuse_eligible =
+          samples.size() <= kMaxChunkSamples;
+      const auto reuse = segment_cache_reuse_eligible ? segment.reuse : nullptr;
+      if (!segment_cache_reuse_eligible && !options.prefix_token_ids.empty()) {
+        // note (chenye): Long prefixed Finals keep the original path without
+        // rollback guesses.
+        options.guessed_token_ids.clear();
+      } else {
       }
       try {
-        TranscriptionResult result =
-            worker_.Transcribe(Decode(samples, options, nullptr), cancel_);
+        result =
+            worker_.Transcribe(Decode(samples, options, reuse, true), cancel_);
         // A final that ran out of tokens on the prefix decodes the segment
         // again without it, as the next refresh would have.
-        if (result.finish_reason == FinishReason::kLength &&
+        if (result->finish_reason == FinishReason::kLength &&
             !options.prefix_token_ids.empty()) {
           options.prefix_token_ids.clear();
           options.prefix_text.clear();
+          options.guessed_token_ids.clear();
           options.max_new_tokens.reset();
           result = worker_.Transcribe(
-              Decode(std::move(samples), std::move(options), nullptr), cancel_);
+              Decode(std::move(samples), std::move(options), reuse, true),
+              cancel_);
         } else {
         }
-        ApplyResult(segment, result, cut_sample);
-        text = result.text;
+        ApplyResult(segment, *result, cut_sample);
+        text = result->text;
       } catch (...) {
         ReportDecodeFailure(std::current_exception());
       }
@@ -522,10 +536,19 @@ void RealtimeSession::FinalizeThrough(long end_sample) {
         std::lock_guard<std::mutex> lock(mutex_);
         committed_.emplace_back(segment.segment_id, *text);
       }
-      Send({{"type", "transcription.segment"},
-            {"segment_id", segment.segment_id},
-            {"text", *text},
-            {"is_final", true}});
+      nlohmann::ordered_json event = {{"type", "transcription.segment"},
+                                      {"segment_id", segment.segment_id},
+                                      {"text", *text},
+                                      {"is_final", true}};
+      if (result.has_value()) {
+        event["generation_metadata"] = {
+            {"reused_audio_token_count", result->reused_audio_token_count},
+            {"reused_prompt_token_count", result->reused_prompt_token_count},
+            {"verified_guess_token_count", result->verified_guess_token_count},
+            {"accepted_guess_token_count", result->accepted_guess_token_count}};
+      } else {
+      }
+      Send(std::move(event));
     } else {
     }
     {

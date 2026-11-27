@@ -169,11 +169,6 @@ func padPiece(pcm []byte, t *ASRTuning) []byte {
 // reaches PieceMax, the quietest CutWindow there. False: wait for more
 // audio.
 func (s *live) findCut(planningContext context.Context, pending []byte, t ASRTuning) (int, bool) {
-	select {
-	case <-planningContext.Done():
-		return 0, false
-	default:
-	}
 	total := len(pending) / 2
 	from, to := samplesOf(t.PieceMin), min(total, samplesOf(t.PieceMax))
 	if to <= from {
@@ -183,26 +178,18 @@ func (s *live) findCut(planningContext context.Context, pending []byte, t ASRTun
 		vadContext, cancel := context.WithTimeout(planningContext, 15*time.Second)
 		segs, err := s.a.vad.Speech(vadContext, pending[from*2:to*2], sampleRate)
 		cancel()
-		select {
-		case <-planningContext.Done():
-			return 0, false
-		default:
-		}
 		if err == nil {
 			if at, ok := longestPause(segs, to-from, samplesOf(t.PauseMin), to == total); ok {
 				return from + at, true
 			}
-		} else if s.ctx.Err() == nil {
+		} else if planningContext.Err() != nil {
+			return 0, false
+		} else {
 			s.a.rt.logf("warning", "%s: looking for a pause to cut the recording at: %v", s.a.spec.ID, err)
 		}
 	}
 	if total < samplesOf(t.PieceMax) {
 		return 0, false
-	}
-	select {
-	case <-planningContext.Done():
-		return 0, false
-	default:
 	}
 	return quietest(pending, from, to, max(samplesOf(t.CutWindow), 1)), true
 }
