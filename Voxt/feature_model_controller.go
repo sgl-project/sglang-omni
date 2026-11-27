@@ -96,7 +96,7 @@ func modelOptionsFor(translator *i18n.Translator, ready, shown []local.Model) (o
 }
 
 func automaticSpeechLabelFor(translator *i18n.Translator, prefs settings.Settings, installed []local.Model, feature string) string {
-	if model, ok := chooseFeatureModel(prefs, installed, local.ASR, feature); ok {
+	if model, ok := automaticSpeechChoice(prefs, local.ForFeature(installed, feature)); ok {
 		return translator.T("Automatic (now: %s)", model.Name)
 	}
 	return translator.T("Automatic")

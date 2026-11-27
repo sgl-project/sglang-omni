@@ -376,8 +376,12 @@ func TestAutomaticSpeechLabelUsesLanguageGate(t *testing.T) {
 	a.local = &automaticGateLocal{}
 	a.prefs.General.MainLanguage = "ja"
 	a.prefs.Features.Transcribe.ASR = models.ASRMoss
-	if state := a.featureModelsModel(hotkey.Transcribe); state.ASR.Value != "MOSS-Transcribe-Diarize" {
+	state := a.featureModelsModel(hotkey.Transcribe)
+	if state.ASR.Value != "MOSS-Transcribe-Diarize" {
 		t.Errorf("an explicit MTD choice = %q", state.ASR.Value)
+	}
+	if want := "Automatic (now: Qwen3-ASR 1.7B (8bit))"; state.ASR.Options[0].Label != want {
+		t.Errorf("Automatic option after an explicit MTD choice = %q, want %q", state.ASR.Options[0].Label, want)
 	}
 }
 

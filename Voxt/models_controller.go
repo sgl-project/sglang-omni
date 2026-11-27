@@ -147,7 +147,7 @@ func chooseFeatureModel(prefs settings.Settings, installed []local.Model, kind l
 	want = strings.TrimSpace(want)
 	ready := local.ForFeature(installed, feature)
 	if kind == local.ASR && want == "" {
-		ready = automaticSpeech(prefs, ready)
+		return automaticSpeechChoice(prefs, ready)
 	}
 	selected, ok := local.Choose(ready, want)
 	if kind != local.LLM || !ok || want == "" || selected.ID == want {
@@ -161,6 +161,10 @@ func chooseFeatureModel(prefs settings.Settings, installed []local.Model, kind l
 		}
 	}
 	return local.Model{}, false
+}
+
+func automaticSpeechChoice(prefs settings.Settings, ready []local.Model) (local.Model, bool) {
+	return local.Choose(automaticSpeech(prefs, ready), "")
 }
 
 // automaticSpeech is installed's speech models for a feature left on
