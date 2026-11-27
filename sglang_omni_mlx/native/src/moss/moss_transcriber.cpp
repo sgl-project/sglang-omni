@@ -227,12 +227,10 @@ void ValidatePrompt(const std::optional<std::string> &prompt) {
 }
 
 MossTranscriber::MossTranscriber(const std::filesystem::path &model_directory,
-                                 const std::filesystem::path &draft_directory,
-                                 int draft_quantization_bits)
+                                 const omni_common::DraftOptions &draft)
     : model_(model_directory), tokenizer_(model_directory) {
-  if (!draft_directory.empty()) {
-    draft_.emplace(draft_directory, draft_quantization_bits,
-                   model_.decoder().config());
+  if (!draft.directory.empty()) {
+    draft_.emplace(draft, model_.decoder().config());
   } else {
   }
   for (char digit = '0'; digit <= '9'; ++digit) {

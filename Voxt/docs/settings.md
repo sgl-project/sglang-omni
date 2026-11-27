@@ -185,7 +185,7 @@ Paths are JSON paths in the document; "Default" is a fresh install's value. Type
 | `overlay.hideLiveText` | bool | `false` | | Show live text (inverted) |
 | `overlay.liveLines` | bool | `true` | `false` = one line that scrolls | Live text layout |
 
-### Shortcuts (each feature's page)
+### Shortcuts (Settings → Shortcuts and each feature's Settings section)
 
 | Path | Type | Default | On the page |
 |---|---|---|---|
@@ -201,7 +201,14 @@ Paths are JSON paths in the document; "Default" is a fresh install's value. Type
 
 Settings → Shortcuts → presets set the four main shortcuts at once; no field stores the preset, Voxt recognises it from the keys.
 
-### Transcribe, Translate and Rewrite (each feature's page)
+### Experimental (Settings → Experimental)
+
+| Path | Type | Default | On the page |
+|---|---|---|---|
+| `features.sessionsOn` | boolean | `false`: no session row on the cards, no session list in the menu bar menu, and the session shortcuts do nothing (sessions are an experiment). While on with `privacy.keepHistory` on, the session list is kept over a restart in the database's `sessions` document; with history off it is not saved | Settings → Experimental → Sessions (experimental) |
+| `features.sessions` | array of 4 shortcuts: Go to session 1, 2, 3 (go to that session when it exists; set only in the settings file, the page lists Next session alone), then Next session (the next one in the list, around) | `[{"keys": ""}, {"keys": ""}, {"keys": ""}, {"keys": "Option+Tab", "trigger": "tap"}]` (tap only; `"keys": ""` = that shortcut off) | Settings → Experimental → Sessions |
+
+### Transcribe, Translate and Rewrite (Settings → Transcribe, Translate or Rewrite)
 
 Each of `features.transcribe`, `features.translate` and `features.rewrite` has:
 
@@ -269,7 +276,7 @@ And their own fields:
 |---|---|---|---|---|
 | `models.keepLoaded` | string | `""` | `""` (Automatic), `5m`, `15m`, `30m`, `1h`, `quit` | Speech models → Keep models loaded |
 | `models.hidden` | array of strings | `[]` | speech model ids | Speech models → Hide |
-| `models.faster` | object, string → bool | `{}` | speech model id → on; absent = on while the draft is installed, except the 6bit (its draft came with the 8bit's download, so it stays off until switched on) | Speech models → Faster transcription |
+| `models.faster` | object, string → bool | `{}` | speech model id → on; absent = on while the draft is installed, except the 6bit (its draft came with the 8bit's download, so it stays off until switched on) | Speech models → Speed-up model |
 | `models.llmWait` | string | `""` | `""` (Automatic: 20 s to a minute, longer for long text), `1m`, `2m`, `5m`, `10m`, `30m`, `60m`, `none` (no limit); another `<n>m` for 1–60 also works; after it the recognised text is inserted | Language models → Wait for the language model |
 | `models.llmSwitch` | bool | `false` | | Language models → Switch models when one fails |
 | `providers.llm` | array of providers | `[]` | one entry per language model service | Language models (one card per service set up) |
@@ -331,11 +338,14 @@ Voxt writes these itself. Do not edit them; they are listed so that every field 
 |---|---|---|
 | `version` | integer | The document's schema version; Voxt rewrites it |
 | `setup.done` | bool | The setup guide is finished |
-| `setup.tried` | bool | A session gave a result once; Home stops offering its Try area |
+| `setup.tried` | bool | Legacy flag for Home's removed Try area; old settings still load, and new behavior ignores it |
 | `setup.rewriteBoxOpens` | integer | Successful Rewrite input-box opens, capped at three for the first-use tip |
 | `setup.rewriteBoxTipDismissed` | bool | Got it dismissed the Rewrite input-box tip for good |
+| `setup.sessionSwitchTotal` | integer | Every session switch the user makes (a shortcut, a session on the card, or a new session); stays on this Mac |
+| `setup.sessionReturns` | integer | Session switches that came back to a session with a card; stays on this Mac |
 | `updates.lastCheck` | string (RFC 3339 time) or absent | When the last update check succeeded |
-| `updates.dismissed` | string | The version whose "is available" card was dismissed |
+| `updates.available` | string | Newest GitHub release found by a check-only build, kept across restarts until installed or cleared |
+| `updates.dismissed` | string | Legacy version whose sidebar "is available" card was dismissed |
 | `network.proxyUser` | string | A custom proxy's user name (its password is in the Keychain) |
 | `network.proxyAuthHost` | string | The proxy host that user name is for |
 | `family.follow` | object, string → bool | Which shared values Voxt follows ([Shared with other apps](#shared-with-other-apps)); the one field here you may change |

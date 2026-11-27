@@ -103,6 +103,15 @@ mlx::core::array Silu(const mlx::core::array &x);
 // Silu(gate) * up, the gated MLP's activation.
 mlx::core::array Swiglu(const mlx::core::array &gate,
                         const mlx::core::array &up);
+// x * tanh(softplus(x)).
+mlx::core::array Mish(const mlx::core::array &x);
+mlx::core::array LeakyRelu(const mlx::core::array &x, float negative_slope);
+// LayerNorm(x) * (1 + scale) + shift as one fused norm without the norm's own
+// weights, the DiT blocks' adaptive LayerNorm; scale and shift hold one width
+// shared by every row.
+mlx::core::array ModulatedLayerNorm(const mlx::core::array &x,
+                                    const mlx::core::array &shift,
+                                    const mlx::core::array &scale, float eps);
 // The vocoders' Snake, x + sin(alpha * x)^2 / (beta + 1e-9), alpha and beta
 // per channel and broadcast against x: BigVGAN's SnakeBeta, or DAC's Snake
 // with beta = alpha. With log_scale they hold log alpha and log beta.

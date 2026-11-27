@@ -89,6 +89,23 @@ func (clock *softDeadlineClock) Fire(t *testing.T, index int) {
 	callback()
 }
 
+func (clock *softDeadlineClock) FireNext(t *testing.T) {
+	t.Helper()
+	clock.mu.Lock()
+	for index, timer := range clock.timers {
+		if timer.fired || timer.stopped {
+			continue
+		}
+		clock.timers[index].fired = true
+		callback := timer.callback
+		clock.mu.Unlock()
+		callback()
+		return
+	}
+	clock.mu.Unlock()
+	t.Fatal("no active deadline timer")
+}
+
 type cleanupGateLLM struct {
 	started    chan llm.Request
 	release    chan struct{}
@@ -562,27 +579,44 @@ func TestCleanupCancellationAfterChoiceBeforeDelivery(t *testing.T) {
 }
 
 func TestCleanupSoftDeadlineAppliesOnlyToOrdinaryTranscribe(t *testing.T) {
-	for _, kind := range []store.Kind{store.KindTranslate, store.KindRewrite} {
-		t.Run(string(kind), func(t *testing.T) {
+	for _, tc := range []struct {
+		kind   store.Kind
+		answer string
+	}{
+		{kind: store.KindTranslate, answer: "你好"},
+		{kind: store.KindRewrite, answer: "A clearer sentence."},
+	} {
+		t.Run(string(tc.kind), func(t *testing.T) {
 			clock := newSoftDeadlineClock()
-			h := newHarness(t, &fakeFile{text: "spoken words"}, &fakeLLM{hang: true}, func(config *Config, settings *settings.Settings) {
+			releaseFinal := make(chan struct{})
+			provider := &fakeStreamer{final: "spoken words", finishGate: releaseFinal, finishStarted: make(chan struct{}, 1)}
+			model := &fakeLLM{text: tc.answer}
+			h := newHarness(t, provider, model, func(config *Config, settings *settings.Settings) {
 				config.Now, config.AfterFunc = clock.Now, clock.AfterFunc
 				config.CleanupLatency = CleanupLatencyPolicy{AutoFallbackAfter: cleanupSoftDeadlineTestDuration}
-				config.Select = &fakeSelector{text: "selected text"}
+				config.Select = &fakeSelector{}
+				if tc.kind == store.KindRewrite {
+					settings.Features.Rewrite.ShowCard = false
+				}
 			})
-			id, err := h.m.Start(StartRequest{Kind: kind, Target: slack})
+			id, err := h.m.Start(StartRequest{Kind: tc.kind, Target: slack})
 			if err != nil {
 				t.Fatal(err)
 			}
-			if kind == store.KindRewrite {
-				h.speak(id, 3)
-			}
-			h.rec.waitFor(t, "composing request", func(snapshot Snapshot) bool { return snapshot.ID == id && snapshot.State == Composing })
+			h.speak(id, 3)
+			waitCleanupSignal(t, provider.finishStarted, "held ASR Final")
 			if clock.timerCount() != 0 {
-				t.Fatalf("%s scheduled %d cleanup timers", kind, clock.timerCount())
+				t.Fatalf("%s scheduled %d cleanup timers", tc.kind, clock.timerCount())
 			}
-			h.m.Cancel(id)
-			h.rec.waitFor(t, "cancelled request", func(snapshot Snapshot) bool { return snapshot.ID == id && snapshot.State.Ended() })
+			clock.Advance(cleanupSoftDeadlineTestDuration + time.Second)
+			close(releaseFinal)
+			end := h.rec.wait(t)
+			if end.State != Done || end.Result != tc.answer || len(model.requests()) != 1 {
+				t.Fatalf("end %+v, requests %d", end, len(model.requests()))
+			}
+			if pastes := h.text.pastes(); len(pastes) != 1 || pastes[0] != tc.answer {
+				t.Fatalf("delivered %q, want %q exactly once", pastes, tc.answer)
+			}
 		})
 	}
 }

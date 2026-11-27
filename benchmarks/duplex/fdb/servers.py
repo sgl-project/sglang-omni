@@ -86,6 +86,14 @@ def aligner_command(settings: Settings) -> list[str]:
     ]
 
 
+def model_server_env(settings: Settings) -> dict[str, str]:
+    """The caches of the server's GPU, and the venv of an Inkling chat service, which the launch config's services inherit."""
+    if settings.engine.needs_inkling_venv:
+        return {**settings.cache_env(), "INKLING_VENV": str(settings.inkling_venv)}
+    else:
+        return settings.cache_env()
+
+
 def model_server_gpus(settings: Settings) -> str:
     """The job GPU, or every visible GPU for a system that spans several."""
     if settings.engine.server_gpu_count == 1:
@@ -269,7 +277,7 @@ def model_server(settings: Settings, log_file: Path) -> Iterator[RunningServer]:
                 log_file,
                 health_path="/v1/realtime/capabilities",
                 ready_text=settings.engine.ready_text,
-                env=settings.cache_env(),
+                env=model_server_env(settings),
             )
         )
         yield server
@@ -298,6 +306,7 @@ def serve_in_foreground(command: list[str], gpu: str) -> None:
 
 
 def serve_model(settings: Settings) -> None:
+    os.environ.update(model_server_env(settings))
     serve_in_foreground(model_server_command(settings), model_server_gpus(settings))
 
 

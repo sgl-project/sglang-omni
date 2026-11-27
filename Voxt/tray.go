@@ -195,10 +195,30 @@ func (a *app) trayItems() []*mygo.MenuItem {
 	if len(f.Transcribe.Hotkeys) > 0 {
 		start += "    " + uitext.HotkeyGlyphs(f.Transcribe.Hotkeys[0].Keys)
 	}
-	items := []*mygo.MenuItem{
-		{Label: start, Click: act(a.toggleTranscribe)},
-		{Label: i18n.T("Paste the last result") + "    " + uitext.HotkeyGlyphs(f.PasteLast.Keys), Click: act(func() { a.pasteLast(a.front) })},
-		{Label: i18n.T("Microphone"), Submenu: a.trayMicrophones(act)},
+	var items []*mygo.MenuItem
+	if a.bundleUpdated {
+		label := i18n.T("Restart Voxt to update")
+		if v := a.updPrefs.InstalledVersion; v != "" {
+			label = i18n.T("Restart Voxt to update (%s)", v)
+		}
+		items = append(items,
+			&mygo.MenuItem{Label: label, Click: act(a.relaunch)},
+			mygo.Separator(),
+		)
+	} else if v := a.availableUpdateVersion(); v != "" {
+		items = append(items,
+			&mygo.MenuItem{Label: i18n.T("Update available (%s)…", v), Click: act(a.checkForUpdates)},
+			mygo.Separator(),
+		)
+	}
+	items = append(items,
+		&mygo.MenuItem{Label: start, Click: act(a.toggleTranscribe)},
+		&mygo.MenuItem{Label: i18n.T("Paste the last result") + "    " + uitext.HotkeyGlyphs(f.PasteLast.Keys), Click: act(func() { a.pasteLast(a.front) })},
+		&mygo.MenuItem{Label: i18n.T("Microphone"), Submenu: a.trayMicrophones(act)},
+	)
+	if sessions := a.sessionsMenu(act); len(sessions) > 0 {
+		items = append(items, mygo.Separator())
+		items = append(items, sessions...)
 	}
 	if reopen := a.reopenMenu(act); len(reopen) > 0 {
 		items = append(items, mygo.Separator())

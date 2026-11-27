@@ -264,6 +264,7 @@ func snapshotsMain(t *testing.T, out string) {
 		fake := a.upd
 		srv := &ghServer{list: newerReleases}
 		a.upd = newReleaseUpdates(a.settings, srv.start(t), "2.0.3", a.checkReleasesNow)
+		a.connectUpdates()
 		a.updKnown = false
 		a.navigate("/settings/about")
 		scrollToText(tt, i18n.T("Updates"))

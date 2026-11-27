@@ -7,6 +7,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/sgl-project/sglang-omni/Voxt/internal/asr"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/compose"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/llm"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
@@ -119,10 +120,53 @@ func (e *earlyClean) finalize() {
 // (settings.Transcribe.CleanAfterStop); the live clean-up ends here.
 func (r *run) hearPiece(stable string) {
 	r.endLive()
-	if r.req.Kind != store.KindTranscribe || r.settings.Features.Transcribe.CleanAfterStop || !r.transcribeCleanup() {
+	if r.req.Kind != store.KindTranscribe {
 		return
 	}
+	select {
+	case <-r.svcResolved:
+	default:
+		return
+	}
+	if r.settings.Features.Transcribe.CleanAfterStop || !r.transcribeCleanup() {
+		return
+	}
+	r.head.hearFinal(stable)
+	if r.head.enabled.Load() && asr.Duration(r.pcm.bytes(), asr.SampleRate) < earlyCleanAfter {
+		return // not yet long: the whole text goes in one request, which knows what is said later
+	}
 	r.earlyCleanup().add(stable)
+}
+
+// earlyCleanAfter is how long a recording is when its finalised stretches
+// are cleaned one by one, for a service that the head start serves.
+const earlyCleanAfter = 60 * time.Second
+
+// earlyPieces says whether stretches sooner are worth it: the head start
+// puts them before the live text, and a Final has less left to recognise.
+// Each stretch costs the speech model its dictionary, so only a short
+// one.
+func (r *run) earlyPieces() bool {
+	return r.head.enabled.Load() && r.head.under == 0 && !r.settings.Audio.LiveResult &&
+		len(r.glossary()) <= compose.GlossaryAllUpTo && len(r.hints()) <= compose.GlossaryAllUpTo
+}
+
+// enableEarlyPieces applies the finalized eligibility decision to an
+// already-open stream when it could not be known at Open time.
+func (r *run) enableEarlyPieces() {
+	if r.stream == nil || r.init.split && !r.init.cleanupReady || !r.earlyPieces() {
+		return
+	}
+	if stream, ok := r.stream.(asr.EarlyPiecesEnabler); ok {
+		stream.EnableEarlyPieces()
+	}
+}
+
+// working says whether stretches are still being cleaned.
+func (e *earlyClean) working() bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return !e.broken && len(e.segs) < len(e.jobs)
 }
 
 // add queues the stretch the text grew by since the last event. The
@@ -183,13 +227,7 @@ func (e *earlyClean) work() {
 		e.stop()
 		return
 	}
-	thinkOffUnder := 0
-	for _, provider := range r.settings.Providers.LLM {
-		if provider.ID == llmInfo.ID {
-			thinkOffUnder = provider.Generation.ThinkingOffUnder
-			break
-		}
-	}
+	thinkOffUnder := r.thinkOffUnder(llmInfo.ID)
 	next := 0
 	for {
 		e.mu.Lock()
@@ -254,13 +292,14 @@ func (e *earlyClean) clean(job segJob, thinkOffUnder int) {
 			res.answers = append(res.answers, p.Text)
 			continue
 		}
-		res.answers = append(res.answers, compose.CleanOutput(resp.Text, p.Text))
+		res.answers = append(res.answers, compose.CleanOutput(resp.Text, p.Text, p.Custom()))
 	}
 	res.done, res.completedAt = true, r.now()
 	e.mu.Lock()
 	if !e.finalized {
 		res.publishedAt = r.now()
 		e.segs = append(e.segs, res)
+		e.cond.Broadcast()
 	}
 	e.mu.Unlock()
 }
@@ -271,6 +310,18 @@ func (e *earlyClean) fail(err error) {
 		e.failed = err
 	}
 	e.mu.Unlock()
+}
+
+// rest is what Stop would leave of text to clean after the stretches
+// cleaned while the recording went on, and false when text does not start
+// with them.
+func (e *earlyClean) rest(text string) (string, bool) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.broken {
+		return text, true
+	}
+	return strings.CutPrefix(text, e.covered)
 }
 
 // completedCompatible returns only a full result whose segments were
@@ -334,9 +385,12 @@ func (e *earlyClean) drain(text string) (parts []compose.Part, answers []string,
 	e.mu.Unlock()
 	e.cond.Broadcast()
 	if cancelWorker {
+		// Finalized workers cannot publish further results. Cancellation
+		// must not delay cleanup of the remaining authoritative text.
 		e.cancel()
+	} else {
+		<-e.workerDone
 	}
-	<-e.workerDone
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.finalized = true

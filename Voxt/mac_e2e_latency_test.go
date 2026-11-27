@@ -23,11 +23,14 @@ package main
 //	  go test -count=1 -run TestMacE2EFirstLatency -v -timeout 30m .
 
 import (
+	"crypto/sha256"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"runtime/debug"
 	"slices"
 	"strconv"
 	"strings"
@@ -47,17 +50,45 @@ import (
 // the speech model's server was ready: negative when it was before the
 // shortcut (warmed), zero when it ran already before this scenario.
 type latencyStages struct {
-	heard, ready, load, partial, final time.Duration
+	appReady, heard, ready, load, partial, final, insert, done time.Duration
+	minPreviewSamples                                          int
+}
+
+type latencyResult struct {
+	MainSHA            string  `json:"main_sha"`
+	Scenario           string  `json:"scenario"`
+	Round              int     `json:"round"`
+	Attempt            int     `json:"attempt"`
+	Arm                string  `json:"arm"`
+	MinPreviewSamples  int     `json:"min_preview_samples"`
+	Model              string  `json:"model"`
+	ASRCold            bool    `json:"asr_cold"`
+	VADCold            bool    `json:"vad_cold"`
+	AppReadyMS         float64 `json:"app_ready_ms"`
+	FirstAudioMS       float64 `json:"first_audio_ms"`
+	ServerReadyMS      float64 `json:"server_ready_ms"`
+	ModelLoadMS        float64 `json:"model_load_ms"`
+	FirstPartialMS     float64 `json:"first_partial_ms"`
+	StopToFinalMS      float64 `json:"stop_to_final_ms"`
+	StopToInsertMS     float64 `json:"stop_to_insert_ms"`
+	StopToDoneMS       float64 `json:"stop_to_done_ms"`
+	LiveUpdates        int     `json:"live_updates"`
+	LongestUpdateGapMS float64 `json:"longest_update_gap_ms"`
+	Text               string  `json:"text"`
+	TextSHA256         string  `json:"text_sha256"`
 }
 
 // readyLine is the runtime's line about a server that became ready.
 var readyLine = regexp.MustCompile(`omni: (\S+) ready on \S+ after (\S+) \(pid`)
 
+var minPreviewLine = regexp.MustCompile(`"min_preview_samples"\s*:\s*(\d+)`)
+
 // latencyLog keeps when each model's server became ready and how long
 // its start took.
 type latencyLog struct {
-	mu    sync.Mutex
-	ready map[string][]readyAt
+	mu                sync.Mutex
+	ready             map[string][]readyAt
+	minPreviewSamples int
 }
 
 type readyAt struct {
@@ -66,17 +97,26 @@ type readyAt struct {
 }
 
 func (l *latencyLog) add(msg string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if m := minPreviewLine.FindStringSubmatch(msg); m != nil {
+		l.minPreviewSamples, _ = strconv.Atoi(m[1])
+	}
 	m := readyLine.FindStringSubmatch(msg)
 	if m == nil {
 		return
 	}
 	load, _ := time.ParseDuration(m[2])
-	l.mu.Lock()
-	defer l.mu.Unlock()
 	if l.ready == nil {
 		l.ready = map[string][]readyAt{}
 	}
 	l.ready[m[1]] = append(l.ready[m[1]], readyAt{time.Now(), load})
+}
+
+func (l *latencyLog) minPreview() int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.minPreviewSamples
 }
 
 // since is the newest start of model id's server after t.
@@ -141,6 +181,7 @@ func TestMacE2EFirstLatency(t *testing.T) {
 	if n, err := strconv.Atoi(os.Getenv("VOXTNEW_LATENCY_ROUNDS")); err == nil && n > 0 {
 		rounds = n
 	}
+	attempt, _ := strconv.Atoi(os.Getenv("VOXTNEW_LATENCY_ATTEMPT"))
 	if d, err := time.ParseDuration(os.Getenv("VOXTNEW_LATENCY_SETTLE")); err == nil {
 		settle = d
 	}
@@ -159,6 +200,9 @@ func TestMacE2EFirstLatency(t *testing.T) {
 
 	got := map[string][]latencyStages{}
 	for round := 1; round <= rounds; round++ {
+		if attempt > 0 {
+			round = attempt
+		}
 		t.Run(fmt.Sprintf("round%d", round), func(t *testing.T) {
 			opened := time.Now()
 			a := newSessionApp(t, "frame-ms=100,"+helpertest.Opt("pcm", latencyAudio()), func(s *settings.Settings) {
@@ -170,22 +214,27 @@ func TestMacE2EFirstLatency(t *testing.T) {
 				_, ok := a.featureModel(local.ASR, "transcribe")
 				return ok && a.helperReady()
 			})
+			appReady := time.Now()
 			a.pumpFor(settle, func() bool { return false })
-			got["cold"] = append(got["cold"], latencySession(t, a, lg, opened, "cold", ids[0]))
-			got["warm"] = append(got["warm"], latencySession(t, a, lg, time.Now(), "warm", ids[0]))
-			changed := time.Now()
-			a.updateSettings(func(s *settings.Settings) { setFeatureModel(s, local.ASR, "transcribe", ids[1]) })
-			a.pumpFor(settle, func() bool { return false })
-			got["switch"] = append(got["switch"], latencySession(t, a, lg, changed, "switch", ids[1]))
+			got["cold"] = append(got["cold"], latencySession(t, a, lg, opened, appReady, "cold", ids[0], round))
+			got["warm"] = append(got["warm"], latencySession(t, a, lg, time.Now(), time.Time{}, "warm", ids[0], round))
+			if os.Getenv("VOXTNEW_LATENCY_SKIP_SWITCH") != "1" {
+				changed := time.Now()
+				a.updateSettings(func(s *settings.Settings) { setFeatureModel(s, local.ASR, "transcribe", ids[1]) })
+				a.pumpFor(settle, func() bool { return false })
+				got["switch"] = append(got["switch"], latencySession(t, a, lg, changed, time.Time{}, "switch", ids[1], round))
+			}
 		})
 	}
 	for _, name := range []string{"cold", "warm", "switch"} {
-		t.Logf("MEASURE latency %-6s n=%d settle %v:  first audio %s  server ready %s (its start %s)  first partial %s  final after Stop %s", name, len(got[name]), settle,
+		t.Logf("MEASURE latency %-6s n=%d settle %v:  first audio %s  server ready %s (its start %s)  first partial %s  Final after Stop %s  insert after Stop %s  done after Stop %s", name, len(got[name]), settle,
 			spread(got[name], func(s latencyStages) time.Duration { return s.heard }),
 			spread(got[name], func(s latencyStages) time.Duration { return s.ready }),
 			spread(got[name], func(s latencyStages) time.Duration { return s.load }),
 			spread(got[name], func(s latencyStages) time.Duration { return s.partial }),
-			spread(got[name], func(s latencyStages) time.Duration { return s.final }))
+			spread(got[name], func(s latencyStages) time.Duration { return s.final }),
+			spread(got[name], func(s latencyStages) time.Duration { return s.insert }),
+			spread(got[name], func(s latencyStages) time.Duration { return s.done }))
 	}
 }
 
@@ -223,13 +272,16 @@ func spread(all []latencyStages, get func(latencyStages) time.Duration) string {
 // the first live text and returns the session's stages; from is when the
 // scenario began (the app opened, the model changed): a server ready
 // since then counts as this scenario's.
-func latencySession(t *testing.T, a *sessionApp, lg *latencyLog, from time.Time, name, id string) latencyStages {
+func latencySession(t *testing.T, a *sessionApp, lg *latencyLog, from, readyAt time.Time, name, id string, round int) latencyStages {
 	t.Helper()
 	var st latencyStages
+	if !readyAt.IsZero() {
+		st.appReady = readyAt.Sub(from)
+	}
 	last := a.sess.ID
 	t0 := time.Now()
 	a.toggleTranscribe()
-	if !a.pumpFor(time.Minute, func() bool {
+	if !a.pumpFor(5*time.Minute, func() bool {
 		if a.sess.ID == last {
 			return false
 		}
@@ -252,19 +304,123 @@ func latencySession(t *testing.T, a *sessionApp, lg *latencyLog, from time.Time,
 		}
 		return a.sess.State.Ended()
 	})
+	pastesBefore := len(a.pasted())
 	stopped := time.Now()
 	a.stopSession()
-	if !a.pumpFor(time.Minute, func() bool { return a.sess.State.Ended() }) || a.sess.State != session.Done || a.sess.ASR.ID != id {
+	if !a.pumpFor(5*time.Minute, func() bool {
+		if st.final == 0 && a.sess.Raw != "" {
+			st.final = time.Since(stopped)
+		}
+		if st.insert == 0 && len(a.pasted()) > pastesBefore {
+			st.insert = time.Since(stopped)
+		}
+		return a.sess.State.Ended()
+	}) || a.sess.State != session.Done || a.sess.ASR.ID != id {
 		t.Fatalf("%s: end %s %+v on %s", name, a.sess.State, a.sess.Problem, a.sess.ASR.ID)
 	}
-	st.final = time.Since(stopped)
+	st.done = time.Since(stopped)
+	if st.final == 0 {
+		t.Fatalf("%s: no ASR Final was observed before delivery", name)
+	}
+	if st.insert == 0 {
+		t.Fatalf("%s: no helper paste was observed after the ASR Final", name)
+	}
 	if r, ok := lg.since(id, from); ok {
 		st.ready, st.load = r.at.Sub(t0), r.load
 	}
-	t.Logf("MEASURE latency %s %s: first audio %v, server ready %v (its start %v), first partial %v, %d live updates in %v (longest wait %v), final %v after Stop: %d characters %q", name, id,
+	t.Logf("MEASURE latency %s %s: first audio %v, server ready %v (its start %v), first partial %v, %d live updates in %v (longest wait %v), Final %v / insert %v / done %v after Stop: %d characters %q", name, id,
 		st.heard.Round(time.Millisecond), st.ready.Round(time.Millisecond), st.load.Round(time.Millisecond),
-		st.partial.Round(time.Millisecond), updates, speak, gap.Round(time.Millisecond), st.final.Round(time.Millisecond), len([]rune(a.sess.Raw)), firstRunes(a.sess.Raw, 40))
+		st.partial.Round(time.Millisecond), updates, speak, gap.Round(time.Millisecond), st.final.Round(time.Millisecond), st.insert.Round(time.Millisecond), st.done.Round(time.Millisecond), len([]rune(a.sess.Raw)), firstRunes(a.sess.Raw, 40))
+	st.minPreviewSamples = lg.minPreview()
+	writeLatencyResult(t, name, id, round, st, updates, gap, a.sess.Raw)
 	return st
+}
+
+func writeLatencyResult(t *testing.T, name, id string, round int, st latencyStages, updates int, gap time.Duration, text string) {
+	t.Helper()
+	path := os.Getenv("VOXTNEW_LATENCY_OUT")
+	if path == "" {
+		return
+	}
+	milliseconds := func(d time.Duration) float64 { return float64(d.Microseconds()) / 1000 }
+	result := latencyResult{
+		MainSHA: latencyMainSHA(), Scenario: name, Round: round, Attempt: round,
+		Arm: os.Getenv("VOXTNEW_LATENCY_ARM"), MinPreviewSamples: st.minPreviewSamples, Model: id,
+		ASRCold: name != "warm", VADCold: name == "cold",
+		AppReadyMS:   milliseconds(st.appReady),
+		FirstAudioMS: milliseconds(st.heard), ServerReadyMS: milliseconds(st.ready), ModelLoadMS: milliseconds(st.load),
+		FirstPartialMS: milliseconds(st.partial), StopToFinalMS: milliseconds(st.final),
+		StopToInsertMS: milliseconds(st.insert), StopToDoneMS: milliseconds(st.done),
+		LiveUpdates: updates, LongestUpdateGapMS: milliseconds(gap), Text: text,
+		TextSHA256: fmt.Sprintf("%x", sha256.Sum256([]byte(text))),
+	}
+	fh, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.NewEncoder(fh).Encode(result); err != nil {
+		fh.Close()
+		t.Fatal(err)
+	}
+	if err := fh.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestLatencyResultJSON(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "latency.jsonl")
+	t.Setenv("VOXTNEW_LATENCY_OUT", path)
+	t.Setenv("VOXTNEW_LATENCY_ARM", "A")
+	t.Setenv("VOXTNEW_MAIN_SHA", "49f60636411e24ce4f7441878c9333d68e649a83")
+	stages := latencyStages{appReady: 1500 * time.Millisecond, final: 1200 * time.Millisecond, insert: 1250 * time.Millisecond, done: 1300 * time.Millisecond, minPreviewSamples: 20000}
+	writeLatencyResult(t, "cold", "asr.test", 2, stages, 4, 275*time.Millisecond, "fixed text")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got latencyResult
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.AppReadyMS != 1500 || got.StopToFinalMS != 1200 || got.StopToInsertMS != 1250 || got.StopToDoneMS != 1300 {
+		t.Fatalf("app readiness or the three endpoints collapsed: %+v", got)
+	}
+	if !got.ASRCold || !got.VADCold || got.Round != 2 || got.LiveUpdates != 4 || got.LongestUpdateGapMS != 275 {
+		t.Fatalf("scenario metadata: %+v", got)
+	}
+	if got.MainSHA != "49f60636411e24ce4f7441878c9333d68e649a83" || got.Attempt != 2 || got.Arm != "A" || got.MinPreviewSamples != 20000 {
+		t.Fatalf("run identity: %+v", got)
+	}
+	if got.TextSHA256 != fmt.Sprintf("%x", sha256.Sum256([]byte("fixed text"))) {
+		t.Fatalf("text hash: %+v", got)
+	}
+}
+
+func TestLatencyLogReadsNativePreviewConfig(t *testing.T) {
+	var log latencyLog
+	log.add(`omni: native {"event":"moss_preview_timing","min_preview_samples":12000}`)
+	if got := log.minPreview(); got != 12000 {
+		t.Fatalf("min_preview_samples = %d, want 12000", got)
+	}
+}
+
+func latencyMainSHA() string {
+	// The runner passes the source SHA explicitly: test binaries built
+	// with -buildvcs=false or without VCS stamps would else report
+	// "unknown" and break the measurement provenance gate.
+	if sha := os.Getenv("VOXTNEW_MAIN_SHA"); sha != "" {
+		return sha
+	}
+	info, ok := debug.ReadBuildInfo()
+	if !ok {
+		return "unknown"
+	}
+	for _, setting := range info.Settings {
+		if setting.Key == "vcs.revision" {
+			return setting.Value
+		}
+	}
+	return "unknown"
 }
 
 // latencyAudio is the recording the fake helper plays:

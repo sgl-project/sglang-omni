@@ -26,9 +26,13 @@ type settingsMeetingViewState struct {
 }
 
 type settingsMeetingStateInput struct {
-	Meeting        settings.Meeting
-	ReadyASR       []local.Model
-	ShownASR       []local.Model
+	Meeting  settings.Meeting
+	ReadyASR []local.Model
+	ShownASR []local.Model
+	// AutomaticASR is the speech model a meeting on Automatic opens: the
+	// language gate's first for the meeting's language (meetingTrackASR's
+	// rule), so "now:" never names a model the gate would skip (#4067).
+	AutomaticASR   local.Model
 	ReadyLLM       []local.Model
 	CorrectionText string
 }
@@ -54,8 +58,8 @@ func buildSettingsMeetingViewState(translator *i18n.Translator, input settingsMe
 	}
 
 	automaticASR := translator.T("Automatic")
-	if len(input.ReadyASR) > 0 {
-		automaticASR = translator.T("Automatic (now: %s)", input.ReadyASR[0].Name)
+	if input.AutomaticASR.ID != "" {
+		automaticASR = translator.T("Automatic (now: %s)", input.AutomaticASR.Name)
 	}
 	state.ASRSelected = automaticASR
 	state.ASROptions = append(state.ASROptions, settingsLanguageViewState{Label: automaticASR})

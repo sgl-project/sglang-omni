@@ -144,6 +144,7 @@ type Response struct {
 	Usage        Usage
 	Latency      time.Duration // of the successful attempt
 	Attempts     int           // 1 + retries (Client)
+	RateLimited  bool          // an attempt was refused for the rate limit (Client.Chat, also with an error)
 	Repairs      int           // JSON repair turns (Client.JSON)
 	// ImagesDropped: the model refused the images and the answer came
 	// from the text alone (only the session may claim an image went).
@@ -172,4 +173,16 @@ type Backend interface {
 // message's text does not matter.
 type Prefiller interface {
 	Prefill(ctx context.Context, req Request) error
+}
+
+// Connector is a model on a server: Connect opens the connection its next
+// chat will use, so that the chat does not wait for the handshakes. It
+// sends nothing of the user's.
+type Connector interface {
+	Connect(ctx context.Context) error
+}
+
+// PrefillCapability separates a client wrapper from a backend that can prefill.
+type PrefillCapability interface {
+	CanPrefill() bool
 }

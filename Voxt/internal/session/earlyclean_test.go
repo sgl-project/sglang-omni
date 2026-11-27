@@ -283,13 +283,13 @@ func newEarlyUnitHarnessRun(t *testing.T, model LLM, terms []store.Term) (*harne
 }
 
 func TestEarlyCleanShortInputThinking(t *testing.T) {
-	full := strings.Repeat("a", 1000)
+	full := strings.Repeat("一", 1000)
 	model := &fakeLLM{text: "clean"}
 	r := newEarlyUnitRun(t, model, nil)
 	r.settings.Providers.LLM = []settings.Provider{{
 		ID: "deepseek", Generation: settings.Generation{ThinkingOffUnder: 200},
 	}}
-	r.hearPiece(full[:100])
+	r.hearPiece(strings.Repeat("一", 100))
 	output := r.cleanUpFirst(full)
 	if output.err != nil {
 		t.Fatal(output.err)
@@ -382,8 +382,8 @@ func TestEarlyCleanLargeGlossary(t *testing.T) {
 	for i := range terms {
 		terms[i] = store.Term{Term: fmt.Sprintf("Term%02d", i), Enabled: true}
 	}
-	first := strings.Repeat("a", 295) + "Term00"
-	full := first + strings.Repeat("b", 293) + "Term30"
+	first := strings.Repeat("一", 295) + "Term00"
+	full := first + strings.Repeat("二", 293) + "Term30"
 	model := &fakeLLM{text: "clean"}
 	r := newEarlyUnitRun(t, model, terms)
 	r.hearPiece(first)
@@ -404,8 +404,8 @@ func TestEarlyCleanLargeGlossary(t *testing.T) {
 }
 
 func TestEarlyCleanLeavesUnfinishedPartsForStop(t *testing.T) {
-	first := strings.Repeat("a", 301)
-	full := first + strings.Repeat("b", 299)
+	first := strings.Repeat("一", 301)
+	full := first + strings.Repeat("二", 299)
 	model := &fakeLLM{text: "clean"}
 	r := newEarlyUnitRun(t, model, nil)
 	r.hearPiece(first)
@@ -423,21 +423,27 @@ func TestEarlyCleanLeavesUnfinishedPartsForStop(t *testing.T) {
 }
 
 type earlyFallbackLLM struct {
-	mu            sync.Mutex
-	calls         int
-	answered      chan struct{}
-	secondStarted chan struct{}
-	secondRelease chan struct{}
-	secondErr     error
-	thirdStarted  bool
-	tailStarted   chan struct{}
-	tailRelease   chan struct{}
-	tailOnce      sync.Once
+	mu             sync.Mutex
+	calls          int
+	answered       chan struct{}
+	secondStarted  chan struct{}
+	secondCanceled chan struct{}
+	secondRelease  chan struct{}
+	secondErr      error
+	lateSecondErr  error
+	thirdStarted   bool
+	tailStarted    chan struct{}
+	tailRelease    chan struct{}
+	tailRequest    llm.Request
+	tailOnce       sync.Once
 }
 
 func (f *earlyFallbackLLM) Chat(ctx context.Context, req llm.Request) (llm.Response, error) {
 	if req.OnDelta != nil {
 		if f.tailStarted != nil {
+			f.mu.Lock()
+			f.tailRequest = req
+			f.mu.Unlock()
 			f.tailOnce.Do(func() { close(f.tailStarted) })
 			<-f.tailRelease
 		}
@@ -455,18 +461,32 @@ func (f *earlyFallbackLLM) Chat(ctx context.Context, req llm.Request) (llm.Respo
 		return llm.Response{Text: "early one"}, nil
 	case 2:
 		close(f.secondStarted)
-		if f.secondRelease != nil {
-			select {
-			case <-f.secondRelease:
-				return llm.Response{Text: "early two"}, nil
-			case <-ctx.Done():
+		late := false
+		select {
+		case <-f.secondRelease:
+		case <-ctx.Done():
+			if f.secondCanceled != nil {
+				close(f.secondCanceled)
 			}
-		} else {
-			<-ctx.Done()
+			if f.secondRelease == nil {
+				break
+			}
+			<-f.secondRelease
+			late = true
 		}
 		f.mu.Lock()
 		f.secondErr = ctx.Err()
+		lateErr := f.lateSecondErr
 		f.mu.Unlock()
+		if late {
+			if lateErr != nil {
+				return llm.Response{}, lateErr
+			}
+			return llm.Response{Text: "late early two"}, nil
+		}
+		if ctx.Err() == nil {
+			return llm.Response{Text: "early two"}, nil
+		}
 		return llm.Response{}, ctx.Err()
 	default:
 		f.mu.Lock()
@@ -502,32 +522,145 @@ func TestEarlyCleanFallbackCancelsBacklog(t *testing.T) {
 }
 
 func TestEarlyCleanMatchingFinalCancelsBacklog(t *testing.T) {
-	model := &earlyFallbackLLM{secondStarted: make(chan struct{})}
-	r := newEarlyUnitRun(t, model, nil)
-	r.m.cfg.LLMBase, r.m.cfg.LLMStall, r.m.cfg.LLMTimeout = 50*time.Millisecond, 50*time.Millisecond, 50*time.Millisecond
-	r.hearPiece("one")
-	r.hearPiece("one two")
-	r.hearPiece("one two three")
-	<-model.secondStarted
-	output := r.cleanUpFirst("one two three tail")
-	if output.err != nil {
-		t.Fatal(output.err)
-	}
-	if output.text != "early one fallback" {
-		t.Errorf("result %q, want the completed early answer and the fallback tail", output.text)
-	}
-	model.mu.Lock()
-	calls := model.calls
-	model.mu.Unlock()
-	if calls != 2 {
-		t.Errorf("%d requests, want the first and the cancelled second; the queued early request must not run", calls)
+	for _, tc := range []struct {
+		name          string
+		lateSecondErr error
+	}{
+		{name: "late success"},
+		{name: "late error", lateSecondErr: errors.New("late early-clean failure")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			model := &earlyFallbackLLM{
+				secondStarted:  make(chan struct{}),
+				secondCanceled: make(chan struct{}),
+				secondRelease:  make(chan struct{}),
+				lateSecondErr:  tc.lateSecondErr,
+				tailStarted:    make(chan struct{}),
+				tailRelease:    make(chan struct{}),
+			}
+			r := newEarlyUnitRun(t, model, nil)
+			early := r.earlyCleanup()
+			var releaseSecond, releaseTail sync.Once
+			release := func() {
+				releaseSecond.Do(func() { close(model.secondRelease) })
+				releaseTail.Do(func() { close(model.tailRelease) })
+			}
+			cleanupResult := make(chan cleanupOutput, 1)
+			cleanupDone := make(chan struct{})
+			cleanupStarted := false
+			t.Cleanup(func() {
+				release()
+				if cleanupStarted {
+					select {
+					case <-cleanupDone:
+					case <-time.After(3 * time.Second):
+						t.Error("authoritative cleanup did not stop after releasing the LLM calls")
+					}
+				}
+				select {
+				case <-early.workerDone:
+				case <-time.After(3 * time.Second):
+					t.Error("early clean-up worker did not stop after release")
+				}
+			})
+			r.hearPiece("one")
+			r.hearPiece("one two")
+			select {
+			case <-model.secondStarted:
+			case <-time.After(3 * time.Second):
+				t.Fatal("second Early Cleanup request did not start")
+			}
+			early.mu.Lock()
+			firstPublished := len(early.segs) == 1 && early.segs[0].done && len(early.segs[0].answers) == 1 && early.segs[0].answers[0] == "early one"
+			early.mu.Unlock()
+			if !firstPublished {
+				t.Fatal("first Early Cleanup answer was not published before the second request started")
+			}
+			r.hearPiece("one two three")
+			early.mu.Lock()
+			queuedJobs := len(early.jobs)
+			early.mu.Unlock()
+			if queuedJobs != 3 {
+				t.Fatalf("queued Early Cleanup jobs=%d, want three", queuedJobs)
+			}
+			cleanupStarted = true
+			go func() {
+				defer close(cleanupDone)
+				cleanupResult <- r.cleanUpFirst("one two three tail")
+			}()
+			select {
+			case <-model.secondCanceled:
+			case <-time.After(3 * time.Second):
+				t.Fatal("discarded Early Cleanup request did not observe cancellation")
+			}
+			select {
+			case <-model.tailStarted:
+			case <-time.After(3 * time.Second):
+				t.Fatal("authoritative tail cleanup waited for the cancelled Early Cleanup request to exit")
+			}
+			select {
+			case <-early.workerDone:
+				t.Fatal("cancelled worker exited before its controlled release")
+			default:
+			}
+			releaseTail.Do(func() { close(model.tailRelease) })
+			var output cleanupOutput
+			select {
+			case output = <-cleanupResult:
+			case <-time.After(3 * time.Second):
+				t.Fatal("authoritative tail cleanup did not finish while the cancelled worker was blocked")
+			}
+			if output.err != nil || output.text != "early one fallback" {
+				t.Fatalf("final result %q, %v; want the completed prefix and cleaned authoritative tail", output.text, output.err)
+			}
+			model.mu.Lock()
+			tailRequest := model.tailRequest
+			model.mu.Unlock()
+			if len(tailRequest.Messages) == 0 || !strings.Contains(tailRequest.Messages[len(tailRequest.Messages)-1].Content, "two three tail") {
+				t.Errorf("authoritative cleanup request omitted the remaining transcript: %+v", tailRequest.Messages)
+			}
+			select {
+			case <-early.workerDone:
+				t.Fatal("cancelled worker exited before its controlled release")
+			default:
+			}
+			releaseSecond.Do(func() { close(model.secondRelease) })
+			waitEarlyWorker(t, r)
+			early.mu.Lock()
+			segmentCount := len(early.segs)
+			prefix := ""
+			if segmentCount > 0 && len(early.segs[0].answers) > 0 {
+				prefix = early.segs[0].answers[0]
+			}
+			failed := early.failed
+			finalized, closed := early.finalized, early.closed
+			early.mu.Unlock()
+			model.mu.Lock()
+			calls, secondErr, thirdStarted := model.calls, model.secondErr, model.thirdStarted
+			model.mu.Unlock()
+			if segmentCount != 1 || prefix != "early one" || failed != nil {
+				t.Errorf("late result changed the retained prefix or failure state: segments=%d prefix=%q failure=%v", segmentCount, prefix, failed)
+			}
+			if !finalized || !closed {
+				t.Errorf("finalized=%t, closed=%t; want both late-publication fences set", finalized, closed)
+			}
+			if !errors.Is(secondErr, context.Canceled) {
+				t.Errorf("discarded request observed %v, want cancellation", secondErr)
+			}
+			if calls != 2 || thirdStarted {
+				t.Errorf("early requests=%d, third started=%t; want only the first and cancelled second requests", calls, thirdStarted)
+			}
+			if output.text != "early one fallback" {
+				t.Errorf("late result changed final output to %q", output.text)
+			}
+		})
 	}
 }
 
 func TestEarlyCleanMatchingFinalSkipsRemainingParts(t *testing.T) {
 	model := &earlyFallbackLLM{secondStarted: make(chan struct{}), secondRelease: make(chan struct{})}
 	r := newEarlyUnitRun(t, model, nil)
-	lastJob := strings.Repeat("a", 301)
+	lastJob := strings.Repeat("一", 301)
 	full := "one " + lastJob + " tail"
 	r.hearPiece("one")
 	r.hearPiece("one " + lastJob)

@@ -186,6 +186,7 @@ func (a *ASR) trimEcho(ctx context.Context, l *lease, req finalRequest, text str
 	kept := strings.TrimSpace(text[:cut])
 	plainReq := req
 	plainReq.context = ""
+	plainReq.known.guessAutoLanguage = false
 	plain, err := transcribe(ctx, l, plainReq, a.rt.cfg.StallTimeout)
 	drop := certain
 	switch {

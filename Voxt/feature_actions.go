@@ -21,6 +21,7 @@ type featureActions interface {
 	recordFeatureKeys(row *keyRow, event ui.InputEvent, save func(string))
 	markFeatureKeysHeard()
 	openFeatureSpeechModels()
+	downloadModelPack(id string) // a model and, for the recommended one, its draft
 	openFeatureLanguageModels()
 	selectFeatureModel(feature, kind, id string)
 	selectFeatureFallback(id string)

@@ -42,6 +42,7 @@
   "That was the %s shortcut. This step tests %s.": "刚才按的是%s的快捷键，这一步试的是%s。",
   "The model downloads in the background. You can continue the guide and try again when the bar fills, or skip this step.": "模型会在后台下载。你可以继续后面的步骤，进度条走满再试，也可以跳过这一步。",
   "The model downloads in the background, so you can continue. It is ready when the bar fills.": "模型会在后台下载，可以先做下一步，进度条走满就能用了。",
+  "The most accurate. Good with accents, dialects, names and several languages in one sentence. Shows the text as you speak.": "最准确。能识别口音、方言、人名，以及一句话里夹杂的多种语言，边说边出文字。",
   "The speech model is still downloading. Later steps work once it is ready, or you can skip them.": "语音识别模型还在下载，下载好后才能试后面的步骤，也可以跳过。",
   "This shortcut works once Voxt has Accessibility access.": "允许辅助功能后才能用这个快捷键。",
   "Translate turns the selected text, or what you say, into the language you choose. Translate the sample below, or press the shortcut (or Start) and say a sentence.": "翻译把选中的文字或你说的话译成你选的语言。翻译下面的示例，或按快捷键（或点“开始”）说一句话。",

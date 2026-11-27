@@ -66,6 +66,7 @@ add_library(common STATIC
   src/common/dflash_draft.cpp
   src/common/fastconformer.cpp
   src/common/form.cpp
+  src/common/kaldi_fbank.cpp
   src/common/kv_cache.cpp
   src/common/layers.cpp
   src/common/nemo_features.cpp
@@ -73,9 +74,11 @@ add_library(common STATIC
   src/common/qwen3_decoder.cpp
   src/common/realtime_connection.cpp
   src/common/reference_audio.cpp
+  src/common/sanm_encoder.cpp
   src/common/text.cpp
   src/common/tokenizer.cpp
   src/common/transcription.cpp
+  src/common/whisper_encoder.cpp
   src/common/worker.cpp)
 target_include_directories(common PUBLIC src)
 target_link_libraries(common PUBLIC mlx nlohmann_json::nlohmann_json pcre2-8-static
@@ -88,6 +91,10 @@ set_source_files_properties(src/common/npz.cpp src/common/reference_audio.cpp
 # Note (XXXXRT666): campplus keeps the rounding it was built with as part of
 # cosyvoice3.
 set_source_files_properties(src/common/campplus.cpp
+  PROPERTIES COMPILE_OPTIONS -ffp-contract=off)
+# Note (wilsonzheng0327): the Kaldi mel filters and the Hamming window keep the
+# rounding they had in campplus and sensevoice_asr.
+set_source_files_properties(src/common/kaldi_fbank.cpp
   PROPERTIES COMPILE_OPTIONS -ffp-contract=off)
 # Note (Mengwei Liu): energy cuts retain Cohere's and MOSS's separate float
 # operations.
@@ -139,6 +146,13 @@ add_executable(qwen3_asr_server src/qwen3_asr/qwen3_asr_server.cpp src/silero_va
   src/sortformer/sortformer_service.cpp)
 target_link_libraries(qwen3_asr_server PRIVATE qwen3_asr asr_service silero_vad sortformer)
 
+add_executable(qwen3_asr_auto_language_test EXCLUDE_FROM_ALL
+  ci/qwen3_asr_auto_language_test.cpp)
+target_link_libraries(qwen3_asr_auto_language_test PRIVATE qwen3_asr omni_service)
+target_compile_options(qwen3_asr_auto_language_test PRIVATE -Wall -Wextra)
+set_target_properties(qwen3_asr_auto_language_test PROPERTIES
+  BUILD_RPATH "${MLX_LIBRARY_DIRS};@loader_path")
+
 add_executable(silero_vad_probe tools/silero_vad_probe.cpp)
 target_link_libraries(silero_vad_probe PRIVATE silero_vad)
 
@@ -163,6 +177,27 @@ foreach(runtime_file ${MLX_RUNTIME_FILES})
   file(REAL_PATH "${runtime_file}" resolved_file)
   install(FILES "${resolved_file}" DESTINATION bin)
 endforeach()
+
+# Haru: full-duplex spoken dialogue on /v1/realtime (a Qwen3.5 backbone, the
+# VibeVoice codec and a MeanFlow head), and the tool its golden runs.
+add_library(haru STATIC
+  src/haru/haru_config.cpp
+  src/haru/haru_model.cpp
+  src/haru/haru_codec.cpp
+  src/haru/haru_head.cpp
+  src/haru/haru_session.cpp
+  src/haru/haru_audio.cpp
+  src/haru/haru_realtime.cpp)
+target_link_libraries(haru PUBLIC omni_service)
+target_compile_options(haru PRIVATE -Wall -Wextra)
+add_executable(haru_server src/haru/haru_server.cpp)
+target_link_libraries(haru_server PRIVATE haru asr_service)
+add_executable(haru_session_probe tools/haru_session_probe.cpp)
+target_link_libraries(haru_session_probe PRIVATE haru)
+set_target_properties(haru_server haru_session_probe PROPERTIES
+  BUILD_RPATH "${MLX_LIBRARY_DIRS};@loader_path"
+  INSTALL_RPATH "@loader_path")
+install(TARGETS haru_server haru_session_probe RUNTIME DESTINATION bin)
 
 # Note (khazic): Whisper: whisper_server, with qwen3_asr_server's API without realtime, and
 # its parity tool. Both reuse the WAV decoder, form parser and byte-level
@@ -210,7 +245,10 @@ add_executable(moss_transcribe_diarize_server src/moss/moss_transcribe_diarize_s
 target_link_libraries(moss_transcribe_diarize_server PRIVATE moss_asr asr_service)
 add_executable(moss_transcribe tools/moss_transcribe.cpp)
 target_link_libraries(moss_transcribe PRIVATE moss_asr)
-set_target_properties(moss_transcribe_diarize_server moss_transcribe PROPERTIES
+add_executable(moss_model_test EXCLUDE_FROM_ALL tests/moss_model_test.cpp)
+target_link_libraries(moss_model_test PRIVATE moss_asr)
+target_compile_options(moss_model_test PRIVATE -Wall -Wextra)
+set_target_properties(moss_transcribe_diarize_server moss_transcribe moss_model_test PROPERTIES
   BUILD_RPATH "${MLX_LIBRARY_DIRS};@loader_path"
   INSTALL_RPATH "@loader_path")
 install(TARGETS moss_transcribe_diarize_server moss_transcribe RUNTIME DESTINATION bin)
@@ -258,6 +296,36 @@ set_target_properties(sensevoice_server sensevoice_transcribe PROPERTIES
   BUILD_RPATH "${MLX_LIBRARY_DIRS};@loader_path"
   INSTALL_RPATH "@loader_path")
 install(TARGETS sensevoice_server sensevoice_transcribe RUNTIME DESTINATION bin)
+
+# Note (AzizbekMuminoff): ARK-ASR: arkasr_server, with qwen3_asr_server's API
+# without realtime, and its parity tool; the decoder is the shared Qwen3
+# decoder run as Qwen2, and the front end is the shared Whisper log-mel.
+add_library(arkasr STATIC src/arkasr/arkasr_model.cpp src/arkasr/arkasr_transcriber.cpp)
+target_link_libraries(arkasr PUBLIC common)
+target_compile_options(arkasr PRIVATE -Wall -Wextra)
+add_executable(arkasr_server src/arkasr/arkasr_server.cpp)
+target_link_libraries(arkasr_server PRIVATE arkasr asr_service)
+add_executable(arkasr_transcribe tools/arkasr_transcribe.cpp)
+target_link_libraries(arkasr_transcribe PRIVATE arkasr)
+set_target_properties(arkasr_server arkasr_transcribe PROPERTIES
+  BUILD_RPATH "${MLX_LIBRARY_DIRS};@loader_path"
+  INSTALL_RPATH "@loader_path")
+install(TARGETS arkasr_server arkasr_transcribe RUNTIME DESTINATION bin)
+
+# Note (wilsonzheng0327): Fun-ASR-Nano: funasr_server, with qwen3_asr_server's
+# API without realtime, and its parity tool; the encoder is SenseVoice's
+# shared SAN-M encoder and the decoder the shared Qwen3 decoder.
+add_library(funasr_asr STATIC src/funasr/funasr_model.cpp src/funasr/funasr_transcriber.cpp)
+target_link_libraries(funasr_asr PUBLIC common)
+target_compile_options(funasr_asr PRIVATE -Wall -Wextra)
+add_executable(funasr_server src/funasr/funasr_server.cpp)
+target_link_libraries(funasr_server PRIVATE funasr_asr asr_service)
+add_executable(funasr_transcribe tools/funasr_transcribe.cpp)
+target_link_libraries(funasr_transcribe PRIVATE funasr_asr)
+set_target_properties(funasr_server funasr_transcribe PROPERTIES
+  BUILD_RPATH "${MLX_LIBRARY_DIRS};@loader_path"
+  INSTALL_RPATH "@loader_path")
+install(TARGETS funasr_server funasr_transcribe RUNTIME DESTINATION bin)
 
 # AuK's reference front end uses the same SoX resampler revision as python-soxr.
 FetchContent_Declare(
@@ -471,10 +539,32 @@ target_compile_options(audio_chunk_test PRIVATE -Wall -Wextra)
 set_target_properties(audio_chunk_test PROPERTIES
   BUILD_RPATH "${MLX_LIBRARY_DIRS};@loader_path")
 
+add_executable(tokenizer_preference_test EXCLUDE_FROM_ALL tests/tokenizer_preference_test.cpp)
+target_link_libraries(tokenizer_preference_test PRIVATE common)
+target_compile_options(tokenizer_preference_test PRIVATE -Wall -Wextra)
+set_target_properties(tokenizer_preference_test PROPERTIES
+  BUILD_RPATH "${MLX_LIBRARY_DIRS};@loader_path")
+
+# MOSS realtime scheduling (first-preview gate, preview preemption) and its
+# timing lines; no checkpoint, run by mac-ci's native job.
+add_executable(moss_realtime_test EXCLUDE_FROM_ALL tests/moss_realtime_test.cpp)
+target_link_libraries(moss_realtime_test PRIVATE moss_asr)
+target_compile_options(moss_realtime_test PRIVATE -Wall -Wextra)
+set_target_properties(moss_realtime_test PROPERTIES
+  BUILD_RPATH "${MLX_LIBRARY_DIRS};@loader_path")
+
 # Compares NEXTN with plain decoding on a small checkpoint
 # (tests/test_ming3_mtp.py); built only on request and never installed.
 add_executable(ming3_mtp_probe EXCLUDE_FROM_ALL tests/ming3_mtp_probe.cpp)
 target_link_libraries(ming3_mtp_probe PRIVATE ming3_audio)
 target_compile_options(ming3_mtp_probe PRIVATE -Wall -Wextra)
 set_target_properties(ming3_mtp_probe PROPERTIES
+  BUILD_RPATH "${MLX_LIBRARY_DIRS};@loader_path")
+
+# Checks ARK-ASR's request budget, windowing and DFlash draft on small
+# checkpoints (tests/test_arkasr_probe.py); built only on request and never installed.
+add_executable(arkasr_probe EXCLUDE_FROM_ALL tests/arkasr_probe.cpp)
+target_link_libraries(arkasr_probe PRIVATE arkasr)
+target_compile_options(arkasr_probe PRIVATE -Wall -Wextra)
+set_target_properties(arkasr_probe PROPERTIES
   BUILD_RPATH "${MLX_LIBRARY_DIRS};@loader_path")

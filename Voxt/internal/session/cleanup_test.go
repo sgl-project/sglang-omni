@@ -169,6 +169,34 @@ func TestOnlyTheCleanedText(t *testing.T) {
 	}
 }
 
+// TestCleanedTextWithoutCommentary (#4086): a model that ignores the
+// <output> contract thinks out loud without any tags — its deliberation
+// about recognition ambiguities and stutters, then the cleaned sentence.
+// Only the cleaned text is streamed into the card, shown and inserted.
+func TestCleanedTextWithoutCommentary(t *testing.T) {
+	text := "我们周五要交方案初稿。就是虽然说时间有点紧，但我觉得不不需要再等一个 sprint。"
+	cleaned := "我们周五要交方案初稿。就是虽然说时间有点紧，但我觉得不需要再等一个 sprint。"
+	// The reply has the reported shape: deliberation in English with
+	// quoted input fragments, blank lines, then the cleaned text.
+	deliberation := "Let me look at this again. \"初稿\" might be a mishearing - I want to double-check. The speaker could mean \"初稿\" as in a first draft, or it might be something else entirely. I will keep it as written since I cannot decide.\n\nAlso \"不不需要\" reads like a repeated word - \"不，不需要\" should become \"不需要\".\n\n"
+	model := &fakeLLM{text: deliberation + cleaned, chunk: 3, pause: 5 * time.Millisecond}
+	h := newHarness(t, &fakeFile{text: text}, model, nil)
+	h.speak(h.start(), 5)
+	end := h.rec.wait(t)
+	if end.Result != cleaned {
+		t.Errorf("result %q", end.Result)
+	}
+	for _, s := range h.rec.all() {
+		// The first sentence may show while it is typed; once it
+		// completes and shows itself foreign, nothing of the
+		// deliberation streams.
+		if strings.Contains(s.Draft, "again.") || strings.Contains(s.Draft, "mishearing") ||
+			strings.Contains(s.Draft, "repeated word") || strings.Contains(s.Draft, "double-check") {
+			t.Errorf("a draft with the deliberation: %q", s.Draft)
+		}
+	}
+}
+
 // note (luojiaxuan): TestCleanupHasNoExampleTurn (#4228): Transcribe's example
 // is the last part of the system prompt, never an earlier conversation turn
 // that a short dictation could take as the text to rewrite. A model that

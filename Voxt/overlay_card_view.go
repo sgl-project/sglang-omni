@@ -21,12 +21,14 @@ func overlayCard(context *ui.Context, state *sessionOverlayViewState, layoutStat
 	if card.Message != "" {
 		messageHeight = layout.CardMsgGap + layout.CardMsgH
 	}
-	bodyHeight := float32(max(layoutState.Height-layout.CardChrome-sessionCardAttachmentHeight(card)-messageHeight, 0))
+	bodyHeight := float32(max(layoutState.Height-layout.CardChrome-sessionCardSessionsHeight(card)-sessionCardAttachmentHeight(card)-messageHeight, 0))
 	ui.Column(context).Fill().Padding(layout.CardPadTop-layout.Border, layout.CardPadX-layout.Border, layout.CardPadY-layout.Border).DragWindow().Children(func() {
 		ui.Row(context).Height(layout.CardHeadH).Shrink(0).Gap(layout.CardHeadGap).AlignItems(ui.Center).Children(func() {
 			cardHeader(context, card, layoutState.Top, actions, local, animation)
 		})
-		ui.Box(context).Height(1).Shrink(0).Margin(layout.CardRuleTop, 0, 0, 0).Background(ovCardRule)
+		if !sessionRow(context, card.Sessions, layout.CardSessionsH+layout.CardRuleTop+1-sessionChipH, actions, local.Card) {
+			ui.Box(context).Height(1).Shrink(0).Margin(layout.CardRuleTop, 0, 0, 0).Background(ovCardRule)
+		}
 		cardAttachView(context, card, local)
 		cardBody(context, state.SessionID, card, bodyHeight, layoutState.Width, layoutState.CardScrolls, layoutState.Alpha, actions, local, onMeasured)
 		cardSizeButton(context, card, actions)
@@ -83,11 +85,16 @@ func cardAttachView(context *ui.Context, card *sessionCardViewState, local sessi
 	})
 }
 
-func sizeStepButton(context *ui.Context, step int) bool {
-	label, icon := i18n.T("Make the card larger"), icons.MaximizeSquareMinimalistic
+// sizeStepLabel names the card size button's next step.
+func sizeStepLabel(step int) (string, icons.Icon) {
 	if step+1 == len(layout.CardSizes) {
-		label, icon = i18n.T("Make the card smaller"), icons.MinimizeSquareMinimalistic
+		return i18n.T("Make the card smaller"), icons.MinimizeSquareMinimalistic
 	}
+	return i18n.T("Make the card larger"), icons.MaximizeSquareMinimalistic
+}
+
+func sizeStepButton(context *ui.Context, step int) bool {
+	label, icon := sizeStepLabel(step)
 	button := ui.ButtonBase(context).Absolute().Right(layout.CardSizeBtnInset).Bottom(layout.CardSizeBtnInset).
 		Size(layout.CardSizeBtn, layout.CardSizeBtn).Center().Label(label).Tooltip(label)
 	alpha := float32(0.6)
@@ -153,7 +160,7 @@ func cardHeader(context *ui.Context, card *sessionCardViewState, top bool, actio
 	if card.ShowThinking && cardIconButton(context.Key("ov-card-think"), i18n.T("Thinking level"), card.ThinkingLabel, icons.Tuning2, card.CanThink) {
 		actions.toggleThinkMenu()
 	}
-	if !card.Failed {
+	if !card.Failed && !card.Empty {
 		cardInsertCopy(context, card, actions)
 	}
 	if cardIconButton(context.Key("ov-card-close"), i18n.T("Close"), "", icons.Close, true) {
@@ -415,6 +422,10 @@ func cardBubbleView(context *ui.Context, sessionID string, card *sessionCardView
 		quoteWidth, _ := context.MeasureText(0, quote.span())
 		text.wrap = layout.BubbleTextWidth(textWidth, titleWidth, quoteWidth, text.wrap)
 	}
+	if block.User && len(block.Images) > 0 {
+		bubbleImages(context, block.Images, local, gap)
+		gap = bubbleImageGap
+	}
 	row := ui.Row(context).Justify(justify).AlignItems(ui.Start).Gap(bubbleCopyGap).Margin(gap, 0, 0, 0)
 	// The whole row, so the pointer can move from the answer to its Copy.
 	hover := !block.User && !block.Live && row.Hovered()
@@ -452,6 +463,21 @@ func cardBubbleView(context *ui.Context, sessionID string, card *sessionCardView
 		}
 	})
 }
+
+// bubbleImages are the pictures a turn sent, over its bubble, as a chat
+// shows them: the user sees what went before the answer comes.
+func bubbleImages(context *ui.Context, images []int, local sessionOverlayLocal, gap float32) {
+	ui.Row(context.Key("bubble-images")).Justify(ui.End).Gap(bubbleImageGap).Margin(gap, 0, 0, 0).Children(func() {
+		for _, index := range images {
+			if index < len(local.Overlay.cardPreviews) {
+				preview := local.Overlay.cardPreviews[index]
+				ui.Image(context.Key(index), preview.Image).Size(bubbleImageSize, bubbleImageSize).Fit(ui.Cover).Radius(6).Shrink(0).Label(preview.Label)
+			}
+		}
+	})
+}
+
+const bubbleImageSize, bubbleImageGap = 56, 6
 
 // bubbleCopyGap is the room between an answer bubble and its Copy icon.
 const bubbleCopyGap = 6
