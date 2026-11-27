@@ -42,9 +42,9 @@ namespace {
 // preview a second of the last 2.5 s pending, once 1.25 s has arrived.
 constexpr int kWindowSamples = 4 * kSampleRate;
 constexpr int kPreviewSamples = kSampleRate * 5 / 2;
-// 0.75 s, not Swift's 1.25 s: first text 0.55 s sooner, same finals (MacBook
-// Air A/B, 3 runs per arm).
-constexpr int kMinPreviewSamples = kSampleRate * 3 / 4;
+// 0.5 s, not Swift's 1.25 s: first text about 0.2 s sooner than the previous
+// 0.75 s gate, same finals (MacBook Air A/B, 3 runs per arm).
+constexpr int kMinPreviewSamples = kSampleRate * 1 / 2;
 constexpr auto kPreviewInterval = std::chrono::seconds(1);
 // Note (Dayuxiaoshui): Voxt's intermediate budget, scaled by window length; a
 // preview gets half a final window's, since it is decoded again.

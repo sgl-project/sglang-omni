@@ -2,6 +2,18 @@
 
 All notable changes to Voxt. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [Semantic Versioning](https://semver.org/). Each version's section is its release notes: English first, then the same in Chinese under `### 中文`, with `####` headings below it (docs/release.md §2.1).
 
+## [Unreleased]
+
+### Changed
+
+- **The first words appear sooner with MOSS-Transcribe-Diarize**: the first live preview now starts after 0.5 s of speech instead of 0.75 s, so the first text shows up about 0.2 s earlier; the final transcript is unchanged.
+
+### 中文
+
+#### 变更
+
+- **MOSS-Transcribe-Diarize 出字更早**：第一条实时预览在说满 0.5 秒时就开始（原来是 0.75 秒），第一个字约早 0.2 秒出现；最终转录稿不变。
+
 ## [2.1.4] - 2026-11-26
 
 ### Added

@@ -34,7 +34,9 @@ constexpr auto kDecodeTime = 400ms;
 // Stop-to-final on the virtual clock: one 400 ms final plus up to 50 ms of
 // cancel scheduling; waiting the preview out costs 300-580 ms more.
 constexpr auto kStopToFinalLimit = kDecodeTime + 50ms;
-constexpr int kGateSamples = omni_common::kSampleRate * 3 / 4;
+// Must match kMinPreviewSamples in moss_realtime.cpp; the gate-boundary
+// regressions drive appends exactly at this threshold.
+constexpr int kGateSamples = omni_common::kSampleRate * 1 / 2;
 constexpr int kWindowSamples = 4 * omni_common::kSampleRate;
 constexpr std::chrono::steady_clock::time_point kT0{};
 
