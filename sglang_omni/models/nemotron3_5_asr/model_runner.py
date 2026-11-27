@@ -34,6 +34,10 @@ from sglang_omni.models.nemotron3_5_asr.request_builders import (
     Nemotron3_5ASRRequest,
     build_nemotron3_5_asr_result,
 )
+from sglang_omni.models.nemotron3_5_asr.streaming import (
+    Nemotron3_5ASRAudioWindow,
+    Nemotron3_5ASRStreamState,
+)
 from sglang_omni.models.nemotron3_5_asr.text import (
     clean_nemotron_text,
     resolve_nemotron_locale,
@@ -81,6 +85,8 @@ class Nemotron3_5ASRStreamingBatchResult:
 class Nemotron3_5ASRModelRunner:
     """Serialize model inference across threads; callers own request state."""
 
+    stream_state_type: type[Nemotron3_5ASRStreamState] = Nemotron3_5ASRStreamState
+
     def __init__(
         self,
         model_path: str,
@@ -100,21 +106,10 @@ class Nemotron3_5ASRModelRunner:
 
         self.device = torch.device(device)
         self.dtype = resolved_dtype
-        self.processor = Nemotron3_5AsrProcessor.from_pretrained(
-            checkpoint,
-            local_files_only=True,
+        self.processor, model = self.load_model(
+            checkpoint, resolved_dtype, num_lookahead_tokens
         )
-        self.processor.set_num_lookahead_tokens(int(num_lookahead_tokens))
-        config = Nemotron3_5AsrConfig.from_pretrained(
-            checkpoint,
-            local_files_only=True,
-        )
-        self.model = Nemotron3_5AsrForRNNT.from_pretrained(
-            checkpoint,
-            config=config,
-            dtype=resolved_dtype,
-            local_files_only=True,
-        ).to(self.device)
+        self.model = model.to(self.device)
         self.model.eval()
         # note (Li Gang): generate mutates model-owned decoder progress.
         self.model_lock = threading.Lock()
@@ -135,10 +130,31 @@ class Nemotron3_5ASRModelRunner:
         self.enable_encoder_cuda_graph: bool = self.graph_backend is not None
         self.encoder_graph_max_batch_size: int = encoder_graph_max_batch_size
         self.encoder_graph_runner: NemotronStreamingEncoderGraphRunner | None = None
-        self.encoder_pool_layout: EncoderPoolLayout = EncoderPoolLayout.from_model(
-            self.model
-        )
+        self.encoder_pool_layout: EncoderPoolLayout = self.new_encoder_pool_layout()
         self.encoder_state_pool: NemotronEncoderStatePool | None = None
+
+    def load_model(
+        self, checkpoint: str, dtype: torch.dtype, num_lookahead_tokens: int
+    ) -> tuple[Nemotron3_5AsrProcessor, Nemotron3_5AsrForRNNT]:
+        processor = Nemotron3_5AsrProcessor.from_pretrained(
+            checkpoint,
+            local_files_only=True,
+        )
+        processor.set_num_lookahead_tokens(int(num_lookahead_tokens))
+        config = Nemotron3_5AsrConfig.from_pretrained(
+            checkpoint,
+            local_files_only=True,
+        )
+        model = Nemotron3_5AsrForRNNT.from_pretrained(
+            checkpoint,
+            config=config,
+            dtype=dtype,
+            local_files_only=True,
+        )
+        return processor, model
+
+    def new_encoder_pool_layout(self) -> EncoderPoolLayout:
+        return EncoderPoolLayout.from_model(self.model)
 
     def configure_encoder_state_pool(self, capacity_slots: int) -> None:
         assert self.encoder_state_pool is None
@@ -227,6 +243,13 @@ class Nemotron3_5ASRModelRunner:
             prompt_ids=processor_inputs.prompt_ids.to(device=self.device),
         )
 
+    def prepare_stream_window(
+        self, state: Nemotron3_5ASRStreamState, window: Nemotron3_5ASRAudioWindow
+    ) -> Nemotron3_5ASRPreparedChunk:
+        return self.prepare_streaming_chunk(
+            window.waveform, language=state.language, is_first=window.is_first
+        )
+
     def run_streaming_batch(
         self,
         states: Sequence[Nemotron3_5ASRDecodeState],
@@ -267,7 +290,14 @@ class Nemotron3_5ASRModelRunner:
             else:
                 pass
             elapsed_s = time.perf_counter() - started_at_s
+        return self.decode_stream_texts(states, requested_languages, elapsed_s)
 
+    def decode_stream_texts(
+        self,
+        states: Sequence[Nemotron3_5ASRDecodeState],
+        requested_languages: Sequence[str],
+        elapsed_s: float,
+    ) -> Nemotron3_5ASRStreamingBatchResult:
         raw_texts: list[str] = []
         clean_texts: list[str] = []
         languages: list[str | None] = []

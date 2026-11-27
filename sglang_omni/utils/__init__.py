@@ -46,6 +46,10 @@ _EXPORTS: dict[str, tuple[str, str]] = {
         "sglang_omni.utils.hf",
         "try_resolve_arch_from_zonos3_layout",
     ),
+    "try_resolve_arch_from_nemotron_unified_asr_layout": (
+        "sglang_omni.utils.hf",
+        "try_resolve_arch_from_nemotron_unified_asr_layout",
+    ),
     "import_string": ("sglang_omni.utils.imports", "import_string"),
     "get_layer_id": ("sglang_omni.utils.misc", "get_layer_id"),
     "add_prefix": ("sglang_omni.utils.misc", "add_prefix"),

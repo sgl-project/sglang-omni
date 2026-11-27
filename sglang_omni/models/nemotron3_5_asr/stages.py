@@ -8,6 +8,10 @@ import math
 from sglang_omni.models.nemotron3_5_asr.batch_engine import NemotronBatchEngine
 from sglang_omni.models.nemotron3_5_asr.model_runner import Nemotron3_5ASRModelRunner
 from sglang_omni.models.nemotron3_5_asr.session import NemotronSessionScheduler
+from sglang_omni.models.nemotron3_5_asr.unified import (
+    NemotronUnifiedASRModelRunner,
+    is_unified_checkpoint,
+)
 from sglang_omni.utils.device import resolve_device_spec
 
 
@@ -56,7 +60,12 @@ def create_nemotron3_5_asr_executor(
     elif not math.isfinite(max_batch_wait_ms) or max_batch_wait_ms < 0:
         raise ValueError("max_batch_wait_ms must be finite and non-negative")
     else:
-        runner = Nemotron3_5ASRModelRunner(
+        runner_type = (
+            NemotronUnifiedASRModelRunner
+            if is_unified_checkpoint(model_path)
+            else Nemotron3_5ASRModelRunner
+        )
+        runner = runner_type(
             model_path,
             device=resolve_device_spec(device, gpu_id),
             enable_encoder_cuda_graph=enable_encoder_cuda_graph,

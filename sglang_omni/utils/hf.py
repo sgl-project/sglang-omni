@@ -10,7 +10,7 @@ from functools import lru_cache
 from pathlib import Path
 
 import torch.nn as nn
-from huggingface_hub import hf_hub_download
+from huggingface_hub import file_exists, hf_hub_download, try_to_load_from_cache
 from transformers import AutoConfig, PretrainedConfig
 from transformers.initialization import no_init_weights
 from transformers.utils.hub import cached_file
@@ -266,6 +266,37 @@ def try_resolve_arch_from_cosyvoice3_layout(
     except Exception:
         return None
     return _COSYVOICE3_ARCHITECTURE
+
+
+NEMOTRON_UNIFIED_ASR_ARCHIVE = "nemotron-labs-unified-asr-0.6b.nemo"
+
+
+def try_resolve_arch_from_nemotron_unified_asr_layout(
+    model_path: str, revision: str | None = None
+) -> str | None:
+    """Resolve NVIDIA's Nemotron Unified ASR release, which ships only a .nemo.
+
+    The Nemotron 3.5 ASR stage converts the archive when it loads. A cached
+    archive resolves without the Hub, so HF_HUB_OFFLINE serving works.
+    """
+    if os.path.isfile(os.path.join(model_path, NEMOTRON_UNIFIED_ASR_ARCHIVE)):
+        return "Nemotron3_5AsrForRNNT"
+    elif os.path.isdir(model_path):
+        return None
+    else:
+        pass
+    cached = try_to_load_from_cache(
+        model_path, NEMOTRON_UNIFIED_ASR_ARCHIVE, revision=revision
+    )
+    if isinstance(cached, str):
+        return "Nemotron3_5AsrForRNNT"
+    else:
+        pass
+    try:
+        found = file_exists(model_path, NEMOTRON_UNIFIED_ASR_ARCHIVE, revision=revision)
+    except Exception:
+        return None
+    return "Nemotron3_5AsrForRNNT" if found else None
 
 
 def try_resolve_arch_from_personaplex_layout(

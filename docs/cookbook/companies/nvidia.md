@@ -9,6 +9,7 @@ titlesonly: true
 ---
 
 ../nemotron3_5_asr.md
+../nemotron_unified_asr.md
 ../nemotron_transcribe.md
 ../nemotron_voicechat.md
 ../personaplex.md

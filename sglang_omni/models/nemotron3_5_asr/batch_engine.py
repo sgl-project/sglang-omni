@@ -268,7 +268,7 @@ class NemotronBatchEngine:
             language = normalize_nemotron_language(
                 params.get("language"), self.runner.prompt_dictionary
             )
-            state = Nemotron3_5ASRStreamState(
+            state = self.runner.stream_state_type(
                 request_id=identity.id,
                 payload=task.payload,
                 language=language,
@@ -362,11 +362,7 @@ class NemotronBatchEngine:
                     raise RuntimeError("Nemotron token history budget exhausted")
                 else:
                     window = state.pop_ready_window()
-                    prepared = self.runner.prepare_streaming_chunk(
-                        window.waveform,
-                        language=state.language,
-                        is_first=window.is_first,
-                    )
+                    prepared = self.runner.prepare_stream_window(state, window)
                     lanes.append((identity, task, state))
                     chunks.append(prepared)
                     self.ready.move_to_end(identity)
