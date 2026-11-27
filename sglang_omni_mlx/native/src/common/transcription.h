@@ -51,6 +51,13 @@ struct TranscriptionResult {
   int reused_audio_token_count = 0;
   // Prompt tokens a live session had already computed.
   int reused_prompt_token_count = 0;
+  // note (chenye): Supplied guess tokens included in initial target
+  // verification.
+  int verified_guess_token_count = 0;
+  // note (chenye): Prefix of those guesses accepted during initial
+  // verification, including a token that ends decoding by EOS, budget, or loop
+  // detection.
+  int accepted_guess_token_count = 0;
 };
 
 // Realtime preview timing without prompt, transcript or speaker content.

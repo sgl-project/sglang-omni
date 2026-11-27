@@ -34,6 +34,10 @@ public:
   asr_service::Transcription
   Prepare(std::vector<float> samples,
           const asr_service::FormFields &form) const override {
+    // note (XXXXRT666): a request does not wait behind a session's shadow
+    // Final, which is only background work.
+    qwen3_asr::NoteForegroundRequest();
+    CancelShadowFinals();
     TranscriptionOptions options;
     const auto language = asr_service::TextField(form, "language");
     options.language = language.has_value()
@@ -90,13 +94,20 @@ public:
         !omni_common::FormFlag(asr_service::TextField(form, "preview"));
     // note (XXXXRT666): a session holds one prompt's windows, and longer audio
     // is decoded in chunks.
+    // A piece of a live session's recording, from the Final's start to this
+    // sample: the session's Final then starts there.
+    const std::optional<int> piece_end_sample =
+        asr_service::IntegerField(form, "realtime_piece_end");
     const qwen3_asr::FinalReuse final_reuse =
         samples.size() <= qwen3_asr::kMaxChunkSamples
             ? TakeFinalReuse(
                   asr_service::TextField(form, "realtime_session").value_or(""),
-                  options.context, guess_auto_language)
+                  options.context, guess_auto_language,
+                  piece_end_sample.has_value()
+                      ? std::optional<long>(*piece_end_sample)
+                      : std::nullopt)
             : qwen3_asr::FinalReuse();
-    if (final_reuse.reuse != nullptr) {
+    if (final_reuse.reuse != nullptr || final_reuse.piece.has_value()) {
       // note (chenye): auto-language decoding generates a language header
       // before the transcript. Propose both from the session's preview and
       // verify them through the existing guessed-token path. Leave
@@ -106,14 +117,33 @@ public:
         options.guessed_token_ids =
             transcriber_.AutoLanguageGuesses(guess.language, guess.text);
       }
+      // note (XXXXRT666): the session's shadow Final decided the early text on
+      // more audio than the preview did.
+      if (final_reuse.shadow_guess.has_value() &&
+          options.repetition_penalty == 1.0f) {
+        const qwen3_asr::FinalPreviewGuess &shadow = *final_reuse.shadow_guess;
+        options.guessed_token_ids = qwen3_asr::MergedGuesses(
+            options.language.has_value()
+                ? transcriber_.RetainedPrefix(shadow.text, 0).prefix_ids
+                : transcriber_.AutoLanguageGuesses(shadow.language,
+                                                   shadow.text),
+            options.guessed_token_ids);
+      } else {
+      }
       return [this, final_reuse, samples = std::move(samples),
               options = std::move(options)](const std::atomic<bool> &cancel) {
         // note (XXXXRT666): a copy the refreshes keep using shares the
         // buffers, so the decode copies them; one taken for the Final does
         // not.
-        qwen3_asr::RefreshReuse reuse = final_reuse.is_taken
-                                            ? std::move(*final_reuse.reuse)
-                                            : *final_reuse.reuse;
+        qwen3_asr::RefreshReuse reuse;
+        if (!final_reuse.piece.has_value()) {
+          reuse = final_reuse.is_taken ? std::move(*final_reuse.reuse)
+                                       : *final_reuse.reuse;
+        } else if (const auto session = final_reuse.piece->session.lock()) {
+          reuse = session->TakePieceReuse(final_reuse.piece->context,
+                                          final_reuse.piece->end_sample);
+        } else {
+        }
         return transcriber_.Transcribe(samples, options, cancel, &reuse);
       };
     } else if (transcriber_.CanBatch(samples.size(), options)) {
@@ -143,18 +173,28 @@ public:
   }
 
 private:
+  void CancelShadowFinals() const {
+    std::lock_guard<std::mutex> lock(live_sessions_mutex_);
+    for (const auto &[session_id, session] : live_sessions_) {
+      if (const auto live = session.lock()) {
+        live->CancelShadowFinal();
+      } else {
+      }
+    }
+  }
+
   // What the live session of this id holds for a Final with this prompt, null
   // when it is not open.
-  qwen3_asr::FinalReuse
-  TakeFinalReuse(const std::string &session_id,
-                 const std::optional<std::string> &context,
-                 bool guess_auto_language) const {
+  qwen3_asr::FinalReuse TakeFinalReuse(
+      const std::string &session_id, const std::optional<std::string> &context,
+      bool guess_auto_language, std::optional<long> piece_end_sample) const {
     std::lock_guard<std::mutex> lock(live_sessions_mutex_);
     const auto entry = live_sessions_.find(session_id);
     const std::shared_ptr<qwen3_asr::RealtimeSession> session =
         entry != live_sessions_.end() ? entry->second.lock() : nullptr;
     return session != nullptr
-               ? session->TakeFinalReuse(context, guess_auto_language)
+               ? session->TakeFinalReuse(context, guess_auto_language,
+                                         piece_end_sample)
                : qwen3_asr::FinalReuse();
   }
 

@@ -69,6 +69,18 @@ jobs:
           HF_ENDPOINT: https://huggingface.co
           TORCHINDUCTOR_CACHE_DIR: ${{ env.OMNI_CI_HOME }}/.torchinductor
 
+      - name: Test MiniCPM-o Thinker DSpark request seeds
+        if: inputs.omni_ci_model == 'minicpmo'
+        shell: bash
+        run: |
+          source omni/bin/activate
+          export PYTHONPATH=$PWD
+          bash .github/scripts/run_flaky_pytest.sh \
+            pytest tests/test_model/test_minicpm_o_dspark_seed.py -v -s -x
+        env:
+          HF_ENDPOINT: https://huggingface.co
+          TORCHINDUCTOR_CACHE_DIR: ${{ env.OMNI_CI_HOME }}/.torchinductor
+
       - name: Post-stage cleanup
         if: always()
         uses: ./.github/actions/omni-post-stage

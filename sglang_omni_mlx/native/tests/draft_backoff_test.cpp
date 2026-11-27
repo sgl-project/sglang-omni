@@ -127,4 +127,16 @@ int main() {
     assert(next_request.ShouldMeasurePlain());
     assert(!next_request.ObservePlain(1.0));
   }
+  {
+    // An earlier request's plain timing needs no probe while the draft beats
+    // it, and is probed again once the draft falls behind it.
+    DraftBackoff backoff(0.004);
+    backoff.RecordRound(1, 0.100);
+    RecordWindow(backoff, 1, 0.003);
+    RecordWindow(backoff, 1, 0.003);
+    assert(!backoff.ShouldMeasurePlain());
+    RecordWindow(backoff, 1, 0.005);
+    RecordWindow(backoff, 1, 0.005);
+    assert(backoff.ShouldMeasurePlain());
+  }
 }

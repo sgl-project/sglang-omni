@@ -183,7 +183,8 @@ mx::array Qwen3Decoder::Layer(const mx::array &x, int layer,
 mx::array Qwen3Decoder::Forward(const mx::array &embeddings,
                                 std::vector<KVCache> &caches,
                                 const std::vector<int> &capture_layers,
-                                std::vector<mx::array> *captured) const {
+                                std::vector<mx::array> *captured,
+                                const std::atomic<bool> *cancel) const {
   mx::array hidden = embeddings;
   // Note (Yucheng Hu): MLX frees temporaries per buffer, so eval per layer.
   // Note (XXXXRT666): only past kSingleGraphTokens, so a short input such as a
@@ -199,6 +200,12 @@ mx::array Qwen3Decoder::Forward(const mx::array &embeddings,
     if (is_prefill) {
       mx::async_eval(hidden);
       mx::eval(layer_input);
+      // Note (XXXXRT666): a background decode stops within a layer when a
+      // request needs the GPU (a session's shadow Final).
+      if (cancel != nullptr && cancel->load()) {
+        throw GenerationCancelled();
+      } else {
+      }
     } else {
     }
   }

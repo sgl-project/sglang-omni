@@ -21,7 +21,7 @@ var UserAgent = "Voxt"
 
 // send POSTs body (GETs when body is nil) and returns the response when
 // the status is 2xx, else an *Error from the body. The key goes in the
-// Authorization header only.
+// Authorization header only (x-api-key for the Messages API).
 func (o *OpenAI) send(ctx context.Context, url string, body any, model string, timeout time.Duration) (*http.Response, error) {
 	method, b := http.MethodGet, []byte(nil)
 	if body != nil {
@@ -60,7 +60,13 @@ func (o *OpenAI) send(ctx context.Context, url string, body any, model string, t
 				req.Header.Set("ChatGPT-Account-ID", cred.AccountID)
 			}
 		}
-		if token != "" {
+		switch {
+		case o.messagesAPI():
+			req.Header.Set("anthropic-version", anthropicVersion)
+			if token != "" {
+				req.Header.Set("x-api-key", token)
+			}
+		case token != "":
 			req.Header.Set("Authorization", "Bearer "+token)
 		}
 		resp, err := o.client.Do(req)

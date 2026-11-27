@@ -66,6 +66,7 @@ add_library(common STATIC
   src/common/dflash_draft.cpp
   src/common/fastconformer.cpp
   src/common/form.cpp
+  src/common/gpu_clock.cpp
   src/common/kaldi_fbank.cpp
   src/common/kv_cache.cpp
   src/common/layers.cpp

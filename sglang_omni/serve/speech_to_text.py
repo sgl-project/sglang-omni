@@ -66,6 +66,8 @@ class SpeechToTextForm:
     max_new_tokens: int | None
     stream: bool
     return_spec_tokens_details: bool
+    beam_width: int | None
+    beam_search_diversity_rate: float | None
 
 
 async def parse_speech_to_text_form(
@@ -79,6 +81,9 @@ async def parse_speech_to_text_form(
     max_new_tokens: int | None = Form(default=None, ge=1),
     stream: bool = Form(default=False),
     return_spec_tokens_details: bool = Form(default=False),
+    # The upper bound is the endpoints' 400, not a form 422.
+    beam_width: int | None = Form(default=None, ge=1),
+    beam_search_diversity_rate: float | None = Form(default=None, allow_inf_nan=False),
 ) -> SpeechToTextForm:
     return SpeechToTextForm(
         file=file,
@@ -91,6 +96,8 @@ async def parse_speech_to_text_form(
         max_new_tokens=max_new_tokens,
         stream=stream,
         return_spec_tokens_details=return_spec_tokens_details,
+        beam_width=beam_width,
+        beam_search_diversity_rate=beam_search_diversity_rate,
     )
 
 
@@ -157,9 +164,11 @@ def build_speech_to_text_generate_request(
     task: str = "transcribe",
     detect_language: bool = False,
     segment_timestamps: bool = False,
+    beam_width: int | None = None,
+    beam_search_diversity_rate: float | None = None,
 ) -> GenerateRequest:
     """Keep endpoint policy out of model-neutral request construction."""
-    params: dict[str, str | bool] = {"task": task}
+    params: dict[str, str | bool | int | float] = {"task": task}
     if detect_language:
         params["detect_language"] = True
     else:
@@ -175,6 +184,14 @@ def build_speech_to_text_generate_request(
         pass
     if segment_timestamps:
         params["segment_timestamps"] = True
+    else:
+        pass
+    if beam_width is not None:
+        params["beam_width"] = beam_width
+    else:
+        pass
+    if beam_search_diversity_rate is not None:
+        params["beam_search_diversity_rate"] = beam_search_diversity_rate
     else:
         pass
     # note (ratish): 0.0 is the transcription API's own default temperature.
