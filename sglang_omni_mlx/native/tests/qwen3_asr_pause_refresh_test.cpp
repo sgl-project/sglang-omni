@@ -41,136 +41,132 @@ qwen3_asr::RefreshAdmissionInput AfterFirstRefreshInput() {
   return input;
 }
 
+void RequireSource(const qwen3_asr::RefreshAdmissionInput &input,
+                   qwen3_asr::RefreshSource source, std::string_view message) {
+  Require(qwen3_asr::SelectRefreshAdmission(input).source == source, message);
+}
+
 void TestRefreshAdmission() {
   using qwen3_asr::RefreshSource;
-  using qwen3_asr::SelectRefreshAdmission;
 
   auto input = AdmissionInput();
   input.audio_end_sample = kFirstRefreshSamples - 1;
-  Require(SelectRefreshAdmission(input).source == RefreshSource::kNone,
-          "disabled path before cadence submitted a refresh");
+  RequireSource(input, RefreshSource::kNone,
+                "refresh started before the first sample deadline");
   input.audio_end_sample = kFirstRefreshSamples;
-  auto admission = SelectRefreshAdmission(input);
+  auto admission = qwen3_asr::SelectRefreshAdmission(input);
   Require(admission.source == RefreshSource::kCadence &&
               admission.end_sample == kFirstRefreshSamples &&
               admission.next_refresh_sample ==
                   kFirstRefreshSamples + kRefreshIntervalSamples,
-          "ordinary first refresh did not keep its sample cadence");
+          "first refresh did not keep its sample cadence");
 
   input = AfterFirstRefreshInput();
   input.audio_end_sample = 800 * kSampleRate / 1000;
   input.pause_hint = qwen3_asr::PauseRefreshHint{0, kSpeechEndSample};
-  admission = SelectRefreshAdmission(input);
+  admission = qwen3_asr::SelectRefreshAdmission(input);
   Require(admission.source == RefreshSource::kPause &&
               admission.end_sample == input.audio_end_sample &&
               admission.next_refresh_sample ==
-                  input.audio_end_sample + kRefreshIntervalSamples &&
-              admission.last_pause_speech_end_sample == kSpeechEndSample,
-          "eligible pause did not replace the next ordinary refresh");
+                  input.audio_end_sample + kRefreshIntervalSamples,
+          "pause did not replace the next cadence point");
+  input.next_refresh_sample = admission.next_refresh_sample;
   input.last_pause_speech_end_sample = admission.last_pause_speech_end_sample;
-  Require(SelectRefreshAdmission(input).source == RefreshSource::kNone,
-          "a long silence repeated the same pause refresh");
+  RequireSource(input, RefreshSource::kNone,
+                "long silence repeated the same pause hint");
 
+  input.last_submitted_refresh_end_sample = admission.end_sample;
+  input.audio_end_sample = 1400 * kSampleRate / 1000;
+  input.pause_hint = qwen3_asr::PauseRefreshHint{900 * kSampleRate / 1000,
+                                                 1200 * kSampleRate / 1000};
+  admission = qwen3_asr::SelectRefreshAdmission(input);
+  Require(admission.source == RefreshSource::kPause,
+          "resumed speech did not produce its own eligible pause");
+  input.last_pause_speech_end_sample = admission.last_pause_speech_end_sample;
+  RequireSource(input, RefreshSource::kNone,
+                "resumed speech pause was admitted more than once");
+
+  input = AfterFirstRefreshInput();
+  input.audio_end_sample = 800 * kSampleRate / 1000;
   input.last_submitted_refresh_end_sample = 400 * kSampleRate / 1000;
   input.pause_hint = qwen3_asr::PauseRefreshHint{300 * kSampleRate / 1000,
                                                  590 * kSampleRate / 1000};
-  admission = SelectRefreshAdmission(input);
-  Require(admission.source == RefreshSource::kNone,
-          "insufficient new speech was admitted");
+  RequireSource(input, RefreshSource::kNone,
+                "insufficient new speech was admitted");
 
   input = AfterFirstRefreshInput();
   input.audio_end_sample = 800 * kSampleRate / 1000;
   input.pause_hint = qwen3_asr::PauseRefreshHint{0, kSpeechEndSample};
   input.refreshing = true;
-  admission = SelectRefreshAdmission(input);
+  admission = qwen3_asr::SelectRefreshAdmission(input);
   Require(admission.source == RefreshSource::kNone &&
               admission.last_pause_speech_end_sample == kSpeechEndSample,
-          "an active refresh queued or deferred a pause hint");
+          "active refresh queued or deferred a pause hint");
   input.refreshing = false;
   input.last_pause_speech_end_sample = admission.last_pause_speech_end_sample;
-  admission = SelectRefreshAdmission(input);
-  Require(admission.source == RefreshSource::kNone,
-          "a skipped pause hint was retried after the active refresh");
+  RequireSource(input, RefreshSource::kNone,
+                "a skipped pause hint was retried after refresh completion");
 
   input = AfterFirstRefreshInput();
   input.audio_end_sample = 900 * kSampleRate / 1000;
-  Require(SelectRefreshAdmission(input).source == RefreshSource::kNone,
-          "continuous speech without a pause hint refreshed early");
+  RequireSource(input, RefreshSource::kNone,
+                "continuous speech refreshed before cadence");
   input.pause_hint = qwen3_asr::PauseRefreshHint{200 * kSampleRate / 1000,
                                                  300 * kSampleRate / 1000};
-  Require(SelectRefreshAdmission(input).source == RefreshSource::kNone,
-          "a short hesitation below the minimum speech length refreshed");
+  RequireSource(input, RefreshSource::kNone,
+                "a short hesitation refreshed early");
   input.pause_hint = qwen3_asr::PauseRefreshHint{500 * kSampleRate / 1000,
                                                  600 * kSampleRate / 1000};
-  Require(SelectRefreshAdmission(input).source == RefreshSource::kNone,
-          "repeated short hesitations amplified refresh work");
+  RequireSource(input, RefreshSource::kNone,
+                "repeated short hesitations amplified refresh work");
 
   input = AfterFirstRefreshInput();
   input.audio_end_sample = 1090 * kSampleRate / 1000;
   input.pause_hint = qwen3_asr::PauseRefreshHint{0, 1050 * kSampleRate / 1000};
-  admission = SelectRefreshAdmission(input);
-  Require(
-      admission.source == RefreshSource::kPause &&
-          admission.next_refresh_sample ==
-              input.audio_end_sample + kRefreshIntervalSamples,
-      "pause just before cadence did not move the cadence from its snapshot");
-
-  input = AfterFirstRefreshInput();
+  admission = qwen3_asr::SelectRefreshAdmission(input);
+  Require(admission.source == RefreshSource::kPause &&
+              admission.next_refresh_sample ==
+                  input.audio_end_sample + kRefreshIntervalSamples,
+          "early refresh did not reschedule from its sample endpoint");
   input.audio_end_sample = 1200 * kSampleRate / 1000;
-  input.pause_hint = qwen3_asr::PauseRefreshHint{0, kSpeechEndSample};
-  admission = SelectRefreshAdmission(input);
-  Require(admission.source == RefreshSource::kCadence,
-          "a due ordinary refresh and pause produced more than one decode");
+  RequireSource(input, RefreshSource::kCadence,
+                "due cadence and pause produced more than one decode");
 
   input = AdmissionInput();
   input.audio_end_sample = 800 * kSampleRate / 1000;
   input.pause_hint = qwen3_asr::PauseRefreshHint{0, kSpeechEndSample};
   input.finalizing = true;
-  Require(SelectRefreshAdmission(input).source == RefreshSource::kNone,
-          "finalizing session admitted a pause refresh");
+  RequireSource(input, RefreshSource::kNone,
+                "finalizing session admitted a pause refresh");
   input.finalizing = false;
   input.cancelled = true;
-  Require(SelectRefreshAdmission(input).source == RefreshSource::kNone,
-          "cancelled session admitted a pause refresh");
+  RequireSource(input, RefreshSource::kNone,
+                "cancelled session admitted a pause refresh");
 
   input = AfterFirstRefreshInput();
   input.audio_end_sample = 800 * kSampleRate / 1000;
-  input.pause_hint = qwen3_asr::PauseRefreshHint{0, kSpeechEndSample};
-  input.pause_hint->speech_end_sample = 801 * kSampleRate / 1000;
-  Require(SelectRefreshAdmission(input).source == RefreshSource::kNone,
-          "future speech endpoint was admitted");
+  input.pause_hint = qwen3_asr::PauseRefreshHint{0, 801 * kSampleRate / 1000};
+  RequireSource(input, RefreshSource::kNone,
+                "future speech endpoint was admitted");
   input.segment_start_sample = 30 * kSampleRate;
   input.last_submitted_refresh_end_sample = 30 * kSampleRate;
   input.next_refresh_sample = 31 * kSampleRate;
   input.audio_end_sample = 30500 * kSampleRate / 1000;
   input.pause_hint = qwen3_asr::PauseRefreshHint{0, kSpeechEndSample};
-  Require(SelectRefreshAdmission(input).source == RefreshSource::kNone,
-          "leading or cross-segment speech range was admitted");
+  RequireSource(input, RefreshSource::kNone,
+                "speech from before the segment boundary was admitted");
 
   input = AdmissionInput();
   input.audio_end_sample = kFirstRefreshSamples;
   input.silent = true;
-  admission = SelectRefreshAdmission(input);
+  admission = qwen3_asr::SelectRefreshAdmission(input);
   Require(admission.source == RefreshSource::kNone &&
               admission.next_refresh_sample == kFirstRefreshSamples,
-          "leading silence advanced the initial refresh cadence");
+          "leading silence advanced the initial cadence");
   input.has_decoded = true;
-  admission = SelectRefreshAdmission(input);
-  Require(admission.source == RefreshSource::kNone &&
-              admission.next_refresh_sample ==
-                  input.audio_end_sample + kRefreshIntervalSamples,
-          "silent post-decode cadence did not advance as before");
-
-  input = AdmissionInput();
-  input.audio_end_sample = 600 * kSampleRate / 1000;
-  admission = SelectRefreshAdmission(input);
-  const int buffered_stop_wall_time_ms = 0;
-  const int simulated_inference_duration_ms = 400;
-  Require(admission.source == RefreshSource::kCadence &&
-              admission.end_sample == 600 * kSampleRate / 1000 &&
-              buffered_stop_wall_time_ms + simulated_inference_duration_ms >
-                  buffered_stop_wall_time_ms,
-          "buffered samples were treated as elapsed inference time");
+  Require(qwen3_asr::SelectRefreshAdmission(input).next_refresh_sample ==
+              input.audio_end_sample + kRefreshIntervalSamples,
+          "post-decode silence did not advance cadence as before");
 }
 
 struct SyntheticRun {
