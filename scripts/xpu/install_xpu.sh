@@ -61,6 +61,11 @@ try:
     print(f"  torch:       {torch.__version__} (xpu avail: {getattr(torch,'xpu',None) and torch.xpu.is_available()})")
 except Exception as e:
     print(f"  torch:       not importable ({e})")
+try:
+    import sglang
+    print(f"  sglang:      {sglang.__version__}")
+except Exception as e:
+    print(f"  sglang:      not importable ({e})")
 PY
 
 # --no-build-isolation is REQUIRED (see docs/other_platforms/installation_xpu.md):
@@ -94,8 +99,25 @@ if not hasattr(setuptools.build_meta, "build_editable"):
     )
 PY
 NOISO="--no-build-isolation"
-INSTALL_CMD="${PYBIN} -m pip install ${EDITABLE} ${TARGET} ${NOISO} --extra-index-url ${XPU_INDEX}"
-WHISPER_CMD="${PYBIN} -m pip install --no-deps openai-whisper==${WHISPER_VERSION}"
+
+# The documented XPU environment is created with `uv venv`, which ships no pip, so
+# `python -m pip` can be missing even though the environment itself is fine. Fall back
+# to `uv pip`, which takes the same --no-build-isolation / --extra-index-url flags and
+# installs into the interpreter PYBIN names. Fail early with the fix instead of dying
+# inside the install with `No module named pip`.
+if "${PYBIN}" -m pip --version >/dev/null 2>&1; then
+  PIP_INSTALL="${PYBIN} -m pip install"
+elif command -v uv >/dev/null 2>&1; then
+  PIP_INSTALL="uv pip install --python ${PYBIN}"
+else
+  echo "ERROR: neither pip nor uv is available for ${PYBIN}" >&2
+  echo "       install one of them in the environment and re-run, e.g.:" >&2
+  echo "         uv pip install pip        # or: ${PYBIN} -m ensurepip" >&2
+  exit 1
+fi
+
+INSTALL_CMD="${PIP_INSTALL} ${EDITABLE} ${TARGET} ${NOISO} --extra-index-url ${XPU_INDEX}"
+WHISPER_CMD="${PIP_INSTALL} --no-deps openai-whisper==${WHISPER_VERSION}"
 
 # Serialize the whole backup/swap/restore section. Without this the leftover-backup
 # check below is a TOCTOU guard: two runs both pass it, then the second overwrites the
@@ -180,10 +202,10 @@ else
   echo "  [FAIL] import sglang_omni does NOT work outside the repo (editable .pth missing)"
   VERIFY_RC=1
 fi
-if "${PYBIN}" -m pip show sglang-omni >/dev/null 2>&1; then
-  echo "  [ok] pip shows sglang-omni: $(${PYBIN} -m pip show sglang-omni 2>/dev/null | awk '/^Version:/{print $2}')"
+if OMNI_VERSION="$("${PYBIN}" -c "import importlib.metadata as m; print(m.version('sglang-omni'))" 2>/dev/null)"; then
+  echo "  [ok] sglang-omni installed: ${OMNI_VERSION}"
 else
-  echo "  [FAIL] pip does not show sglang-omni"
+  echo "  [FAIL] sglang-omni is not installed in this environment"
   VERIFY_RC=1
 fi
 if command -v sgl-omni >/dev/null 2>&1 || [[ -x "$(dirname "$(${PYBIN} -c 'import sys;print(sys.executable)')")/sgl-omni" ]]; then
@@ -193,9 +215,27 @@ else
 fi
 
 # SGLang is never installed by this script (it cannot be pinned for XPU), so
-# report whether it is importable at all.
-if "${PYBIN}" -c "import sglang" >/dev/null 2>&1; then
-  echo "  [ok] sglang is importable"
+# report whether it is importable at all — and, when it is, whether it is the
+# release this port targets. setuptools-scm derives the version from
+# `git describe` at build time, so the pinned tag reports 0.5.23 while main
+# reports something like 0.5.24.dev2216+gd90d18da5; compare the release triple.
+if SGL_VERSION="$("${PYBIN}" -c "import sglang; print(sglang.__version__)" 2>/dev/null)"; then
+  SGL_TRIPLE="${SGL_VERSION%%[!0-9.]*}"
+  SGL_TRIPLE="${SGL_TRIPLE%.}"
+  if [[ "${SGL_TRIPLE}" == "${SGLANG_VERIFIED_VERSION#v}" ]]; then
+    echo "  [ok] sglang ${SGL_VERSION} is ${SGLANG_VERIFIED_VERSION}"
+  else
+    echo "  [warn] sglang ${SGL_VERSION} is installed, but the XPU port targets ${SGLANG_VERIFIED_VERSION}"
+    echo "         its device-layer tests import APIs a later release moved, so the documented"
+    echo "         verification step fails with:"
+    echo "           pytest tests/unit_test/xpu/test_device_layer.py -v"
+    echo "           ImportError: cannot import name 'get_available_gpu_memory' from 'sglang.srt.utils.common'"
+    echo "         Rebuild SGLang at ${SGLANG_VERIFIED_VERSION}:"
+    echo "           cd /path/to/sglang && git checkout ${SGLANG_VERIFIED_VERSION}"
+    echo "           cd python && cp pyproject_xpu.toml pyproject.toml"
+    echo "           uv pip install -v \".[dev,diffusion]\" --extra-index-url ${XPU_INDEX} \\"
+    echo "             --extra-index-url https://docs.sglang.io/whl/xpu/"
+  fi
 else
   echo "  [warn] sglang is NOT installed — it is intentionally not a dependency here."
   echo "         Build the XPU SGLang from source (${SGLANG_VERIFIED_VERSION}):"

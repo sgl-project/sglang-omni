@@ -8,6 +8,10 @@ For NVIDIA GPUs, use the [CUDA installation](../get_started/installation.md).
 
 - Python 3.11 or 3.12, and an Intel GPU driver (`/dev/dri/renderD*` present).
 - `setuptools` ≥ 77.0.0 in the target environment for manual installation.
+- `pip` or `uv` in the target environment: the helper installs with `python -m pip` and falls
+  back to `uv pip` when pip is absent. An environment created with `uv venv` — which is how the
+  upstream [SGLang XPU guide](https://docs.sglang.io/docs/hardware-platforms/xpu) creates one —
+  ships no pip, so `uv pip install pip` is needed before the manual `pip` commands work.
 - The **PyTorch XPU stack** and an **XPU SGLang build** — reuse an existing working
   `torch+xpu` env if you have one. See [Runtime environment](#runtime-environment-important)
   for the oneAPI caveat.
@@ -103,6 +107,15 @@ which sgl-omni
 # `[eval]` extra (install with `.[eval]`, or `pip install pytest` first)
 pytest tests/unit_test/xpu/test_device_layer.py -v
 ```
+
+> **Note**: `test_sglang_caps_xpu_free_memory_against_the_allocator` imports
+> `get_available_gpu_memory` from `sglang.srt.utils.common`, and fails with
+> `ImportError: cannot import name 'get_available_gpu_memory' from 'sglang.srt.utils.common'`
+> when the installed SGLang is not the pinned release: later versions moved that function to
+> `sglang/srt/utils/device.py`. Check `python -c "import sglang; print(sglang.__version__)"`
+> and rebuild at `v0.5.23` as described in
+> [SGLang (installed separately)](#sglang-installed-separately). `scripts/xpu/install_xpu.sh`
+> reports the same mismatch in its verification step.
 
 <a id="serve"></a>
 
