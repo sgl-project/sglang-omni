@@ -32,6 +32,7 @@ TOCTREE_EXEMPTIONS = {
     "cookbook/qwen3_tts/tuning.md": "Linked from the Qwen3-TTS cookbook; intentionally omitted from sidebar navigation.",
     "design/gpu_radix_hash.md": "Internal design note, outside the user manual.",
     "design/refactor_rfc.md": "Internal refactoring proposal, outside the user manual.",
+    "design/whisper_beam_search.md": "Internal design note, outside the user manual.",
     "developer_reference/mlx.md": "Excluded redirect; the published page is developer_reference/mlx/index.md.",
     "basic_usage/python_router.md": "Retained until the Python router is removed separately.",
 }
