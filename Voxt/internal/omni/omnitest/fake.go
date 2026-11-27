@@ -173,6 +173,8 @@ type Record struct {
 	Host   string            `json:"host,omitempty"`
 	Args   []string          `json:"args,omitempty"`
 	Fields map[string]string `json:"fields,omitempty"`
+	// ContentLength is the Final request's declared body size.
+	ContentLength int64 `json:"content_length,omitempty"`
 	// Samples is the audio a request carried (a live session: all it got).
 	Samples int `json:"samples,omitempty"`
 	// Audio is the Final request's PCM16 (base64), with Opts.RecordAudio.

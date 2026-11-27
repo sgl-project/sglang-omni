@@ -3,6 +3,7 @@ package omni
 import (
 	"cmp"
 	"context"
+	"encoding/base64"
 	"errors"
 	"os"
 	"path/filepath"
@@ -211,7 +212,7 @@ func TestNewASR(t *testing.T) {
 }
 
 func TestFinal(t *testing.T) {
-	f := newFake(t, omnitest.Opts{Text: " 发布计划 "}, nil)
+	f := newFake(t, omnitest.Opts{Text: " 发布计划 ", RecordAudio: true}, nil)
 	a := f.asr(t, ASRAccurate)
 	pcm := tone(10*time.Second, 0.3)
 	res, err := a.Transcribe(context.Background(), asr.FileRequest{Audio: pcm, Format: "pcm", SampleRate: 16000,
@@ -246,6 +247,12 @@ func TestFinal(t *testing.T) {
 	}
 	if finals[0].Samples != 160000 {
 		t.Errorf("%d samples sent", finals[0].Samples)
+	}
+	if finals[0].ContentLength <= int64(len(pcm)) {
+		t.Errorf("multipart Content-Length = %d, want more than %d PCM bytes", finals[0].ContentLength, len(pcm))
+	}
+	if finals[0].Audio != base64.StdEncoding.EncodeToString(pcm) {
+		t.Error("Final uploaded different PCM")
 	}
 	// A WAV file works too; another rate does not.
 	if _, err := a.Transcribe(context.Background(), asr.FileRequest{Audio: asr.WAV(pcm, 16000), Format: "wav"}); err != nil {
