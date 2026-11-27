@@ -78,9 +78,7 @@ async def wait_for_profile_flush(
             published_stage_counts: Counter[str] = Counter()
             for status_path in directory.glob("run_status_*.json"):
                 try:
-                    status_payload = json.loads(
-                        status_path.read_text(encoding="utf-8")
-                    )
+                    status_payload = json.loads(status_path.read_text(encoding="utf-8"))
                 except (OSError, json.JSONDecodeError):
                     continue
                 if isinstance(status_payload, dict):
