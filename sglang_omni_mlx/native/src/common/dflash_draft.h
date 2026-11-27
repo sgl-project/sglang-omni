@@ -72,6 +72,7 @@ public:
   // and the committed tokens but the last extend. guessed_ids, tokens likely
   // to come next, are checked in the prompt's pass and kept while the target
   // agrees. A backoff to plain decoding empties draft_caches.
+  // note (chenye): When set, reports guesses accepted in initial verification.
   DraftStatistics Decode(const Qwen3Decoder &target,
                          const mlx::core::array &embeddings,
                          const std::vector<int> &guessed_ids,
@@ -79,7 +80,8 @@ public:
                          const std::function<bool(int)> &commit,
                          const std::atomic<bool> &cancel, DraftPolicy policy,
                          std::vector<omni_common::KVCache> &caches,
-                         std::vector<omni_common::KVCache> &draft_caches) const;
+                         std::vector<omni_common::KVCache> &draft_caches,
+                         int *accepted_guess_count = nullptr) const;
   // Extends caches the caller keeps, the target's and the draft's over the
   // same positions, by embeddings [1, length, hidden] without decoding.
   void Prefill(const Qwen3Decoder &target, const mlx::core::array &embeddings,
