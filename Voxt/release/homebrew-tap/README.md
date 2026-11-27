@@ -3,11 +3,10 @@
 [Voxt](https://github.com/sgl-project/sglang-omni/tree/main/Voxt) is a voice input, translation and rewriting app for Macs with Apple silicon.
 
 ```sh
-brew tap zhaochenyang20/voxt https://github.com/zhaochenyang20/voxt
-brew install --cask zhaochenyang20/voxt/voxt
+brew tap zhaochenyang20/voxt https://github.com/zhaochenyang20/voxt && brew install --cask zhaochenyang20/voxt/voxt
 ```
 
-The first command is needed because this repository's name has no `homebrew-` prefix.
+`brew tap` comes first because this repository's name has no `homebrew-` prefix. Later `brew upgrade` and `brew update` need nothing more.
 
 Voxt updates itself after it is installed, so `brew upgrade` leaves it alone unless you pass `--greedy`.
 
