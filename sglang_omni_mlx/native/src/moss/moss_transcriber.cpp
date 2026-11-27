@@ -3,10 +3,13 @@
 
 #include <algorithm>
 #include <cctype>
+#include <chrono>
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
+#include <iostream>
 #include <regex>
 
 #include "common/audio.h"
@@ -64,6 +67,10 @@ constexpr float kCutEnergyWindowMilliseconds = 100.0f;
 const char *const kTimestampPattern = R"(\[(\d+(?:[\.,]\d+)?)\])";
 const char *const kSegmentPattern =
     R"(\[(\d+(?:[\.,]\d+)?)\]\[(S\d+)\]([\s\S]*?)\[(\d+(?:[\.,]\d+)?)\])";
+
+double Milliseconds(std::chrono::steady_clock::duration duration) {
+  return std::chrono::duration<double, std::milli>(duration).count();
+}
 
 double TimestampValue(std::string text) {
   std::replace(text.begin(), text.end(), ',', '.');
@@ -464,19 +471,44 @@ MossTranscriber::TranscribeChunk(const std::vector<float> &samples,
                                  const MossOptions &options, int max_new_tokens,
                                  double offset_seconds,
                                  const std::atomic<bool> &cancel) const {
+  const auto frontend_started = std::chrono::steady_clock::now();
   const mx::array embeddings = PromptEmbeddings(samples, options.prompt);
+  const auto frontend_eval_started = std::chrono::steady_clock::now();
+  const double frontend_build_ms =
+      Milliseconds(frontend_eval_started - frontend_started);
+  double frontend_eval_ms = 0.0;
   ChunkOutput output;
   const auto commit = [&](int token_id) {
     return Commit(output, token_id, options, max_new_tokens);
   };
   DraftStatistics draft_statistics;
+  double decoder_prefill_ms = 0.0;
+  double autoregressive_decode_ms = 0.0;
   if (draft_.has_value()) {
+    // Decode queues the prefill and the prediction before it observes the
+    // frontend, so the encoder is never serialized ahead of them. The stage
+    // clocks start here; the prefill span overlaps the frontend span while
+    // the host submits graphs, and the draft's cache construction between
+    // the two clocks is in neither figure.
+    const auto prefill_started = std::chrono::steady_clock::now();
     draft_statistics =
         draft_->Decode(model_.decoder(), embeddings, max_new_tokens,
                        kPrefillStepTokens, commit, cancel);
+    frontend_eval_ms = draft_statistics.frontend_eval_ms +
+                       Milliseconds(prefill_started - frontend_eval_started);
+    decoder_prefill_ms = draft_statistics.prefill_ms;
+    autoregressive_decode_ms = draft_statistics.decode_ms;
   } else {
+    // prefill_started is before the call so the stage covers the submission.
+    // The frontend is observed inside the first iteration, after the
+    // second-token graph is queued, so every graph main schedules is
+    // submitted before the first blocking call. The two spans overlap by
+    // design: the host submits the prefill while the GPU runs the encoder.
+    const auto prefill_started = std::chrono::steady_clock::now();
     PrefilledSequence sequence = Prefill(embeddings, cancel);
+    auto decode_started = prefill_started;
     mx::array next_token = sequence.first_token;
+    bool first = true;
     bool finished = false;
     while (!finished) {
       if (cancel.load()) {
@@ -489,11 +521,59 @@ MossTranscriber::TranscribeChunk(const std::vector<float> &samples,
               model_.decoder().EmbedTokens(mx::reshape(token, {1, 1})),
               sequence.caches)));
       mx::async_eval({next_token});
+      if (first) {
+        // Main queues the second-token graph before its first wait, so the
+        // frontend observation comes after it and only watches a pipeline
+        // that is already running.
+        mx::eval(embeddings);
+        frontend_eval_ms = Milliseconds(std::chrono::steady_clock::now() -
+                                        frontend_eval_started);
+      } else {
+      }
       finished = commit(static_cast<int>(token.item<uint32_t>()));
+      if (first) {
+        // Main's own first wait of the loop: once the first token lands, the
+        // prefill that produced it has run.
+        first = false;
+        decode_started = std::chrono::steady_clock::now();
+        decoder_prefill_ms = Milliseconds(decode_started - prefill_started);
+      } else {
+      }
     }
+    autoregressive_decode_ms =
+        Milliseconds(std::chrono::steady_clock::now() - decode_started);
   }
-  return ChunkResult(output, static_cast<int>(samples.size()), offset_seconds,
-                     draft_statistics);
+  const auto rebuild_started = std::chrono::steady_clock::now();
+  TranscriptionResult result =
+      ChunkResult(output, static_cast<int>(samples.size()), offset_seconds,
+                  draft_statistics);
+  result.frontend_build_ms = frontend_build_ms;
+  result.frontend_eval_ms = frontend_eval_ms;
+  result.decoder_prefill_ms = decoder_prefill_ms;
+  result.autoregressive_decode_ms = autoregressive_decode_ms;
+  result.result_rebuild_ms =
+      Milliseconds(std::chrono::steady_clock::now() - rebuild_started);
+  return result;
+}
+
+nlohmann::ordered_json MossNativeTimingJson(const TranscriptionResult &result,
+                                            int64_t audio_ms,
+                                            int native_chunk_count) {
+  return {{"event", "moss_native_timing"},
+          {"audio_ms", audio_ms},
+          {"native_chunk_count", native_chunk_count},
+          {"native_split_ms", result.native_split_ms},
+          {"frontend_build_ms", result.frontend_build_ms},
+          {"frontend_eval_ms", result.frontend_eval_ms},
+          {"decoder_prefill_ms", result.decoder_prefill_ms},
+          {"autoregressive_decode_ms", result.autoregressive_decode_ms},
+          {"result_rebuild_ms", result.result_rebuild_ms},
+          {"cache_clear_ms", result.cache_clear_ms},
+          {"native_total_ms", result.native_total_ms},
+          {"generated_token_count", result.generated_token_count},
+          {"verify_round_count", result.verify_round_count},
+          {"proposed_draft_token_count", result.proposed_draft_token_count},
+          {"accepted_draft_token_count", result.accepted_draft_token_count}};
 }
 
 TranscriptionResult
@@ -511,11 +591,20 @@ MossTranscriber::Transcribe(const std::vector<float> &samples,
                            *options.window_offset_seconds, cancel);
   } else {
   }
+  const auto native_started = std::chrono::steady_clock::now();
+  const double duration_seconds =
+      static_cast<double>(samples.size()) / kSampleRate;
   const int max_new_tokens = FinalMaxNewTokens(samples.size(), options);
   TranscriptionResult combined;
   combined.finish_reason = FinishReason::kStop;
-  for (const AudioChunk &chunk :
-       SplitAudio(samples, kChunkDurationSeconds, kMinChunkDurationSeconds)) {
+  const auto split_started = std::chrono::steady_clock::now();
+  const std::vector<AudioChunk> chunks =
+      SplitAudio(samples, kChunkDurationSeconds, kMinChunkDurationSeconds);
+  combined.native_split_ms =
+      Milliseconds(std::chrono::steady_clock::now() - split_started);
+  int native_chunk_count = 0;
+  for (const AudioChunk &chunk : chunks) {
+    ++native_chunk_count;
     TranscriptionResult result = TranscribeChunk(
         chunk.samples, options, max_new_tokens, chunk.offset_seconds, cancel);
     const std::string text = StripUnicodeWhitespace(result.text);
@@ -529,13 +618,28 @@ MossTranscriber::Transcribe(const std::vector<float> &samples,
     combined.verify_round_count += result.verify_round_count;
     combined.proposed_draft_token_count += result.proposed_draft_token_count;
     combined.accepted_draft_token_count += result.accepted_draft_token_count;
+    combined.frontend_build_ms += result.frontend_build_ms;
+    combined.frontend_eval_ms += result.frontend_eval_ms;
+    combined.decoder_prefill_ms += result.decoder_prefill_ms;
+    combined.autoregressive_decode_ms += result.autoregressive_decode_ms;
+    combined.result_rebuild_ms += result.result_rebuild_ms;
     // Note (Dayuxiaoshui): one truncated chunk cuts the whole transcript short.
     if (result.finish_reason == FinishReason::kLength) {
       combined.finish_reason = FinishReason::kLength;
     } else {
     }
+    const auto cache_clear_started = std::chrono::steady_clock::now();
     mx::clear_cache();
+    combined.cache_clear_ms +=
+        Milliseconds(std::chrono::steady_clock::now() - cache_clear_started);
   }
+  combined.native_total_ms =
+      Milliseconds(std::chrono::steady_clock::now() - native_started);
+  std::cerr << MossNativeTimingJson(
+                   combined, static_cast<int64_t>(duration_seconds * 1000.0),
+                   native_chunk_count)
+                   .dump()
+            << "\n";
   return combined;
 }
 
@@ -553,14 +657,52 @@ bool MossTranscriber::CanBatch(const std::vector<float> &samples,
 
 void MossTranscriber::TranscribeBatch(const std::vector<BatchRequest> &requests,
                                       const BatchFinished &on_finished) const {
+  BatchSteps steps;
+  steps.build = [this](const std::vector<float> &samples,
+                       const MossOptions &options) {
+    return PromptEmbeddings(samples, options.prompt);
+  };
+  steps.prefill = [this](const mx::array &embeddings,
+                         const std::atomic<bool> &cancel) {
+    return Prefill(embeddings, cancel);
+  };
+  steps.decode = [this](std::vector<PrefilledSequence> &sequences,
+                        const std::function<bool(size_t, int)> &commit) {
+    model_.decoder().DecodeGreedyBatch(sequences, commit);
+  };
+  steps.commit = [this](ChunkOutput &output, int token_id,
+                        const MossOptions &options, int max_new_tokens) {
+    return Commit(output, token_id, options, max_new_tokens);
+  };
+  steps.finish = [this](const ChunkOutput &output, int sample_count,
+                        double offset_seconds) {
+    return ChunkResult(output, sample_count, offset_seconds, {});
+  };
+  RunTranscriptionBatch(requests, steps, on_finished);
+}
+
+void RunTranscriptionBatch(const std::vector<BatchRequest> &requests,
+                           const BatchSteps &steps,
+                           const MossTranscriber::BatchFinished &on_finished) {
   // A request decoded as one chunk: a realtime window as it is, else the
   // final pass's single chunk, padded to the minimum length.
   struct Row {
     size_t request_index;
     std::vector<float> samples;
+    int sample_count;
+    int64_t audio_ms;
     double offset_seconds;
     int max_new_tokens;
-    ChunkOutput output;
+    bool offline;
+    MossTranscriber::ChunkOutput output;
+    double frontend_build_ms;
+    double frontend_eval_ms;
+    double decoder_prefill_ms;
+    double autoregressive_decode_ms;
+    std::chrono::steady_clock::time_point build_finished;
+    std::chrono::steady_clock::time_point prefill_started;
+    bool timed;
+    std::chrono::steady_clock::time_point started;
   };
   std::vector<Row> rows;
   std::vector<PrefilledSequence> sequences;
@@ -574,20 +716,31 @@ void MossTranscriber::TranscribeBatch(const std::vector<BatchRequest> &requests,
       } else {
       }
       const MossOptions &options = *request.options;
-      Row row{i, {}, 0.0, 0, {}};
-      if (options.window_offset_seconds.has_value()) {
-        row.samples = *request.samples;
-        row.offset_seconds = *options.window_offset_seconds;
-        row.max_new_tokens = *options.max_new_tokens;
-      } else {
+      const bool offline = !options.window_offset_seconds.has_value();
+      Row row{};
+      row.request_index = i;
+      row.offline = offline;
+      row.started = std::chrono::steady_clock::now();
+      if (offline) {
         row.samples = PaddedTo(
             *request.samples,
             static_cast<size_t>(kMinChunkDurationSeconds * kSampleRate));
         row.max_new_tokens =
             FinalMaxNewTokens(request.samples->size(), options);
+      } else {
+        row.samples = *request.samples;
+        row.offset_seconds = *options.window_offset_seconds;
+        row.max_new_tokens = *options.max_new_tokens;
       }
-      sequences.push_back(Prefill(PromptEmbeddings(row.samples, options.prompt),
-                                  *request.cancel));
+      row.sample_count = static_cast<int>(row.samples.size());
+      row.audio_ms = static_cast<int64_t>(
+          static_cast<double>(request.samples->size()) / kSampleRate * 1000.0);
+      const auto build_started = std::chrono::steady_clock::now();
+      const mx::array embeddings = steps.build(row.samples, options);
+      row.build_finished = std::chrono::steady_clock::now();
+      row.frontend_build_ms = Milliseconds(row.build_finished - build_started);
+      row.prefill_started = row.build_finished;
+      sequences.push_back(steps.prefill(embeddings, *request.cancel));
       rows.push_back(std::move(row));
     } catch (...) {
       on_finished(i, {std::nullopt, std::current_exception()});
@@ -597,30 +750,80 @@ void MossTranscriber::TranscribeBatch(const std::vector<BatchRequest> &requests,
     return;
   } else {
   }
-  model_.decoder().DecodeGreedyBatch(
-      sequences, [&](size_t index, int token_id) {
-        Row &row = rows[index];
-        const BatchRequest &request = requests[row.request_index];
-        if (request.cancel->load()) {
-          on_finished(
-              row.request_index,
-              {std::nullopt, std::make_exception_ptr(GenerationCancelled())});
-          return true;
-        } else if (!Commit(row.output, token_id, *request.options,
-                           row.max_new_tokens)) {
-          return false;
-        } else {
-        }
-        TranscriptionResult result =
-            ChunkResult(row.output, static_cast<int>(row.samples.size()),
-                        row.offset_seconds, {});
-        if (!request.options->window_offset_seconds.has_value()) {
-          result.text = StripUnicodeWhitespace(result.text);
-        } else {
-        }
-        on_finished(row.request_index, {std::move(result), nullptr});
-        return true;
-      });
+  // The batch's first callback comes right after the single evaluation that
+  // materializes every row's first token, so all rows share its timestamp as
+  // the end of their prefill and frontend spans. Everything a finished row does
+  // after its last token (result rebuild, logging, completion) runs inside
+  // later rows' decode windows; subtracting that shared total keeps it out of
+  // their decode spans too.
+  std::optional<std::chrono::steady_clock::time_point> batch_first_observed;
+  double non_decode_ms = 0.0;
+  double non_decode_baseline = 0.0;
+  steps.decode(sequences, [&](size_t index, int token_id) {
+    Row &row = rows[index];
+    const BatchRequest &request = requests[row.request_index];
+    if (!batch_first_observed.has_value()) {
+      batch_first_observed = std::chrono::steady_clock::now();
+      non_decode_baseline = non_decode_ms;
+    } else {
+    }
+    if (request.cancel->load()) {
+      const auto cancelled_at = std::chrono::steady_clock::now();
+      on_finished(
+          row.request_index,
+          {std::nullopt, std::make_exception_ptr(GenerationCancelled())});
+      non_decode_ms +=
+          Milliseconds(std::chrono::steady_clock::now() - cancelled_at);
+      return true;
+    } else {
+    }
+    if (!row.timed) {
+      // Prefill only queues work; the first blocking evaluation is inside the
+      // shared decode, where the encoder, the prefill and the first token
+      // materialize. End both clocks at the batch's shared callback.
+      row.frontend_eval_ms =
+          Milliseconds(*batch_first_observed - row.build_finished);
+      row.decoder_prefill_ms =
+          Milliseconds(*batch_first_observed - row.prefill_started);
+      row.timed = true;
+    } else {
+    }
+    const bool finished = steps.commit(row.output, token_id, *request.options,
+                                       row.max_new_tokens);
+    if (!finished) {
+      return false;
+    } else {
+    }
+    const auto finished_at = std::chrono::steady_clock::now();
+    row.autoregressive_decode_ms =
+        std::max(0.0, Milliseconds(finished_at - *batch_first_observed) -
+                          (non_decode_ms - non_decode_baseline));
+    const auto rebuild_started = std::chrono::steady_clock::now();
+    TranscriptionResult result =
+        steps.finish(row.output, row.sample_count, row.offset_seconds);
+    if (row.offline) {
+      result.text = StripUnicodeWhitespace(result.text);
+    } else {
+    }
+    result.result_rebuild_ms =
+        Milliseconds(std::chrono::steady_clock::now() - rebuild_started);
+    result.frontend_build_ms = row.frontend_build_ms;
+    // Frontend eval ends at the same shared callback as prefill, so it sits
+    // inside the prefill span by design; the shared decode's wait is in both.
+    result.frontend_eval_ms = row.frontend_eval_ms;
+    result.decoder_prefill_ms = row.decoder_prefill_ms;
+    result.autoregressive_decode_ms = row.autoregressive_decode_ms;
+    result.native_total_ms =
+        Milliseconds(std::chrono::steady_clock::now() - row.started);
+    if (row.offline) {
+      std::cerr << MossNativeTimingJson(result, row.audio_ms, 1).dump() << "\n";
+    } else {
+    }
+    on_finished(row.request_index, {std::move(result), nullptr});
+    non_decode_ms +=
+        Milliseconds(std::chrono::steady_clock::now() - finished_at);
+    return true;
+  });
 }
 
 omni_server::BatchRunner BatchableTranscriptionRunner() {

@@ -40,6 +40,18 @@ struct TranscriptionResult {
   int verify_round_count = 0;
   int proposed_draft_token_count = 0;
   int accepted_draft_token_count = 0;
+  // Timed where waiting keeps main's async pipeline fed; no extra MLX
+  // evaluation is added. The frontend and prefill spans overlap by design:
+  // the host submits the prefill while the GPU runs the encoder. Prefill
+  // includes the first-token forward.
+  double native_split_ms = 0.0;
+  double frontend_build_ms = 0.0;
+  double frontend_eval_ms = 0.0;
+  double decoder_prefill_ms = 0.0;
+  double autoregressive_decode_ms = 0.0;
+  double result_rebuild_ms = 0.0;
+  double cache_clear_ms = 0.0;
+  double native_total_ms = 0.0;
   // Ordered text of the windows of a request cut into several.
   std::vector<std::string> window_texts;
   // Audio tokens a live session had already encoded.

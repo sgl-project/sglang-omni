@@ -258,6 +258,8 @@ DraftStatistics DFlashDraft::Decode(
   if (accepted_guess_count != nullptr) {
     *accepted_guess_count = 0;
   }
+  DraftStatistics statistics;
+  const auto started = std::chrono::steady_clock::now();
   std::vector<mx::array> aux_hidden_states;
   int processed = 0;
   while (prefill_step_tokens > 0 && embeddings.shape(1) - processed > 1) {
@@ -308,6 +310,17 @@ DraftStatistics DFlashDraft::Decode(
             prompt_hidden, {0, prompt_count - 1, 0},
             {1, prompt_count + guessed_count, prompt_hidden.shape(2)})),
         -1);
+    // Queue the whole chain first: the prediction depends on the embeddings,
+    // so this also schedules the frontend, as main's eval(predicted) did.
+    // Only then observe the frontend: the encoder can never be serialized
+    // ahead of the decoder graphs, even for callers that scheduled nothing
+    // before Decode. eval(embeddings) adds no evaluation of its own.
+    mx::async_eval(predicted);
+    mx::eval(embeddings);
+    statistics.frontend_eval_ms =
+        std::chrono::duration<double, std::milli>(
+            std::chrono::steady_clock::now() - started)
+            .count();
     mx::eval(predicted);
     const uint32_t *predicted_ids = predicted.data<uint32_t>();
     int accepted_count = 0;
@@ -328,6 +341,10 @@ DraftStatistics DFlashDraft::Decode(
     committed_token_count = accepted_count;
     anchor_id = static_cast<int>(predicted_ids[accepted_count]);
   }
+  const auto decode_started = std::chrono::steady_clock::now();
+  statistics.prefill_ms =
+      std::chrono::duration<double, std::milli>(decode_started - started)
+          .count();
   if (cancel.load()) {
     throw GenerationCancelled();
   } else {
@@ -338,7 +355,6 @@ DraftStatistics DFlashDraft::Decode(
   } else {
   }
   DraftBackoff backoff;
-  DraftStatistics statistics;
   while (!finished) {
     if (cancel.load()) {
       throw GenerationCancelled();
@@ -477,6 +493,9 @@ DraftStatistics DFlashDraft::Decode(
       }
     }
   }
+  statistics.decode_ms = std::chrono::duration<double, std::milli>(
+                             std::chrono::steady_clock::now() - decode_started)
+                             .count();
   return statistics;
 }
 
