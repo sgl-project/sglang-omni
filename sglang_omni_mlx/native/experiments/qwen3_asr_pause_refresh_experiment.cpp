@@ -26,6 +26,7 @@ struct Trace {
   int audio_ms;
   bool buffered_burst = false;
   int segment_ms = 30000;
+  int stop_delay_ms = 0;
 };
 
 struct Packet {
@@ -36,6 +37,8 @@ struct Packet {
 struct HintEvent {
   qwen3_asr::PauseRefreshHint hint;
   int notification_ms;
+  long speech_epoch;
+  int segment_id;
 };
 
 struct RefreshJob {
@@ -65,6 +68,19 @@ struct Metrics {
   int cadence_total = 0;
   int pause_total = 0;
   int pause_skipped_while_refreshing = 0;
+  int hints_received = 0;
+  int hints_valid = 0;
+  int hints_invalid_or_duplicate = 0;
+  int hints_rejected_busy = 0;
+  int hints_rejected_covered = 0;
+  int hints_rejected_insufficient = 0;
+  int hints_deferred = 0;
+  int deferred_superseded = 0;
+  int deferred_admitted = 0;
+  int deferred_invalidated_resume = 0;
+  int deferred_invalidated_rollover = 0;
+  int deferred_invalidated_final = 0;
+  int hints_superseded_by_cadence = 0;
   int submitted_coverage_at_stop_ms = 0;
   int completed_coverage_at_stop_ms = 0;
   int residual_refresh_ms = 0;
@@ -117,7 +133,8 @@ bool IsSilent(const Trace &trace, long segment_start_sample,
 std::optional<HintEvent> FindPauseHint(const Trace &trace, int packet_wall_ms,
                                        long segment_start_sample,
                                        long audio_end_sample, int pause_ms,
-                                       long last_pause_speech_end_sample) {
+                                       long last_pause_speech_end_sample,
+                                       long speech_epoch, int segment_id) {
   std::optional<HintEvent> latest;
   for (const Speech &speech : trace.speech) {
     const long speech_start_sample = Samples(speech.start_ms);
@@ -136,8 +153,10 @@ std::optional<HintEvent> FindPauseHint(const Trace &trace, int packet_wall_ms,
       }
     }
     if (!detector_speaking) {
-      latest =
-          HintEvent{{speech_start_sample, speech_end_sample}, packet_wall_ms};
+      latest = HintEvent{{speech_start_sample, speech_end_sample},
+                         packet_wall_ms,
+                         speech_epoch,
+                         segment_id};
     } else {
       latest.reset();
     }
@@ -175,10 +194,11 @@ public:
   }
 
   Timeline(const Trace &trace, int packet_ms, int inference_ms, int pause_ms,
-           bool use_original_reference)
+           bool use_original_reference, bool defer_busy_pause = false)
       : trace_(trace), packets_(MakePackets(trace, packet_ms)),
         inference_ms_(inference_ms), pause_ms_(pause_ms),
-        segment_ms_(trace.segment_ms), arm_original_(use_original_reference) {
+        segment_ms_(trace.segment_ms), arm_original_(use_original_reference),
+        defer_busy_pause_(defer_busy_pause) {
     next_refresh_sample_ = kFirstRefresh;
   }
 
@@ -187,15 +207,17 @@ public:
       CompleteThrough(packet.wall_ms);
       audio_end_sample_ = packet.end_sample;
       RolloverIfNeeded();
+      InvalidateResumedHint();
       std::optional<HintEvent> hint;
       if (pause_ms_ > 0) {
         hint = FindPauseHint(trace_, packet.wall_ms, segment_start_sample_,
                              audio_end_sample_, pause_ms_,
-                             last_pause_speech_end_sample_);
+                             last_pause_speech_end_sample_,
+                             SpeechEpochAt(audio_end_sample_), segment_id_);
       }
       TryAdmit(packet.wall_ms, hint);
     }
-    stop_ms_ = packets_.back().wall_ms;
+    stop_ms_ = packets_.back().wall_ms + trace_.stop_delay_ms;
     CompleteThrough(stop_ms_);
     RecordAtStop();
     EnqueueFinal();
@@ -232,19 +254,78 @@ private:
         hint->hint, segment_start_sample_, audio_end_sample_,
         last_pause_speech_end_sample_);
     last_pause_speech_end_sample_ = consumed.last_speech_end_sample;
-    if (consumed.hint.has_value() && active_.has_value()) {
-      ++metrics_.pause_skipped_while_refreshing;
+    ++metrics_.hints_received;
+    if (consumed.hint.has_value()) {
+      ++metrics_.hints_valid;
+    } else {
+      ++metrics_.hints_invalid_or_duplicate;
     }
     return consumed;
   }
 
   void TryAdmit(int wall_ms, const std::optional<HintEvent> &hint) {
     const auto consumed = ConsumeHint(hint);
-    auto input = Input(consumed.hint);
+    std::optional<HintEvent> candidate =
+        consumed.hint.has_value() ? hint : std::nullopt;
+    bool candidate_is_deferred = false;
+    if (active_.has_value() && candidate.has_value()) {
+      const auto state = qwen3_asr::CheckDeferredHintState(
+          candidate->hint, candidate->segment_id, segment_id_,
+          candidate->speech_epoch, SpeechEpochAt(audio_end_sample_),
+          segment_start_sample_, last_submitted_sample_, kMinimumSpeech);
+      if (state == qwen3_asr::DeferredHintState::kCovered) {
+        ++metrics_.hints_rejected_covered;
+        candidate.reset();
+      } else if (state == qwen3_asr::DeferredHintState::kInsufficientSpeech) {
+        ++metrics_.hints_rejected_insufficient;
+        candidate.reset();
+      } else if (state != qwen3_asr::DeferredHintState::kValid) {
+        candidate.reset();
+      } else if (defer_busy_pause_) {
+        if (pending_hint_.has_value()) {
+          ++metrics_.deferred_superseded;
+        }
+        pending_hint_ = candidate;
+        ++metrics_.hints_deferred;
+        candidate.reset();
+      } else {
+        ++metrics_.hints_rejected_busy;
+        ++metrics_.pause_skipped_while_refreshing;
+        candidate.reset();
+      }
+    } else if (!candidate.has_value() && !active_.has_value() &&
+               pending_hint_.has_value()) {
+      const auto state = qwen3_asr::CheckDeferredHintState(
+          pending_hint_->hint, pending_hint_->segment_id, segment_id_,
+          pending_hint_->speech_epoch, SpeechEpochAt(audio_end_sample_),
+          segment_start_sample_, last_submitted_sample_, kMinimumSpeech);
+      if (state == qwen3_asr::DeferredHintState::kCovered) {
+        ++metrics_.hints_rejected_covered;
+        pending_hint_.reset();
+      } else if (state == qwen3_asr::DeferredHintState::kInsufficientSpeech) {
+        ++metrics_.hints_rejected_insufficient;
+        pending_hint_.reset();
+      } else if (state == qwen3_asr::DeferredHintState::kValid) {
+        candidate = pending_hint_;
+        candidate_is_deferred = true;
+      } else {
+        pending_hint_.reset();
+      }
+    }
+    auto input =
+        Input(candidate.has_value()
+                  ? std::optional<qwen3_asr::PauseRefreshHint>(candidate->hint)
+                  : std::nullopt);
+    input.pause_hint_deferred = candidate_is_deferred;
     const auto admission = arm_original_
                                ? OriginalCadenceReference(input)
                                : qwen3_asr::SelectRefreshAdmission(input);
     next_refresh_sample_ = admission.next_refresh_sample;
+    if (candidate_is_deferred &&
+        admission.source == qwen3_asr::RefreshSource::kCadence) {
+      ++metrics_.hints_superseded_by_cadence;
+      pending_hint_.reset();
+    }
     metrics_.transitions.push_back({wall_ms, audio_end_sample_,
                                     segment_start_sample_, next_refresh_sample_,
                                     admission.source, active_.has_value(),
@@ -252,25 +333,31 @@ private:
     if (admission.source == qwen3_asr::RefreshSource::kNone) {
       return;
     }
+    if (admission.source == qwen3_asr::RefreshSource::kDeferredPause) {
+      ++metrics_.deferred_admitted;
+      pending_hint_.reset();
+    }
     last_submitted_sample_ = admission.end_sample;
     ++decode_count_;
-    if (admission.source == qwen3_asr::RefreshSource::kPause) {
-      ++metrics_.pause_total;
-    } else {
+    if (admission.source == qwen3_asr::RefreshSource::kCadence) {
       ++metrics_.cadence_total;
+    } else {
+      ++metrics_.pause_total;
     }
     const int start_ms = final_handoff_ ? final_completion_ms_ : wall_ms;
-    active_ = RefreshJob{admission.source,
-                         admission.end_sample,
-                         wall_ms,
-                         start_ms,
-                         start_ms + inference_ms_,
-                         hint.has_value() ? hint->notification_ms : -1};
+    active_ =
+        RefreshJob{admission.source,
+                   admission.end_sample,
+                   wall_ms,
+                   start_ms,
+                   start_ms + inference_ms_,
+                   candidate.has_value() ? candidate->notification_ms : -1};
     metrics_.refresh_busy_ms += inference_ms_;
     metrics_.submitted.push_back(*active_);
-    if (admission.source == qwen3_asr::RefreshSource::kPause &&
+    if ((admission.source == qwen3_asr::RefreshSource::kPause ||
+         admission.source == qwen3_asr::RefreshSource::kDeferredPause) &&
         metrics_.pause_notification_ms < 0) {
-      metrics_.pause_notification_ms = hint->notification_ms;
+      metrics_.pause_notification_ms = candidate->notification_ms;
       metrics_.pause_admission_ms = wall_ms;
       metrics_.pause_start_ms = start_ms;
       metrics_.pause_completion_ms = start_ms + inference_ms_;
@@ -290,6 +377,24 @@ private:
     TryAdmit(finished.completion_ms, std::nullopt);
   }
 
+  long SpeechEpochAt(long audio_end_sample) const {
+    long epoch = 0;
+    for (const Speech &speech : trace_.speech) {
+      if (Samples(speech.start_ms + kOnsetMilliseconds) <= audio_end_sample) {
+        ++epoch;
+      }
+    }
+    return epoch;
+  }
+
+  void InvalidateResumedHint() {
+    if (pending_hint_.has_value() &&
+        pending_hint_->speech_epoch != SpeechEpochAt(audio_end_sample_)) {
+      ++metrics_.deferred_invalidated_resume;
+      pending_hint_.reset();
+    }
+  }
+
   void RolloverIfNeeded() {
     if (segment_ms_ <= 0 ||
         audio_end_sample_ < segment_start_sample_ + Samples(segment_ms_)) {
@@ -298,6 +403,11 @@ private:
     const long completed_segments =
         (audio_end_sample_ - segment_start_sample_) / Samples(segment_ms_);
     segment_start_sample_ += completed_segments * Samples(segment_ms_);
+    if (pending_hint_.has_value()) {
+      ++metrics_.deferred_invalidated_rollover;
+      pending_hint_.reset();
+    }
+    ++segment_id_;
     next_refresh_sample_ = segment_start_sample_ + kFirstRefresh;
     last_submitted_sample_ = segment_start_sample_;
     last_pause_speech_end_sample_ = segment_start_sample_;
@@ -385,6 +495,10 @@ private:
 
   void EnqueueFinal() {
     final_handoff_ = true;
+    if (pending_hint_.has_value()) {
+      ++metrics_.deferred_invalidated_final;
+      pending_hint_.reset();
+    }
     const bool refresh_active_at_stop = active_.has_value();
     const int final_start_ms =
         refresh_active_at_stop ? active_->completion_ms : stop_ms_;
@@ -419,8 +533,11 @@ private:
   bool finalizing_ = false;
   bool final_handoff_ = false;
   bool arm_original_ = false;
+  bool defer_busy_pause_ = false;
+  int segment_id_ = 0;
   int final_completion_ms_ = 0;
   std::optional<RefreshJob> active_;
+  std::optional<HintEvent> pending_hint_;
   Metrics metrics_;
 };
 
@@ -442,20 +559,32 @@ int main() {
       {"long-trailing-silence", {{0, 600}}, 1800},
       {"buffered-burst", {{0, 600}, {900, 1400}}, 1700, true},
       {"active-pause-stop", {{0, 600}}, 900},
-      {"segment-rollover", {{0, 4500}}, 4500, false, 3000}};
+      {"segment-rollover", {{0, 4500}}, 4500, false, 3000},
+      {"busy-already-covered", {{0, 50}}, 400, true},
+      {"busy-useful-deferred", {{0, 600}}, 900, true, 30000, 800},
+      {"busy-covered-by-cadence", {{0, 600}}, 1400, true, 30000, 400},
+      {"resume-invalidates", {{0, 600}, {900, 1100}}, 1200, true, 30000, 800},
+      {"final-before-deferred", {{0, 600}}, 900, true, 30000, 0},
+      {"multiple-pauses-one-refresh",
+       {{0, 600}, {900, 1200}, {1500, 1800}},
+       2100,
+       true,
+       30000,
+       800}};
 
   std::cout
-      << "policy_header_sha256="
-         "1b01ff194c76ef6317578cd36e2efb3c1e1ec9063c3c568328f9dc936f02a5e7 "
-         "candidate_commit=65ef24596613295a9a6e7829740f2f82c8e7fdfd "
-         "upstream_main_base=d1e437f52878e37fc22749e659a1fc58955d5db5 "
-         "first_refresh_ms=100 cadence_ms=1000 headstart_pause_ms=500\n";
+      << "model=synthetic_scheduling_only first_refresh_ms=100 cadence_ms=1000 "
+         "minimum_new_speech_ms=200 headstart_pause_ms=500\n";
   std::cout
       << "trace packet infer A=B C(cadence,pause,total,net) "
          "D(cadence,pause,total,net) C/D coverage(submitted/completed/target) "
          "residual final_wait skipped_pause worker_busy "
          "C/D_pause_ms(notify/admit/start/done/stop/trigger) "
-         "C/D_readiness(covered/stop/trigger/first_headstart/opportunity)\n";
+         "C/D_readiness(covered/stop/trigger/first_headstart/opportunity) "
+         "E_deferred(received/valid/invalid_or_duplicate/rejected_covered/"
+         "rejected_insufficient/deferred/admitted/superseded_by_cadence/"
+         "resume_invalid/final_invalid/additional_refreshes/coverage_completed/"
+         "target/ready_first_headstart/opportunity/residual/final_wait)\n";
 
   qwen3_asr::RefreshAdmissionInput finalizing_input;
   finalizing_input.audio_end_sample = kFirstRefresh;
@@ -476,10 +605,44 @@ int main() {
         Timeline disabled(trace, packet_ms, inference_ms, 0);
         Timeline pause_200(trace, packet_ms, inference_ms, 200);
         Timeline pause_300(trace, packet_ms, inference_ms, 300);
+        Timeline deferred(trace, packet_ms, inference_ms, 300, false, true);
         const Metrics a = original.Run();
         const Metrics b = disabled.Run();
         const Metrics c = pause_200.Run();
         const Metrics d = pause_300.Run();
+        const Metrics e = deferred.Run();
+        if (trace.name == "busy-already-covered" &&
+            (e.hints_rejected_covered == 0 || e.deferred_admitted != 0)) {
+          std::cerr << "covered busy hint was not rejected\n";
+          return 1;
+        }
+        if (trace.name == "busy-useful-deferred" &&
+            (e.hints_deferred == 0 || e.deferred_admitted != 1)) {
+          std::cerr << "useful busy hint was not admitted exactly once\n";
+          return 1;
+        }
+        if (trace.name == "busy-covered-by-cadence" &&
+            (e.hints_superseded_by_cadence == 0 || e.deferred_admitted != 0)) {
+          std::cerr << "cadence did not supersede the deferred hint\n";
+          return 1;
+        }
+        if (trace.name == "resume-invalidates" &&
+            (e.deferred_admitted != 0 ||
+             (packet_ms == 100 && e.deferred_invalidated_resume == 0))) {
+          std::cerr << "speech resumption left a stale deferred hint\n";
+          return 1;
+        }
+        if (trace.name == "final-before-deferred" &&
+            (e.hints_deferred == 0 || e.deferred_admitted != 0 ||
+             e.deferred_invalidated_final == 0)) {
+          std::cerr << "Final handoff did not fence deferred admission\n";
+          return 1;
+        }
+        if (trace.name == "multiple-pauses-one-refresh" &&
+            (e.hints_deferred == 0 || e.deferred_admitted > 1)) {
+          std::cerr << "multiple pauses exceeded one pending admission\n";
+          return 1;
+        }
         if (a.transitions != b.transitions ||
             a.cadence_at_stop != b.cadence_at_stop ||
             a.cadence_total != b.cadence_total ||
@@ -527,7 +690,20 @@ int main() {
                   << d.preview_ready_before_stop << '/'
                   << d.ready_before_pause_trigger << '/'
                   << d.ready_before_first_headstart << ':'
-                  << d.first_headstart_opportunity_ms << '\n';
+                  << d.first_headstart_opportunity_ms << ' ' << e.hints_received
+                  << '/' << e.hints_valid << '/' << e.hints_invalid_or_duplicate
+                  << '/' << e.hints_rejected_covered << '/'
+                  << e.hints_rejected_insufficient << '/' << e.hints_deferred
+                  << '/' << e.deferred_admitted << '/'
+                  << e.hints_superseded_by_cadence << '/'
+                  << e.deferred_invalidated_resume << '/'
+                  << e.deferred_invalidated_final << '/'
+                  << (e.cadence_total + e.pause_total - b.cadence_total) << '/'
+                  << e.completed_coverage_at_stop_ms << '/' << target_ms << '/'
+                  << e.ready_before_first_headstart << '/'
+                  << e.first_headstart_opportunity_ms << '/'
+                  << e.residual_refresh_ms << '/' << e.final_queue_wait_ms
+                  << '\n';
       }
     }
   }

@@ -18,11 +18,14 @@ type realtimeAppend struct {
 	Type           string            `json:"type"`
 	Audio          string            `json:"audio"`
 	PreviewRefresh *pauseRefreshHint `json:"preview_refresh,omitempty"`
+	SpeechEpoch    *int              `json:"speech_epoch,omitempty"`
 }
 
 type pauseRefreshDetector struct {
 	detector           *vad.Detector
 	closedSegmentCount int
+	observedSegments   int
+	speechEpoch        int
 }
 
 func pauseRefreshExperimentMS() (int, bool) {
@@ -37,6 +40,21 @@ func pauseRefreshExperimentMS() (int, bool) {
 	return pauseMS, false
 }
 
+func pauseRefreshDeferredExperimentEnabled() (bool, bool) {
+	rawValue, isSet := os.LookupEnv("VOXT_EXPERIMENT_ASR_DEFER_BUSY_PAUSE")
+	if !isSet || strings.TrimSpace(rawValue) == "" || strings.TrimSpace(rawValue) == "0" {
+		return false, false
+	}
+	if strings.TrimSpace(rawValue) != "1" {
+		return false, true
+	}
+	return true, false
+}
+
+func pauseRefreshAttributionEnabled() bool {
+	return strings.TrimSpace(os.Getenv("VOXT_EXPERIMENT_ASR_PAUSE_REFRESH_TRACE")) == "1"
+}
+
 func pauseRefreshEnabled(request asr.StreamRequest, spec Spec, pauseDurationMS int) bool {
 	return spec.Kind == kindQwen3ASR && spec.ASR != nil && spec.ASR.Realtime &&
 		!spec.ASR.SpeechOnly && !request.LiveResult &&
@@ -47,6 +65,12 @@ func pauseRefreshEnabled(request asr.StreamRequest, spec Spec, pauseDurationMS i
 func (d *pauseRefreshDetector) observe(pcm []byte) *pauseRefreshHint {
 	detector := d.detector
 	detector.Write(pcm)
+	segments := detector.Segments()
+	if len(segments) > d.observedSegments {
+		d.speechEpoch += len(segments) - d.observedSegments
+		d.observedSegments = len(segments)
+	} else {
+	}
 	closedSegments := detector.ClosedSegmentsSince(d.closedSegmentCount)
 	d.closedSegmentCount += len(closedSegments)
 	if len(closedSegments) == 0 || detector.Speaking() {

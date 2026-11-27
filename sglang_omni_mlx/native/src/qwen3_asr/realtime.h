@@ -4,6 +4,7 @@
 #pragma once
 
 #include <atomic>
+#include <chrono>
 #include <condition_variable>
 #include <cstdint>
 #include <functional>
@@ -96,6 +97,7 @@ public:
                   Sender sender);
 
   bool Handle(const nlohmann::json &message) override;
+  void Close() override;
   // What the session holds for a Final of its recording's start with this
   // prompt: the one prefilled for it, else what its refreshes keep; none is
   // null. With piece_end_sample, the guesses of a piece of the recording from
@@ -136,8 +138,57 @@ private:
     std::shared_ptr<RefreshReuse> reuse;
   };
 
+  struct DeferredPauseHint {
+    PauseRefreshHint hint;
+    int segment_id = 0;
+    long speech_epoch = 0;
+  };
+
+  struct PauseRefreshStats {
+    uint64_t hints_received = 0;
+    uint64_t hints_valid = 0;
+    uint64_t hints_invalid = 0;
+    uint64_t hints_duplicate = 0;
+    uint64_t hints_rejected_busy = 0;
+    uint64_t hints_rejected_covered = 0;
+    uint64_t hints_rejected_insufficient = 0;
+    uint64_t hints_rejected_final = 0;
+    uint64_t hints_rejected_cancelled = 0;
+    uint64_t hints_rejected_finalizing = 0;
+    uint64_t hints_superseded_by_cadence = 0;
+    uint64_t hints_deferred = 0;
+    uint64_t deferred_superseded = 0;
+    uint64_t deferred_invalidated_resume = 0;
+    uint64_t deferred_invalidated_rollover = 0;
+    uint64_t deferred_invalidated_final = 0;
+    uint64_t deferred_invalidated_malformed = 0;
+    uint64_t deferred_invalidated_close = 0;
+    uint64_t deferred_invalidated_disabled = 0;
+    uint64_t deferred_invalidated_covered = 0;
+    uint64_t deferred_invalidated_insufficient = 0;
+    uint64_t speech_metadata_invalid = 0;
+    uint64_t deferred_admitted = 0;
+    uint64_t cadence_submissions = 0;
+    uint64_t immediate_pause_submissions = 0;
+    uint64_t deferred_pause_submissions = 0;
+  };
+
+  struct RefreshTiming {
+    int decode_index = 0;
+    RefreshSource source = RefreshSource::kNone;
+    int segment_id = 0;
+    long end_sample = 0;
+    long speech_end_sample = 0;
+    std::chrono::steady_clock::time_point submitted_at;
+    std::chrono::steady_clock::time_point started_at;
+  };
+
   void Append(const nlohmann::json &audio,
-              const nlohmann::json &preview_refresh);
+              const nlohmann::json &preview_refresh,
+              const nlohmann::json &speech_epoch, bool pause_hint_received);
+  void DiscardDeferredPauseHint(const char *reason);
+  void LogAttribution(nlohmann::ordered_json event) const;
+  void LogAttributionSummary();
   // The Final starts at this sample of the session's audio, not at the first:
   // the windows prefilled for it are dropped, its prompt's head kept.
   void StartFinalAt(const nlohmann::json &start_sample);
@@ -163,7 +214,9 @@ private:
                    const omni_common::TranscriptionResult &result,
                    long end_sample);
   void
-  MaybeStartRefresh(std::optional<PauseRefreshHint> pause_hint = std::nullopt);
+  MaybeStartRefresh(std::optional<PauseRefreshHint> pause_hint = std::nullopt,
+                    bool pause_hint_received = false,
+                    bool pause_hint_malformed = false);
   void MaybeStartFinalPrefill();
   // Note (XXXXRT666): a preview keeps its early text as a prefix decided on
   // less audio, so on recordings over 24 s the Final differs from it after a
@@ -185,6 +238,14 @@ private:
   std::condition_variable refresh_done_;
   std::optional<std::string> language_;
   bool preview_refresh_enabled_ = false;
+  bool preview_refresh_defer_busy_enabled_ = false;
+  std::atomic<bool> preview_refresh_attribution_enabled_ = false;
+  bool pause_refresh_metadata_valid_ = true;
+  std::optional<long> speech_epoch_;
+  std::optional<DeferredPauseHint> deferred_pause_hint_;
+  PauseRefreshStats pause_refresh_stats_;
+  int next_refresh_decode_index_ = 1;
+  bool attribution_summary_logged_ = false;
   bool pause_refresh_final_handoff_ = false;
   // A Final with the context final_context_ is to be prefilled, until one is
   // taken.

@@ -44,8 +44,9 @@ type live struct {
 
 	// language and bias are the Final's: the model's language hint ("":
 	// it detects) and the context bias.
-	language string
-	bias     bias
+	language       string
+	bias           bias
+	deferBusyPause bool
 
 	mu           sync.Mutex
 	audio        []byte    // everything sent, for the Final
@@ -92,8 +93,15 @@ func openLive(ctx context.Context, a *ASR, l *lease, req asr.StreamRequest) (*li
 	bias := a.spec.ASR.contextBias(req.Hints, req.Prompt)
 	pauseRefreshMS, invalidPauseRefresh := pauseRefreshExperimentMS()
 	pauseRefreshEnabledForSession := pauseRefreshEnabled(req, a.spec, pauseRefreshMS)
+	deferBusyPause, invalidDeferredPause := pauseRefreshDeferredExperimentEnabled()
+	deferBusyPauseForSession := pauseRefreshEnabledForSession && deferBusyPause
+	tracePauseRefresh := pauseRefreshAttributionEnabled() && a.spec.Kind == kindQwen3ASR && a.spec.ASR != nil && a.spec.ASR.Realtime
 	if invalidPauseRefresh && a.spec.Kind == kindQwen3ASR && a.spec.ASR != nil && a.spec.ASR.Realtime {
 		a.rt.logf("warning", "%s: ignoring invalid VOXT_EXPERIMENT_ASR_PAUSE_REFRESH_MS; use 200 or 300", a.spec.ID)
+	} else {
+	}
+	if invalidDeferredPause && a.spec.Kind == kindQwen3ASR && a.spec.ASR != nil && a.spec.ASR.Realtime {
+		a.rt.logf("warning", "%s: ignoring invalid VOXT_EXPERIMENT_ASR_DEFER_BUSY_PAUSE; use 1", a.spec.ID)
 	} else {
 	}
 	sessionID := ""
@@ -113,6 +121,14 @@ func openLive(ctx context.Context, a *ASR, l *lease, req asr.StreamRequest) (*li
 		session := map[string]any{"input_audio_format": "pcm16", "turn_detection": nil}
 		if pauseRefreshEnabledForSession {
 			session["preview_refresh_enabled"] = true
+		} else {
+		}
+		if deferBusyPauseForSession {
+			session["preview_refresh_defer_busy_enabled"] = true
+		} else {
+		}
+		if tracePauseRefresh {
+			session["preview_refresh_attribution_enabled"] = true
 		} else {
 		}
 		a.rt.logf("info", "%s: live session with language hint %q", a.spec.ID, hint)
@@ -156,7 +172,8 @@ func openLive(ctx context.Context, a *ASR, l *lease, req asr.StreamRequest) (*li
 	sctx, cancel := context.WithCancel(ctx)
 	s := &live{a: a, l: l, req: req, ctx: sctx, cancel: cancel, conn: conn, session: sessionID,
 		language: hint, bias: bias,
-		out: make(chan []byte, 1024), preview: conn != nil, events: make(chan asr.Event, eventBuffer),
+		deferBusyPause: deferBusyPauseForSession,
+		out:            make(chan []byte, 1024), preview: conn != nil, events: make(chan asr.Event, eventBuffer),
 		completed: make(chan string, 1), readDone: make(chan struct{}), writeDone: make(chan struct{}),
 		idle: make(chan struct{}, 1), lastRecv: time.Now()}
 	if conn != nil {
@@ -276,10 +293,16 @@ func (s *live) Send(pcm []byte) error {
 		return nil
 	}
 	var pauseHint *pauseRefreshHint
+	var speechEpoch *int
 	if s.pauseRefresh != nil {
 		pauseHint = s.pauseRefresh.observe(pcm)
+		if s.deferBusyPause {
+			epoch := s.pauseRefresh.speechEpoch
+			speechEpoch = &epoch
+		} else {
+		}
 	}
-	msg, _ := json.Marshal(realtimeAppend{Type: "input_audio_buffer.append", Audio: base64.StdEncoding.EncodeToString(pcm), PreviewRefresh: pauseHint})
+	msg, _ := json.Marshal(realtimeAppend{Type: "input_audio_buffer.append", Audio: base64.StdEncoding.EncodeToString(pcm), PreviewRefresh: pauseHint, SpeechEpoch: speechEpoch})
 	select {
 	case s.out <- msg:
 		s.queued += len(pcm)

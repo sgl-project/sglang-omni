@@ -61,6 +61,11 @@ void TestAdmissionPolicy() {
   expect_source(RefreshSource::kPause,
                 "qualifying pause did not admit one early refresh");
 
+  input.pause_hint_deferred = true;
+  expect_source(RefreshSource::kDeferredPause,
+                "a valid deferred pause did not retain its source");
+  input.pause_hint_deferred = false;
+
   input.final_handoff = true;
   expect_source(RefreshSource::kNone, "Final handoff admitted a pause refresh");
   input.audio_end_sample = input.next_refresh_sample;
@@ -87,6 +92,35 @@ void TestAdmissionPolicy() {
   input.finalizing = true;
   expect_source(RefreshSource::kNone,
                 "realtime finalization admitted a refresh");
+}
+
+void TestDeferredHintState() {
+  const PauseRefreshHint hint{300 * kSampleRate / 1000,
+                              600 * kSampleRate / 1000};
+  const long minimum_new_speech_samples = kSampleRate / 5;
+  const auto state = [&](int segment_id, long speech_epoch,
+                         long last_submitted_end, long segment_start) {
+    return CheckDeferredHintState(hint, 4, segment_id, 7, speech_epoch,
+                                  segment_start, last_submitted_end,
+                                  minimum_new_speech_samples);
+  };
+  Require(state(4, 7, 100 * kSampleRate / 1000, 0) == DeferredHintState::kValid,
+          "a current deferred hint did not remain eligible");
+  Require(state(5, 7, 100 * kSampleRate / 1000, 0) ==
+              DeferredHintState::kSegmentChanged,
+          "a segment rollover kept a deferred hint alive");
+  Require(state(4, 8, 100 * kSampleRate / 1000, 0) ==
+              DeferredHintState::kSpeechResumed,
+          "a speech epoch change kept a deferred hint alive");
+  Require(state(4, 7, 600 * kSampleRate / 1000, 0) ==
+              DeferredHintState::kCovered,
+          "a covered deferred hint remained eligible");
+  Require(state(4, 7, 500 * kSampleRate / 1000, 0) ==
+              DeferredHintState::kInsufficientSpeech,
+          "insufficient deferred speech remained eligible");
+  Require(state(4, 7, 100 * kSampleRate / 1000, 400 * kSampleRate / 1000) ==
+              DeferredHintState::kInvalid,
+          "a hint before the new segment remained eligible");
 }
 
 } // namespace qwen3_asr::tests

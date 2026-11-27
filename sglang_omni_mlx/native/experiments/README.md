@@ -1,15 +1,54 @@
 # Qwen3-ASR pause refresh simulation
 
-This deterministic event simulation compares pause-triggered refresh admission with cadence-only refresh and records its complete output in [qwen3_asr_pause_refresh_results.txt](qwen3_asr_pause_refresh_results.txt). It uses the native admission policy from `src/qwen3_asr/realtime_refresh.h`, whose SHA-256 is `1b01ff194c76ef6317578cd36e2efb3c1e1ec9063c3c568328f9dc936f02a5e7`, committed in candidate `65ef24596613295a9a6e7829740f2f82c8e7fdfd`. The branch first merged `upstream/main` at `d1e437f52878e37fc22749e659a1fc58955d5db5`, then incorporated the latest base `12ee8c6d49ee2dfe814571596d0b4d7825837bc2` in merge commit `171f903d781cae4b337e4f655642e0ddacf69ce6`.
+This deterministic event simulation compares three policies using the native
+admission helper in `src/qwen3_asr/realtime_refresh.h`:
 
-Reproduce from the repository root with `xcrun clang++ -std=c++20 -O2 -Wall -Wextra -I sglang_omni_mlx/native/src sglang_omni_mlx/native/experiments/qwen3_asr_pause_refresh_experiment.cpp -o /private/tmp/qwen3_asr_pause_refresh_experiment`, then run `/private/tmp/qwen3_asr_pause_refresh_experiment > /private/tmp/qwen3_asr_pause_refresh_results.txt` and compare that file with the checked-in output using `diff -u sglang_omni_mlx/native/experiments/qwen3_asr_pause_refresh_results.txt /private/tmp/qwen3_asr_pause_refresh_results.txt`.
+- **A:** cadence-only reference.
+- **B:** 300 ms pause threshold; busy hints are discarded.
+- **C:** 300 ms pause threshold; one useful busy hint may be deferred.
 
-The reference arm A is an independent cadence-only implementation in the experiment; arm B runs the production candidate policy without pause hints. Arms C and D add pause hints with 200 ms and 300 ms durations. Each of 13 named speech traces runs with 100 ms and 200 ms packet intervals and assumed 200 ms and 400 ms inference durations, producing 52 A/B comparisons. The simulation asserts matching A/B admission transitions, cadence counts, total cadence submissions, and completed audio coverage at stop.
+It also prints the existing 200 ms pause arm. Each trace runs with 100 ms and
+200 ms packet delivery and assumed 200 ms and 400 ms inference durations. The
+targeted traces cover a busy hint that is already covered, a useful deferred
+hint, a cadence refresh that supersedes a deferred hint, VAD-reported speech
+resumption, Final handoff, and multiple pauses while one refresh is active.
 
-The traces are `continuous`, `pause-stop-0`, `pause-stop-100`, `pause-stop-300`, `pause-stop-500`, `pause-stop-800`, `pause-continue`, `repeated-pauses`, `short-pause`, `long-trailing-silence`, `buffered-burst`, `active-pause-stop`, and `segment-rollover`.
+Reproduce from the repository root:
 
-For the modeled HeadStart opportunity, a pause trigger arrives 500 ms after the first speech endpoint; the first opportunity is the earlier of that trigger and recording stop. A preview counts as ready only if it covers the first speech endpoint, was admitted by stop, and completed by that opportunity. The repeated-pause trace adds two refresh jobs for both arms at 100 ms packet intervals; at 200 ms packets, arm C adds two and arm D adds one. The explicit counterexample admits at 800 ms, stops at 900 ms, and completes at 1200 ms, leaving 300 ms of refresh work and no ready preview at stop, trigger, or first HeadStart opportunity.
+```sh
+xcrun clang++ -std=c++20 -O2 -Wall -Wextra \
+  -I sglang_omni_mlx/native/src \
+  sglang_omni_mlx/native/experiments/qwen3_asr_pause_refresh_experiment.cpp \
+  -o /private/tmp/qwen3_asr_pause_refresh_experiment
+/private/tmp/qwen3_asr_pause_refresh_experiment \
+  > /private/tmp/qwen3_asr_pause_refresh_results.txt
+diff -u sglang_omni_mlx/native/experiments/qwen3_asr_pause_refresh_results.txt \
+  /private/tmp/qwen3_asr_pause_refresh_results.txt
+```
 
-This is a synthetic scheduling model, not measured GPU performance: 200 ms and 400 ms are assumed worker durations. It does not model preview readiness during a Final handoff or late-candidate readiness; the reported Final queue wait is synthetic FIFO occupancy only. No model checkpoint is needed.
+The deferred arm reports received and valid hints, covered or insufficient
+rejections, deferrals, admissions, cadence supersession, invalidation on speech
+resumption or Final, additional refresh count, completed snapshot coverage at
+Stop, readiness at the first modeled HeadStart opportunity, residual refresh
+work, and synthetic Final queue delay. The buffer-burst traces keep sample
+coordinates separate from wall time and add a Stop delay where needed to model
+the interval between the final audio append and Final handoff.
 
-The Voxt caller limits the experiment to an explicit `VOXT_EXPERIMENT_ASR_PAUSE_REFRESH_MS=200|300` opt-in for realtime Qwen3-ASR manual-turn sessions at 16 kHz (or unspecified rate), excluding `LiveResult` and speech-only mode; the default remains disabled. Provisional HTTP previews set `preview=true` and omit the live session ID. Current Voxt also sends claimed intermediate ASR pieces with the session ID and `realtime_piece_end`; the native server treats those as piece reuse, not an authoritative Final handoff. The whole-recording Final tail carries the session ID with `preview=false` and no piece end, so it fences new pause admissions. The server sets that fence even when the audio is too long to reuse cached windows. A retry on a replacement server cannot find the old in-memory session, which died with the original server. Ordinary cadence work and already admitted refreshes remain allowed by the fence.
+The simulation models scheduling only. Its inference durations are assumptions;
+coverage means the admitted refresh's audio snapshot endpoint, not transcript
+quality or equality. It does not measure GPU speed, real-model latency, or
+end-to-end TTLC, and its Final queue delay is a simplified FIFO model. The
+checked-in output is not evidence of a performance improvement.
+
+For real runtime experiments, deferred admission remains opt-in and requires
+the 300 ms pause arm:
+
+```sh
+open --env VOXT_EXPERIMENT_ASR_PAUSE_REFRESH_MS=300 \
+  --env VOXT_EXPERIMENT_ASR_DEFER_BUSY_PAUSE=1 build/darwin-arm64/Voxt.app
+```
+
+Add `VOXT_EXPERIMENT_ASR_PAUSE_REFRESH_TRACE=1` to emit content-free,
+session-correlated admission and execution records. The trace is independent of
+the deferred control so the discard arm can also be attributed. No model
+checkpoint is needed for the simulator.

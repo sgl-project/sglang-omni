@@ -34,6 +34,25 @@ func TestPauseRefreshExperimentConfiguration(t *testing.T) {
 	}
 }
 
+func TestPauseRefreshDeferredExperimentConfiguration(t *testing.T) {
+	for _, test := range []struct {
+		value   string
+		want    bool
+		invalid bool
+	}{
+		{"", false, false},
+		{"0", false, false},
+		{"1", true, false},
+		{"true", false, true},
+	} {
+		t.Setenv("VOXT_EXPERIMENT_ASR_DEFER_BUSY_PAUSE", test.value)
+		got, invalid := pauseRefreshDeferredExperimentEnabled()
+		if got != test.want || invalid != test.invalid {
+			t.Errorf("value %q: got (%v, %v), want (%v, %v)", test.value, got, invalid, test.want, test.invalid)
+		}
+	}
+}
+
 func TestPauseRefreshEligibility(t *testing.T) {
 	qwen := Spec{Kind: kindQwen3ASR, ASR: &ASRTuning{Realtime: true}}
 	for _, test := range []struct {
@@ -144,6 +163,34 @@ func TestPauseRefreshConsumesOnlyLatestHintAcrossMultipleTransitions(t *testing.
 	}
 }
 
+func TestPauseRefreshSpeechEpochTracksBufferedAndSplitResumption(t *testing.T) {
+	for _, pauseMS := range []int{200, 300} {
+		t.Run(strconv.Itoa(pauseMS)+"ms", func(t *testing.T) {
+			newDetector := func() *pauseRefreshDetector {
+				return &pauseRefreshDetector{detector: vad.NewDetector(sampleRate, vad.Params{HangoverMS: pauseMS})}
+			}
+			pause := silence(time.Duration(pauseMS) * time.Millisecond)
+			buffered := newDetector()
+			pcm := append(tone(600*time.Millisecond, 0.3), pause...)
+			pcm = append(pcm, tone(300*time.Millisecond, 0.3)...)
+			pcm = append(pcm, pause...)
+			hint := buffered.observe(pcm)
+			if hint == nil || buffered.detector.Speaking() || buffered.speechEpoch != 2 {
+				t.Fatalf("buffered speech-pause-speech state: hint=%+v speaking=%v epoch=%d", hint, buffered.detector.Speaking(), buffered.speechEpoch)
+			}
+
+			split := newDetector()
+			hint = split.observe(append(tone(600*time.Millisecond, 0.3), pause...))
+			if hint == nil || split.speechEpoch != 1 {
+				t.Fatalf("first pause state: hint=%+v epoch=%d", hint, split.speechEpoch)
+			}
+			if split.observe(tone(120*time.Millisecond, 0.3)) != nil || split.speechEpoch != 2 {
+				t.Fatalf("split resumption did not advance the epoch: epoch=%d", split.speechEpoch)
+			}
+		})
+	}
+}
+
 func TestPauseRefreshRejectsStaleHintAfterResumedSpeech(t *testing.T) {
 	for _, pauseMS := range []int{200, 300} {
 		t.Run(strconv.Itoa(pauseMS)+"ms", func(t *testing.T) {
@@ -206,14 +253,63 @@ func TestPauseRefreshHintSharesAppendAndAudioAccounting(t *testing.T) {
 				t.Errorf("wire hint %+v, want speech range [0, %d)", appendMessage.PreviewRefresh, 600*sampleRate/1000)
 			}
 		}
+		if appendMessage.SpeechEpoch != nil {
+			t.Errorf("discard arm emitted deferred speech metadata: %+v", appendMessage)
+		}
 	}
 	if hinted != 1 || appendedSamples != len(pcm)/2 || stream.queued != len(pcm) || len(stream.audio) != len(pcm) {
 		t.Errorf("hints %d, appended samples %d, queued bytes %d, final bytes %d; want 1, %d, %d, %d", hinted, appendedSamples, stream.queued, len(stream.audio), len(pcm)/2, len(pcm), len(pcm))
 	}
 }
 
+func TestPauseRefreshSpeechEpochSharesAppendOrdering(t *testing.T) {
+	pcm := tone(600*time.Millisecond, 0.3)
+	pcm = append(pcm, make([]byte, 300*sampleRate/1000*2)...)
+	stream := &live{
+		preview:        true,
+		deferBusyPause: true,
+		out:            make(chan []byte, 16),
+		pauseRefresh: &pauseRefreshDetector{
+			detector: vad.NewDetector(sampleRate, vad.Params{HangoverMS: 300}),
+		},
+	}
+	for offset := 0; offset < len(pcm); offset += 100 * sampleRate / 1000 * 2 {
+		end := min(offset+100*sampleRate/1000*2, len(pcm))
+		if err := stream.Send(pcm[offset:end]); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var appendedSamples int
+	var epochs []int
+	var hinted int
+	for len(stream.out) > 0 {
+		message := <-stream.out
+		var appendMessage realtimeAppend
+		if err := json.Unmarshal(message, &appendMessage); err != nil {
+			t.Fatal(err)
+		}
+		appendedAudio, err := base64.StdEncoding.DecodeString(appendMessage.Audio)
+		if err != nil {
+			t.Fatal(err)
+		}
+		appendedSamples += len(appendedAudio) / 2
+		if appendMessage.SpeechEpoch == nil {
+			t.Fatal("deferred append omitted the speech epoch")
+		}
+		epochs = append(epochs, *appendMessage.SpeechEpoch)
+		if appendMessage.PreviewRefresh != nil {
+			hinted++
+		}
+	}
+	if appendedSamples != len(pcm)/2 || hinted != 1 || len(epochs) < 2 || epochs[len(epochs)-1] != 1 {
+		t.Errorf("appended samples %d, hints %d, epochs %v", appendedSamples, hinted, epochs)
+	}
+}
+
 func TestPauseRefreshHintIsIgnoredByOlderRealtimeReaders(t *testing.T) {
 	t.Setenv("VOXT_EXPERIMENT_ASR_PAUSE_REFRESH_MS", "200")
+	t.Setenv("VOXT_EXPERIMENT_ASR_DEFER_BUSY_PAUSE", "1")
+	t.Setenv("VOXT_EXPERIMENT_ASR_PAUSE_REFRESH_TRACE", "0")
 	fake := newFake(t, omnitest.Opts{Text: "final"}, nil)
 	stream, err := fake.asr(t, ASRFast).Open(context.Background(), asr.StreamRequest{SampleRate: sampleRate})
 	if err != nil {
@@ -236,10 +332,45 @@ func TestPauseRefreshHintIsIgnoredByOlderRealtimeReaders(t *testing.T) {
 		liveRecords[0].Fields["preview_refresh_enabled"] != "true" {
 		t.Errorf("old reader received %+v, want all %d samples", liveRecords, len(pcm)/2)
 	}
+	if liveRecords[0].Fields["preview_refresh_defer_busy_enabled"] != "true" ||
+		liveRecords[0].Fields["speech_epoch_seen"] != "true" {
+		t.Errorf("old reader did not receive the optional deferred metadata: %+v", liveRecords[0].Fields)
+	}
+}
+
+func TestPauseRefreshAttributionCanProfileCadenceOnlySessions(t *testing.T) {
+	t.Setenv("VOXT_EXPERIMENT_ASR_PAUSE_REFRESH_MS", "0")
+	t.Setenv("VOXT_EXPERIMENT_ASR_DEFER_BUSY_PAUSE", "1")
+	t.Setenv("VOXT_EXPERIMENT_ASR_PAUSE_REFRESH_TRACE", "1")
+	fake := newFake(t, omnitest.Opts{}, nil)
+	stream, err := fake.asr(t, ASRFast).Open(context.Background(), asr.StreamRequest{SampleRate: sampleRate})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := stream.Send(make([]byte, 100*sampleRate/1000*2)); err != nil {
+		t.Fatal(err)
+	}
+	if err := stream.Finish(); err != nil {
+		t.Fatal(err)
+	}
+	drain(t, stream)
+	fake.rt.Close()
+	liveRecords := fake.records("live")
+	if len(liveRecords) != 1 || liveRecords[0].Fields["preview_refresh_attribution_enabled"] != "true" {
+		t.Fatalf("cadence trace opt-in missing: %+v", liveRecords)
+	}
+	if _, exists := liveRecords[0].Fields["preview_refresh_enabled"]; exists {
+		t.Errorf("trace-only arm enabled pause refresh: %+v", liveRecords[0].Fields)
+	}
+	if liveRecords[0].Fields["speech_epoch_seen"] != "" {
+		t.Errorf("trace-only arm sent deferred metadata: %+v", liveRecords[0].Fields)
+	}
 }
 
 func TestPauseRefreshSessionOptInIsOmittedWhenDisabled(t *testing.T) {
 	t.Setenv("VOXT_EXPERIMENT_ASR_PAUSE_REFRESH_MS", "0")
+	t.Setenv("VOXT_EXPERIMENT_ASR_DEFER_BUSY_PAUSE", "1")
+	t.Setenv("VOXT_EXPERIMENT_ASR_PAUSE_REFRESH_TRACE", "0")
 	fake := newFake(t, omnitest.Opts{}, nil)
 	stream, err := fake.asr(t, ASRFast).Open(context.Background(), asr.StreamRequest{SampleRate: sampleRate})
 	if err != nil {
@@ -256,5 +387,8 @@ func TestPauseRefreshSessionOptInIsOmittedWhenDisabled(t *testing.T) {
 	}
 	if _, exists := liveRecords[0].Fields["preview_refresh_enabled"]; exists {
 		t.Errorf("disabled session sent pause refresh opt-in: %+v", liveRecords[0].Fields)
+	}
+	if _, exists := liveRecords[0].Fields["preview_refresh_defer_busy_enabled"]; exists {
+		t.Errorf("disabled session sent deferred opt-in: %+v", liveRecords[0].Fields)
 	}
 }
