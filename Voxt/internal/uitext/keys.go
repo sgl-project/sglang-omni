@@ -229,5 +229,11 @@ func FeatureTitleFor(translator *i18n.Translator, feature string) string {
 	case hotkey.Meeting:
 		return translator.T("Meetings")
 	}
+	if feature == hotkey.SessionNext {
+		return translator.T("Next session")
+	}
+	if slot, ok := hotkey.SessionSlot(feature); ok {
+		return translator.T("Go to session %d", slot+1)
+	}
 	return translator.T("Transcribe")
 }

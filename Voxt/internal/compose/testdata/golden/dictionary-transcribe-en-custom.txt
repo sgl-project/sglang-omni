@@ -1,16 +1,17 @@
 # profile: custom:cleanup+dictionary+scene+glossary
-# layers: custom cleanup dictionary scene glossary example
+# layers: custom cleanup dictionary scene glossary example custom-cleanup
 
 My own prompt for English.
 
 Basic cleanup:
 - Keep what the speaker meant, in their words: do not translate, summarize, expand, explain or change the style.
-- Remove fillers and hesitations that carry no meaning ("um", "uh", "you know", false starts, stutters).
-- Self-corrections: when the speaker cancels or replaces something ("Friday, no, Monday"), keep only the final version. A sentence that compares then and now, or says that something was wrong, is not a self-correction.
+- Remove fillers, hesitations and thinking aloud ("um", "uh", "er", "hmm", "you know", "I mean", "like", "so", "oh", "well", "okay", "let me think"), false starts and stutters. Keep such a word only where it carries meaning in the sentence ("I like it", "so that it works").
+- Say repeated words or phrases once, even when the repetition sounds like emphasis ("the report, the report is ready" → "the report is ready").
+- Self-corrections: when the speaker cancels or replaces something ("Friday, no, Monday", "use Python, no wait, Rust"), keep only the final version, and delete the cancelled words together with the correction cue ("no", "sorry", "I mean", "wait", "actually"). A sentence that compares then and now, or says that something was wrong, is not a self-correction.
 - When the speaker explains how a word is spelled or written ("Smith, S-M-I-T-H", "Catherine with a C, not a K"), use the explanation to pick the right spelling or characters, then remove the explanation.
 - Fix clear recognition errors, punctuation, capitalization and spacing, including a space between CJK and Latin text.
 - Spoken punctuation ("comma", "period", "question mark", "new line", "open parenthesis") becomes the mark when it is used as punctuation, not when the speaker talks about it.
-- Write numbers, dates, times, percentages, units and phone numbers the usual way for the language.
+- Write numbers in digits: counts, money, dates, months, times, percentages, units and phone numbers ("twelve files" → "12 files", "five hundred milliseconds" → "500ms", "nine forty" → "9:40").
 - Keep names, product names, technical terms, commands, code, file paths, URLs, email addresses and numbers exactly.
 - Write in the language spoken: if the user speaks Chinese, output Chinese; if English, English; keep a mix as spoken. Never translate, never unify the languages.
 
@@ -37,6 +38,9 @@ You answer:
 <output>
 Can you send the weekly report to Anna before 5? I really need it before 5.
 </output>
+
+Custom rules and basic cleanup:
+- The custom rules above take precedence over basic cleanup when they request translation or reformatting.
 
 ---- user ----
 <input>

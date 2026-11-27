@@ -63,7 +63,10 @@ from benchmarks.benchmarker.utils import (
     save_json_results,
     wait_for_service,
 )
-from benchmarks.eval.asr_profiling import run_profiled_pass
+from benchmarks.eval.asr_profiling import (
+    event_buffer_capacity_for_samples,
+    run_profiled_pass,
+)
 from benchmarks.metrics._format import SPEED_LABEL_WIDTH, SPEED_LINE_WIDTH
 from benchmarks.metrics.performance import compute_speed_metrics
 from benchmarks.tasks.transcribe_diarize import (
@@ -740,6 +743,7 @@ async def _run_profiled_pass(
         run_pass=run_pass,
         log_prefix=f"[conc={args.concurrency}]",
         error_stream=sys.stderr,
+        event_buffer_capacity=event_buffer_capacity_for_samples(len(samples)),
     )
 
 

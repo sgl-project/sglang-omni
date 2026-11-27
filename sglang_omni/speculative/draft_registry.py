@@ -59,6 +59,16 @@ DRAFT_REGISTRY: tuple[PinnedDraft, ...] = (
         draft_model_path="wirybeaver/Ming-3.0-asr-tiny-dspark",
         draft_model_revision="3c4d61f6b0e09e91db3480c73b9227e6e2af451d",
         license="mit",
+        is_default_on=True,
+    ),
+    PinnedDraft(
+        model_path="Qwen/Qwen3-ASR-0.6B",
+        stage="asr",
+        algorithm="DFLASH",
+        draft_model_path="wilsonzheng0327/Qwen3-ASR-0.6B-dflash",
+        draft_model_revision="fbf0ce97e3b76d8cd9f3da1791a8872c3d4c3a45",
+        engine_settings={"speculative_num_draft_tokens": 8},
+        license="apache-2.0",
     ),
     PinnedDraft(
         model_path="Qwen/Qwen3-ASR-1.7B",
@@ -180,5 +190,13 @@ DRAFT_REGISTRY: tuple[PinnedDraft, ...] = (
         draft_model_revision="0286123b6ce56a691b37fba0220d1e979f08ffff",
         engine_settings={"speculative_num_draft_tokens": 16},
         license="mit",
+    ),
+    PinnedDraft(
+        model_path="nvidia/NVIDIA-Nemotron-3.5-Transcribe-30B-A4B",
+        stage="asr",
+        algorithm="NEXTN",
+        draft_model_path="nvidia/NVIDIA-Nemotron-3.5-Transcribe-30B-A4B",
+        draft_model_revision="c17667641642c4265ff2b7037dd101b7d4567634",
+        license="openmdw-1.1",
     ),
 )

@@ -4,33 +4,66 @@ package main
 // loader and the recording's clock.
 
 import (
+	"time"
+
 	"github.com/egoist/mygo/ui"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/overlay/layout"
 )
 
+// waveDraw is what a waveform's drawing paints from: the levels' bars
+// (layout.WaveBars), or the gliding ones at a time (glide, layout.WavePlay),
+// and the phase the view was built at, and when.
+type waveDraw struct {
+	still layout.Wave
+	glide func(time.Time) layout.Wave
+	phase float64
+	built time.Time
+}
+
+func newWaveDraw(c *ui.Context, levels []float64, glide func(time.Time) layout.Wave, phase float64) waveDraw {
+	return waveDraw{still: layout.WaveBars(levels), glide: glide, phase: phase, built: c.Now()}
+}
+
+// at are the bars and phase of the frame p paints. Gliding, they are the
+// bars glide gives at its time and the phase moved on as far, and it asks
+// for the next refresh's frame, which paints the drawing again without
+// building the view: the bars move at the display's rate while the view
+// builds no more often than without them (#4574 review).
+func (w waveDraw) at(p *ui.Painter) (layout.Wave, float64) {
+	if w.glide == nil {
+		return w.still, w.phase
+	}
+	now := p.Now()
+	p.AnimationFrame()
+	return w.glide(now), w.phase + now.Sub(w.built).Seconds()
+}
+
 // waveform draws the input levels as 16 rounded bars, newest on the
 // right, in the waveform's slot (layout.WaveSlotW, layout.RowH), centred (Voxt's):
-// smoothed (layout.WaveBars), and, where it is quiet, breathing a little about
-// their least height while look moves. Dim until the first audio.
+// smoothed (layout.WaveBars, or gliding: waveDraw), and, where it is quiet,
+// breathing a little about their least height while look moves. Dim until
+// the first audio.
 func waveform(c *ui.Context, levels []float64, heard bool, look pillLook) {
-	bars := layout.WaveBars(levels)
+	wave := newWaveDraw(c, levels, look.wave, look.phase)
+	// Voxt's fill: white, 98 % at the top to 80 % at the bottom.
+	fill := ui.LinearGradient{From: ui.RGBA(255, 255, 255, 0.98), To: ui.RGBA(255, 255, 255, 0.8), Angle: 180}
+	if !heard {
+		fill.From, fill.To = ui.RGBA(255, 255, 255, 0.34), ui.RGBA(255, 255, 255, 0.28)
+	}
 	ui.Row(c.Key("ov-wave")).Width(layout.WaveSlotW).Height(layout.RowH).Shrink(0).Center().Children(func() {
-		ui.Row(c).Width(layout.WaveW).Height(layout.RowH).Shrink(0).Gap(layout.WaveBarGap).AlignItems(ui.Center).Label(i18n.T("Input level")).Children(func() {
+		ui.Box(c).Width(layout.WaveW).Height(layout.RowH).Shrink(0).Label(i18n.T("Input level")).Draw(func(p *ui.Painter, r ui.Rect) {
+			bars, phase := wave.at(p)
 			for i, v := range bars {
 				h := layout.WaveBarMinH + (layout.WaveBarMaxH-layout.WaveBarMinH)*float32(v)
 				if look.motion {
-					h += float32(layout.WaveIdle(i, v, look.phase))
+					h += float32(layout.WaveIdle(i, v, phase))
 				}
-				// Voxt's fill: white, 98 % at the top to 80 % at the bottom.
-				top, bottom := float32(0.98), float32(0.8)
-				if !heard {
-					top, bottom = 0.34, 0.28
-				}
-				bar := ui.Box(c).Width(layout.WaveBarW).Height(h).Radius(layout.WaveBarR).Gradient(ui.RGBA(255, 255, 255, top), ui.RGBA(255, 255, 255, bottom), 180).Shrink(0)
+				bar := ui.Rect{X: r.X + float32(i)*(layout.WaveBarW+layout.WaveBarGap), Y: r.Y + (r.H-h)/2, W: layout.WaveBarW, H: h}
 				if g := layout.WaveGlow(v); g > 0 && heard {
-					bar.Shadow(0, 0, 3, 0, ui.RGBA(255, 255, 255, float32(g)))
+					p.Shadow(bar, layout.WaveBarR, 0, 0, 3, 0, ui.RGBA(255, 255, 255, float32(g)))
 				}
+				p.FillGradient(bar, fill, layout.WaveBarR)
 			}
 		})
 	})

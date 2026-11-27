@@ -51,7 +51,7 @@ from sglang_omni.utils.gpu_compat import (
     apply_gpu_compat_env_defaults,
     get_gpu_compat_env_defaults,
 )
-from sglang_omni.utils.gpu_memory import gpu_startup_lock
+from sglang_omni.utils.gpu_memory import StartupLockWaitCallback, gpu_startup_lock
 from sglang_omni.utils.imports import import_string
 from sglang_omni.utils.ipc_weights import prepare_weight_share_process_compat
 from sglang_omni.utils.logging import configure_dependency_loggers
@@ -850,6 +850,10 @@ def run_process(
     def on_compile_end(_args: CallbackArgs) -> None:
         report_startup_progress(spec)
 
+    # note (Yuanfan Chen): a process queued on its GPU's startup lock is not stalled, and the process holding the lock still answers to its own deadline.
+    def on_startup_lock_wait() -> None:
+        report_startup_progress(spec)
+
     callback_handler.register_end_callback(on_compile_end)
 
     async def _start_and_run() -> None:
@@ -896,6 +900,7 @@ def run_process(
                         if spec.failure_event is not None
                         else None
                     ),
+                    startup_lock_wait_callback=on_startup_lock_wait,
                 )
             )
             report_startup_progress(spec)
@@ -1028,6 +1033,7 @@ def construct_stage(
     log: logging.Logger,
     local_dispatcher: LocalStageDispatcher | None = None,
     process_failure_callback: ProcessFailureCallback | None = None,
+    startup_lock_wait_callback: StartupLockWaitCallback | None = None,
 ) -> Stage:
     gpu_id = spec.gpu_id
     # A stage whose native engine owns subprocesses never computes in this
@@ -1048,7 +1054,7 @@ def construct_stage(
         spec.tp_size,
     )
 
-    scheduler = construct_scheduler(spec, gpu_id, log)
+    scheduler = construct_scheduler(spec, gpu_id, log, startup_lock_wait_callback)
 
     def _target_list(targets: str | list[str] | None) -> list[str]:
         if targets is None:
@@ -1299,6 +1305,7 @@ def construct_scheduler(
     spec: StageLaunchConfig,
     gpu_id: int | None,
     log: logging.Logger,
+    startup_lock_wait_callback: StartupLockWaitCallback | None = None,
 ) -> StageScheduler:
     """Build a scheduler, serializing GPU factory work per visible device."""
 
@@ -1334,7 +1341,7 @@ def construct_scheduler(
     else:
         pass
 
-    with gpu_startup_lock(int(gpu_id)) as lock_path:
+    with gpu_startup_lock(int(gpu_id), startup_lock_wait_callback) as lock_path:
         log.info(f"Acquired GPU startup lock for stage {spec.stage_name}: {lock_path}")
         return _invoke()
 

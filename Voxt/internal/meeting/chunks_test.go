@@ -12,8 +12,8 @@ func rateSamples(d time.Duration) int {
 	return int(d.Seconds() * float64(asr.SampleRate))
 }
 
-func TestPlanChunksMax22s(t *testing.T) {
-	total := rateSamples(50 * time.Second)
+func TestPlanChunksMaxDuration(t *testing.T) {
+	total := rateSamples(130 * time.Second)
 	speech := []vad.Segment{{Start: 0, End: total}}
 	p := DefaultChunkParams()
 	ch := PlanChunks(speech, total, p)
@@ -26,6 +26,17 @@ func TestPlanChunksMax22s(t *testing.T) {
 		if inner > max+2*p.padSamples() {
 			t.Fatalf("chunk %d span %d > max %d", i, inner, max+2*p.padSamples())
 		}
+	}
+}
+
+// A whole minute of continuous speech stays one request: every request has a
+// fixed latency floor, so short caps tax pause-poor audio once per cap.
+func TestPlanChunksMeetingMinuteStaysOneRequest(t *testing.T) {
+	total := rateSamples(50 * time.Second)
+	speech := []vad.Segment{{Start: 0, End: total}}
+	p := DefaultChunkParams()
+	if ch := PlanChunks(speech, total, p); len(ch) != 1 {
+		t.Fatalf("50 s of speech became %d requests", len(ch))
 	}
 }
 
@@ -48,7 +59,7 @@ func TestPlanChunksCutsAtLongPause(t *testing.T) {
 }
 
 func TestPlanChunksHardOverlap(t *testing.T) {
-	total := rateSamples(45 * time.Second)
+	total := rateSamples(130 * time.Second)
 	speech := []vad.Segment{{Start: 0, End: total}}
 	p := DefaultChunkParams()
 	ch := PlanChunks(speech, total, p)

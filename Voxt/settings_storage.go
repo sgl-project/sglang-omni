@@ -9,7 +9,7 @@ import (
 )
 
 type settingsStorageLocalUI struct {
-	resetAsk  string // "settings" | "everything": the confirmation shown
+	resetAsk  string // "settings" | "everything" | "import": the confirmation shown
 	resetText string // typed confirmation
 }
 
@@ -55,6 +55,18 @@ func storageSettings(c *ui.Context, state settingsStorageViewState, actions sett
 	if state.MoveError != "" {
 		ui.Text(c, state.MoveError).FontSize(px(t, fsCaption)).TextColor(t.Danger)
 	}
+
+	sectionTitle(c, i18n.T("Another Mac"))
+	settingRow(c, "st-export", i18n.T("Export library"), i18n.T("Your settings, history, meetings, dictionary and snippets in one file. Recordings, models and API keys stay on this Mac."), func() {
+		if ui.Button(c.Key("st-export"), i18n.T("Export…")).Clicked() {
+			actions.exportLibrary()
+		}
+	})
+	settingRow(c, "st-import", i18n.T("Import library"), i18n.T("Replaces this Mac's library with the file's, then restarts."), func() {
+		if ui.Button(c.Key("st-import"), i18n.T("Import…")).Clicked() {
+			local.resetAsk = "import"
+		}
+	})
 
 	modelFolderRows(c, state, actions, open)
 
@@ -112,6 +124,23 @@ func storageDialogs(c *ui.Context, state settingsStorageViewState, actions setti
 		})
 	})
 	if !open && local.resetAsk == "settings" {
+		local.resetAsk = ""
+	}
+	importOpen := local.resetAsk == "import"
+	ui.Modal(c.Key("st-ask-import"), &importOpen, func() {
+		ui.Text(c, i18n.T("Import a library?")).Bold()
+		ui.Text(c, i18n.T("Voxt restarts with the file's settings, history, meetings, dictionary and snippets in place of this Mac's. This Mac's library is kept in the data folder as %s.", state.ImportKeptName)).Width(px(t, 380))
+		ui.Row(c).Gap(px(t, sp2)).Justify(ui.End).Children(func() {
+			if ui.Button(c.Key("st-import-cancel"), i18n.T("Cancel")).AutoFocus().Clicked() {
+				local.resetAsk = ""
+			}
+			if ui.Button(c.Key("st-import-ok"), i18n.T("Choose file…")).Clicked() {
+				local.resetAsk = ""
+				actions.importLibrary()
+			}
+		})
+	})
+	if !importOpen && local.resetAsk == "import" {
 		local.resetAsk = ""
 	}
 	eraseDialog(c, state, actions, local)

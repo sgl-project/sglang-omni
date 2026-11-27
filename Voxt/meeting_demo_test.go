@@ -252,25 +252,11 @@ func meetingDemoSentinel(fixture meetingDemoFixture) string {
 		return state.UpdatesRelease.Title
 	case "home":
 		home := state.Home
-		if home.Error != "" {
-			return home.Error
-		}
 		if !home.KeepHistory {
 			return i18n.T("History is off, so nothing is counted.")
 		}
-		for _, readiness := range home.Ready {
-			if readiness.Warn {
-				return readiness.Text
-			}
-		}
-		for _, readiness := range home.Missing {
-			return readiness.Text
-		}
-		if len(home.Recent) > 0 {
-			return home.Recent[0].Row.Title
-		}
-		if home.Read {
-			return i18n.T("Results appear here after you use a shortcut.")
+		if home.Activity != nil {
+			return i18n.T("Activity")
 		}
 		return i18n.T("Home")
 	case "appenhance":
@@ -362,7 +348,7 @@ func meetingDemoSentinel(fixture meetingDemoFixture) string {
 			return i18n.T("No term matches “%s”", dictionary.ListFor)
 		}
 		if len(dictionary.Terms) == 0 {
-			return i18n.T("Names and terms you use")
+			return i18n.T("No terms yet")
 		}
 		return dictionary.Terms[0].Term
 	case "notes":
@@ -527,7 +513,7 @@ func meetingDemoSentinel(fixture meetingDemoFixture) string {
 	case "shell-announcement":
 		return state.Announcement.Title
 	default:
-		return ""
+		return snippetsDemoSentinel(state)
 	}
 }
 

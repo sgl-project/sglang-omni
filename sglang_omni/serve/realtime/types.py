@@ -125,6 +125,7 @@ class Capabilities:
     supports_truncate: bool = False
     supports_cancel: bool = False
     supports_client_commit: bool = False
+    skips_screen_blocks: bool = False
     # note (Junnan Li): Frame cap per unit, indexed by the session's max_slice_nums minus one.
     image_frames_per_unit: tuple[int, ...] = (1,)
     default_max_slice_nums: int = 1
@@ -192,6 +193,7 @@ class Capabilities:
             supports_reference_audio=self.supports_reference_audio,
             supports_instruction_updates=self.supports_instruction_updates,
             supports_sampling_updates=self.supports_sampling_updates,
+            skips_screen_blocks=self.skips_screen_blocks,
         )
 
         if self.voices:

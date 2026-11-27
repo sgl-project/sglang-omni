@@ -71,6 +71,7 @@ type dictionaryViewCacheKey struct {
 	query         string
 	tab           int
 	scanOpen      bool
+	settingsOpen  bool
 	suggestions   string
 	settings      uint64
 	locale        string
@@ -217,7 +218,7 @@ func (a *app) dictionaryPageModel() dictionaryViewState {
 	scanModel, canScan := dictionaryScanModel(a.prefs, installed)
 	viewKey := dictionaryViewCacheKey{
 		seq: a.dv.seq, read: a.dv.read, loading: a.dv.loading, err: a.dv.err, listFor: a.dv.listFor,
-		total: a.dv.total, legacy: a.dv.legacyAvailable, query: a.dictUI.query, tab: a.dictUI.tab, scanOpen: a.dictUI.scanOpen,
+		total: a.dv.total, legacy: a.dv.legacyAvailable, query: a.dictUI.query, tab: a.dictUI.tab, scanOpen: a.dictUI.scanOpen, settingsOpen: a.dictUI.settingsOpen,
 		suggestions: dictionarySuggestionsFingerprint(a.suggestions), settings: a.settingsRevision, locale: translator.Locale(),
 		scanModelID: scanModel.ID, scanModelName: scanModel.Name, canScan: canScan,
 		scan: dictionaryScanCacheKeyFor(a.dv.scan), edit: dictionaryEditCacheKeyFor(a.dictUI),
@@ -232,7 +233,7 @@ func (a *app) dictionaryPageModel() dictionaryViewState {
 			TermsReady: true, TermRows: a.dv.termRows, Suggestions: a.suggestions, Settings: a.prefs,
 			Installed: installed, Read: a.dv.read, Loading: a.dv.loading, Error: a.dv.err,
 			Query: a.dictUI.query, ListFor: a.dv.listFor, Total: a.dv.total, LegacyImport: a.dv.legacyAvailable,
-			Tab: a.dictUI.tab, ScanOpen: a.dictUI.scanOpen, Scan: dictionaryScanInput(a.dv.scan),
+			Tab: a.dictUI.tab, ScanOpen: a.dictUI.scanOpen, SettingsOpen: a.dictUI.settingsOpen, Scan: dictionaryScanInput(a.dv.scan),
 			Edit: dictionaryTermEditInput(a.dictUI), NotesText: a.dictUI.notes.text,
 			NotesQuery: a.dictUI.notesQuery, NotesFind: a.dictUI.notesFind.cur,
 			Profiles: a.dictProfiles.list, ProfileEdit: a.dictUI.profileEdit, ProfileDeleteOpen: a.dictUI.profileDeleteOpen,

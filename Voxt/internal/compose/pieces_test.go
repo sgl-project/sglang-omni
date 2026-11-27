@@ -18,7 +18,7 @@ func joinPieces(ps []Piece) string {
 func runes(s string) int { return utf8.RuneCountInString(s) }
 
 // TestPieces: short text is one piece; long text is cut at sentence
-// ends into pieces of at most PieceChars, about as long as each other,
+// ends into pieces of at most PieceWords, about as long as each other,
 // that give the text back; a paragraph ends a piece early; a sentence
 // longer than a piece is cut at clauses, then spaces, then anywhere.
 func TestPieces(t *testing.T) {
@@ -28,17 +28,18 @@ func TestPieces(t *testing.T) {
 		name    string
 		text    string
 		n       int // pieces
-		longest int // the longest piece's characters at most
+		longest int // the longest piece's words at most
 		ends    string
 	}{
 		{"short", strings.Repeat(zh, 9), 1, 297, "。"},
 		{"just over", strings.Repeat(zh, 11), 2, 198, "。"},
-		{"chinese", strings.Repeat(zh, 20), 3, PieceChars, "。"},
-		{"english", strings.Repeat(en, 10), 3, PieceChars, "."},
-		{"mixed", strings.Repeat(en+zh, 6), 2, PieceChars, "。."},
-		{"no stops", strings.Repeat("我们下周三下午三点开个会，", 50), 3, PieceChars, "，"},
-		{"no punctuation", strings.Repeat("abcdefghi ", 50), 2, PieceChars, "i"},
-		{"one long word", strings.Repeat("会", 700), 3, PieceChars, "会"},
+		{"chinese", strings.Repeat(zh, 20), 3, PieceWords, "。"},
+		{"english of 99 words", strings.Repeat(en, 9), 1, 99, "."},
+		{"english of 407 words", strings.Repeat(en, 37), 2, PieceWords, "."},
+		{"mixed", strings.Repeat(en+zh, 12), 2, PieceWords, "。."},
+		{"no stops", strings.Repeat("我们下周三下午三点开个会，", 50), 3, PieceWords, "，"},
+		{"no punctuation", strings.Repeat("abcdefghi ", 400), 2, PieceWords, "i"},
+		{"one long word", strings.Repeat("会", 700), 3, PieceWords, "会"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			ps := Pieces(c.text)
@@ -51,9 +52,9 @@ func TestPieces(t *testing.T) {
 			if ps[len(ps)-1].After != "" {
 				t.Errorf("the last piece is followed by %q", ps[len(ps)-1].After)
 			}
-			shortest, longest := runes(c.text), 0
+			shortest, longest := words(c.text), 0
 			for _, p := range ps {
-				n := runes(p.Text)
+				n := words(p.Text)
 				shortest, longest = min(shortest, n), max(longest, n)
 				if p.Text != strings.TrimSpace(p.Text) {
 					t.Errorf("piece %q not trimmed", p.Text)
@@ -64,10 +65,10 @@ func TestPieces(t *testing.T) {
 				}
 			}
 			if longest > c.longest {
-				t.Errorf("a piece of %d characters", longest)
+				t.Errorf("a piece of %d words", longest)
 			}
 			if c.n > 1 && shortest < longest/2 {
-				t.Errorf("pieces of %d to %d characters", shortest, longest)
+				t.Errorf("pieces of %d to %d words", shortest, longest)
 			}
 		})
 	}
@@ -75,6 +76,25 @@ func TestPieces(t *testing.T) {
 	ps := Pieces(para)
 	if len(ps) != 3 || ps[0].After != "\n\n" || runes(ps[0].Text) != 5*runes(zh) || joinPieces(ps) != para {
 		t.Errorf("paragraph: %q", ps)
+	}
+}
+
+// TestWords: Chinese counts by character with its punctuation, spaced
+// scripts by word, a number as one; Thai has no spaces, so by character.
+func TestWords(t *testing.T) {
+	for text, want := range map[string]int{
+		"":                        0,
+		"我们下周三开会。":                8,
+		"Let's ship on Thursday.": 4,
+		"don’t state-of-the-art":  5,
+		"服务用 Kubernetes 部署 2 个":   8,
+		"1,234 items":             3,
+		"สวัสดี":                  6,
+		"…!!! ":                   0,
+	} {
+		if got := words(text); got != want {
+			t.Errorf("%q: %d words, want %d", text, got, want)
+		}
 	}
 }
 
@@ -171,6 +191,27 @@ func TestJoinParts(t *testing.T) {
 	} {
 		if got := JoinParts(parts, c.answers); got != c.want {
 			t.Errorf("%q: %q, want %q", c.answers, got, c.want)
+		}
+	}
+}
+
+// TestPiecesKeepMarks: a piece never ends inside a snippet's mark, at a
+// space, a full stop or anywhere.
+func TestPiecesKeepMarks(t *testing.T) {
+	for _, text := range []string{
+		strings.Repeat("word ", 296) + "⟦my email address⟧ " + strings.Repeat("more ", 296),
+		strings.Repeat("Words here. ", 147) + "⟦Dr. Smith's office⟧ " + strings.Repeat("More there. ", 147),
+		strings.Repeat("字", 290) + "⟦我的邮箱⟧" + strings.Repeat("字", 200),
+		strings.Repeat("字", 296) + "⟦我的邮箱⟧" + strings.Repeat("字", 296),
+	} {
+		pieces := LanguagePieces(text)
+		if len(pieces) < 2 {
+			t.Fatalf("one piece for %d characters", len([]rune(text)))
+		}
+		for _, p := range pieces {
+			if strings.Count(p.Text, "⟦") != strings.Count(p.Text, "⟧") {
+				t.Errorf("a piece cuts a mark: %q", p.Text)
+			}
 		}
 	}
 }

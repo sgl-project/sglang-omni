@@ -106,6 +106,7 @@ func (a *app) settingsChanged(old, new settings.Settings) {
 	}
 	if old.Privacy.KeepHistory != new.Privacy.KeepHistory {
 		a.loadTrayRecent() // the Reopen card list exists only with history on
+		a.keepSessions()   // history off: the saved sessions go at once
 	}
 	if old.Updates.BetaOn(a.version) != new.Updates.BetaOn(a.version) {
 		a.applyBeta() // updates.go
@@ -171,6 +172,7 @@ func (a *app) loadSettingsForm() {
 	f.opening, f.openingSpeed = appearance.Opening, float64(appearance.OpeningLength)
 	a.loadAppearancePreview() // settings_appearance_controller.go
 	f.strictShortcuts, f.returnFinishes = s.Features.StrictShortcuts, s.Features.ReturnFinishes
+	f.sessionsOn = s.Features.SessionsOn
 	f.keepHistory, f.keepAudio, f.logText = s.Privacy.KeepHistory, s.Privacy.KeepAudio, s.Privacy.LogText
 	f.sendWindow, f.sendClipboard = s.Privacy.SendWindow, s.Privacy.SendClipboardImage
 	f.sendClipboardWithSelection = s.Privacy.SendClipboardImageWithSelection
@@ -239,7 +241,7 @@ func (a *app) shownPath() string {
 	return a.router.Path()
 }
 
-func (a *app) settingsDialogModel(now time.Time) settingsDialogViewState {
+func (a *app) settingsDialogModel(now time.Time) (settingsDialogViewState, tryCardActions) {
 	key := settingsDialogCacheKey{open: a.settingsOpen, path: a.setRouter.Path(), shownPath: a.shownPath(), locale: i18n.Locale()}
 	if !a.dialogCache.valid || a.dialogCache.key != key {
 		a.dialogCache.state = buildSettingsDialogViewState(i18n.CurrentTranslator(), key.open, key.path, key.shownPath)
@@ -247,13 +249,20 @@ func (a *app) settingsDialogModel(now time.Time) settingsDialogViewState {
 	}
 	state := a.dialogCache.state
 	if !state.Open {
-		return state
+		return state, nil
 	}
+	var featureTryActions tryCardActions
 	switch strings.TrimPrefix(state.Path, "/") {
 	case "general":
 		a.lastSettings = "general"
 		section := a.generalSettingsModel()
 		state.General = &section
+	case "transcribe", "translate", "rewrite":
+		feature := strings.TrimPrefix(state.Path, "/")
+		a.lastSettings = feature
+		section, actions := a.featurePageModel(feature)
+		state.Feature = &section
+		featureTryActions = actions
 	case "models":
 		a.lastSettings = "models"
 		state.Models = &settingsModelsViewState{
@@ -291,6 +300,10 @@ func (a *app) settingsDialogModel(now time.Time) settingsDialogViewState {
 		a.lastSettings = "storage"
 		section := a.storageSettingsModel()
 		state.Storage = &section
+	case "experimental":
+		a.lastSettings = "experimental"
+		section := a.experimentalSettingsModel()
+		state.Experimental = &section
 	case "about":
 		a.lastSettings = "about"
 		section := a.aboutSettingsModel()
@@ -298,5 +311,13 @@ func (a *app) settingsDialogModel(now time.Time) settingsDialogViewState {
 		updates := a.updatesSettingsModel(now)
 		state.Updates = &updates
 	}
-	return state
+	for _, page := range a.navModel().ShortcutPages {
+		moved, ok := movedPaths[page.Path]
+		if !ok || !strings.HasPrefix(moved, "/settings/") {
+			continue
+		}
+		page.Path = moved
+		state.ShortcutPages = append(state.ShortcutPages, page)
+	}
+	return state, featureTryActions
 }

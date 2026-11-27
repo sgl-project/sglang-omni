@@ -103,6 +103,7 @@ PROFILE_NAMES = (
     "nemotron-stage-qwen3-tts",
     "qwen3-asr-qwen3-tts-vivian",
     "qwen3-asr-qwen3-tts-vivian-dflash",
+    "qwen3-asr-inkling-2-mini-vivian-tts-tool",
     "qwen3-asr-qwen3.8-27b-vivian-screen",
     "qwen3-asr-qwen3.8-27b-vivian-styles",
     "qwen3-asr-qwen3.8-27b-vivian-tts-tool",
@@ -214,9 +215,23 @@ async def test_sentences_keep_the_reply_spacing_and_split_cjk_without_spaces():
         for delta in deltas:
             yield delta
 
-    spans = [span async for span in sentences(stream(), max_words=24)]
+    spans = [span async for span, _ in sentences(stream(), max_words=24)]
     assert spans == ["One two.", "\nThree four.", " 五六。", "七八。"]
     assert "".join(spans) == REPLY
+
+
+@pytest.mark.asyncio
+async def test_sentences_say_which_spans_end_their_sentence():
+    """A span cut by max_words does not end its sentence, also in the reply's last sentence, which is cut only once the reply is complete."""
+
+    async def stream():
+        yield text_chunk("Sure. Alpha beta gamma delta.", 1)
+
+    assert [pair async for pair in sentences(stream(), max_words=3)] == [
+        ("Sure.", True),
+        (" Alpha beta", False),
+        (" gamma delta.", True),
+    ]
 
 
 async def spans_of(*parts: str, max_words: int = 24) -> list[str]:
@@ -224,7 +239,7 @@ async def spans_of(*parts: str, max_words: int = 24) -> list[str]:
         for part in parts:
             yield text_chunk(part, 1)
 
-    return [span async for span in sentences(stream(), max_words)]
+    return [span async for span, _ in sentences(stream(), max_words)]
 
 
 @pytest.mark.asyncio
@@ -1130,6 +1145,54 @@ def test_settings_merge_and_standard_names():
             settings.apply(update)
 
 
+@pytest.mark.parametrize("speech_language", ["auto", "English", ""])
+def test_a_dialog_language_is_checked_only_against_auto_speech_nodes(speech_language):
+    """Under tts.language="auto", an unsupported dialog.language was accepted at load and by configure and failed the session with 400 at Qwen3-TTS, while a fixed or empty tts.language never sends dialog.language to the speech service."""
+    nodes = yaml.safe_load(HTTP_PROFILE.read_text())["session_nodes"]
+    dialog, tts = nodes["dialog"], nodes["tts"]
+    unsupported = "supported_languages of node 'tts'"
+    load = {
+        "tts": {**tts, "language": speech_language},
+        "dialog": {**dialog, "language": "Vietnamese"},
+    }
+    update = {
+        "nodes": {
+            "tts": {"language": speech_language},
+            "dialog": {"language": "Vietnamese"},
+        }
+    }
+    settings = declared().component_graph()
+    if speech_language == "auto":
+        with pytest.raises(ValueError, match=unsupported):
+            declared(nodes=load)
+        with pytest.raises(ValueError, match=unsupported):
+            settings.apply(update)
+        chinese = settings.apply({"nodes": {"dialog": {"language": "Chinese"}}})
+        assert chinese.node("dialog").component.language == "Chinese"
+        cantonese = settings.apply(
+            {
+                "nodes": {
+                    "tts": {"supported_languages": ["Cantonese"]},
+                    "dialog": {"language": "Cantonese"},
+                }
+            }
+        )
+        assert cantonese.node("dialog").component.language == "Cantonese"
+    else:
+        loaded = declared(nodes=load).component_graph()
+        assert (
+            loaded.node("tts").component.language,
+            loaded.node("dialog").component.language,
+        ) == (speech_language, "Vietnamese")
+        configured = settings.apply(update)
+        assert (
+            configured.node("tts").component.language,
+            configured.node("dialog").component.language,
+        ) == (speech_language, "Vietnamese")
+        with pytest.raises(ValueError, match=unsupported):
+            configured.apply({"nodes": {"tts": {"language": "auto"}}})
+
+
 TEXT_ONLY = """
 nodes:
   - {name: asr, kind: openai_transcription, base_url: "http://127.0.0.1:8000/v1", model: test-model, inputs: [input]}
@@ -1434,6 +1497,147 @@ async def test_openai_speech_flushes_each_reply_before_turn_done(backends):
         np.frombuffer(o.payload, dtype="<f4") for o in outputs if o.modality == AUDIO
     ]
     assert np.concatenate(samples).tolist() == [0.0, 0.5, -0.5] * 3
+
+
+@pytest.mark.asyncio
+async def test_openai_speech_pauses_before_each_sentence_after_the_first_audio(
+    backends,
+):
+    """A pause goes before each spoken sentence after the reply's first audio, not before that audio, not at a cut inside a sentence even across a span with no word, and not for a sentence with no word, but still when a span with no word sits between two sentences, and reply.progress counts it."""
+    settings, _, spoken, _ = backends
+    tts = settings.component_graph().node("tts").component.model_dump()
+    outputs = await drain(
+        build({**tts, "max_sentence_words": 2, "sentence_pause_ms": 0.125}),
+        [
+            text_chunk(
+                "😀. Hello there my friend 😀. Second one. 😀 😀 Third one. "
+                "Four five 😀 😀 six seven. 😀.",
+                1,
+            ),
+            control_chunk(TURN_DONE, turn=1),
+        ],
+    )
+    played = np.concatenate(
+        [np.frombuffer(o.payload, dtype="<f4") for o in outputs if o.modality == AUDIO]
+    )
+    progress = [o.payload for o in outputs if control_type(o) == REPLY_PROGRESS]
+    speech = [0.0, 0.5, -0.5]
+    pause = [0.0, 0.0, 0.0]
+    assert spoken == [
+        "Hello there",
+        "my friend",
+        "Second one.",
+        "Third one.",
+        "Four five",
+        "six seven.",
+    ]
+    assert played.tolist() == (
+        speech + speech + pause + speech + pause + speech + pause + speech + speech
+    )
+    assert [point["audio_ms"] for point in progress] == [
+        0.0,
+        0.125,
+        0.25,
+        0.25,
+        0.5,
+        0.5,
+        0.75,
+        1.0,
+        1.0,
+        1.125,
+        1.125,
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "reply, skip_screen_blocks, expected_spoken, expected_ms",
+    [
+        pytest.param(
+            "Dr. Smith is here. Welcome!",
+            False,
+            ["Dr.", "Smith is here.", "Welcome!"],
+            [0.125, 0.25, 0.5],
+            id="title_before_a_name",
+        ),
+        pytest.param(
+            "Use <screen>Step 1. Step 2</screen> this option. "
+            "<screen>Done.</screen> Next one.",
+            True,
+            ["Use", "this option.", "Next one."],
+            [0.125, 0.25, 0.5],
+            id="sentence_end_inside_a_screen_block",
+        ),
+    ],
+)
+async def test_openai_speech_pauses_only_where_the_heard_words_end_a_sentence(
+    backends, reply, skip_screen_blocks, expected_spoken, expected_ms
+):
+    """No pause goes after a title such as "Dr." or after a sentence end the reply audio leaves out inside a screen block, but a screen block after a spoken sentence end keeps its pause, and reply.progress keeps the offsets of the whole text."""
+    settings, _, spoken, _ = backends
+    tts = settings.component_graph().node("tts").component.model_dump()
+    outputs = await drain(
+        build(
+            {
+                **tts,
+                "max_sentence_words": 24,
+                "sentence_pause_ms": 0.125,
+                "skip_screen_blocks": skip_screen_blocks,
+            }
+        ),
+        [text_chunk(reply, 1), control_chunk(TURN_DONE, turn=1)],
+    )
+    played = np.concatenate(
+        [np.frombuffer(o.payload, dtype="<f4") for o in outputs if o.modality == AUDIO]
+    )
+    speech = [0.0, 0.5, -0.5]
+    pause = [0.0, 0.0, 0.0]
+    assert spoken == expected_spoken
+    assert played.tolist() == speech + speech + pause + speech
+    progress = spoken_progress(outputs)
+    assert [audio_ms for _, audio_ms in progress] == expected_ms
+    assert progress[-1][0] == len(reply)
+
+
+@pytest.mark.asyncio
+async def test_openai_speech_pauses_once_across_a_sentence_that_plays_nothing():
+    """drop_quiet_start can drop a whole sentence, which then sends no pause, so the sentences around it get one pause between them and reply.progress does not move for it."""
+    sample_rate_hz = 24000
+    speech = np.full(1200, 16384, dtype="<i2")
+    room_tone = np.full(3600, 164, dtype="<i2")  # 0.005 of full scale
+
+    def answer(request: httpx.Request) -> httpx.Response:
+        if json.loads(request.content)["input"] == "Middle.":
+            audio = room_tone
+        else:
+            audio = speech
+        return httpx.Response(
+            200,
+            content=audio.tobytes(),
+            headers={"X-Sample-Rate": str(sample_rate_hz)},
+        )
+
+    tts = build(
+        {
+            "kind": "openai_speech",
+            **HTTP_SERVICE,
+            "drop_quiet_start": True,
+            "sentence_pause_ms": 10,
+        }
+    )
+    tts.client = httpx.AsyncClient(transport=httpx.MockTransport(answer))
+    outputs = await drain(
+        tts, [text_chunk("First. Middle. Last.", 1), control_chunk(TURN_DONE, turn=1)]
+    )
+    played = np.concatenate(
+        [np.frombuffer(o.payload, dtype="<f4") for o in outputs if o.modality == AUDIO]
+    )
+    pause = [0] * 240  # 10 ms at 24 kHz
+    assert (played * 32768).round().tolist() == (
+        speech.tolist() + pause + speech.tolist()
+    )
+    progress = [o.payload for o in outputs if control_type(o) == REPLY_PROGRESS]
+    assert [point["audio_ms"] for point in progress] == pytest.approx([50, 50, 110])
 
 
 @pytest.mark.asyncio
@@ -2004,7 +2208,11 @@ def test_profiles_expand_components_into_independent_session_nodes(profile):
     assert graph.publish == {
         name: tuple(formats) for name, formats in config.session_publish.items()
     }
-    assert config.session_ports() == CASCADE_PORTS
+    # note (Haoling Pu): the client shows a screen only when the server says its audio skips the blocks, since any other profile speaks a screen tag.
+    assert config.session_ports() == replace(
+        CASCADE_PORTS,
+        skips_screen_blocks=profile == "qwen3-asr-qwen3.8-27b-vivian-screen",
+    )
     assert (
         StreamingCascadePipelineConfig.model_validate(
             config.model_dump()
@@ -2084,6 +2292,30 @@ def test_only_the_screen_profile_skips_screen_blocks_in_its_speech_and_aligner(
     skips = profile == "qwen3-asr-qwen3.8-27b-vivian-screen"
     assert settings.node("tts").component.skip_screen_blocks == skips
     assert settings.node("aligner").component.skip_screen_blocks == skips
+
+
+def test_a_session_skips_screen_blocks_only_when_every_published_speaker_does():
+    data = profile_config("qwen3-asr-qwen3.8-27b-vivian-screen").model_dump()
+    assert (
+        StreamingCascadePipelineConfig.model_validate(data)
+        .session_ports()
+        .skips_screen_blocks
+    )
+    data["session_nodes"]["tts_aloud"] = {
+        **data["session_nodes"]["tts"],
+        "skip_screen_blocks": False,
+    }
+    assert (
+        StreamingCascadePipelineConfig.model_validate(data)
+        .session_ports()
+        .skips_screen_blocks
+    )
+    data["session_publish"]["tts_aloud"] = ["pcm_f32le"]
+    assert (
+        not StreamingCascadePipelineConfig.model_validate(data)
+        .session_ports()
+        .skips_screen_blocks
+    )
 
 
 def test_the_reference_profile_routes_reply_progress_through_the_aligner():
@@ -2628,6 +2860,7 @@ async def test_the_dialog_keeps_the_heard_sentences_and_the_heard_prefix_of_the_
     [
         "qwen3-asr-qwen3-tts-vivian",
         "qwen3-asr-qwen3-tts-vivian-dflash",
+        "qwen3-asr-inkling-2-mini-vivian-tts-tool",
         "qwen3-asr-qwen3.8-27b-vivian-screen",
         "qwen3-asr-qwen3.8-27b-vivian-styles",
         "qwen3-asr-qwen3.8-27b-vivian-tts-tool",
@@ -2788,6 +3021,71 @@ def test_a_short_switch_after_a_cut_reply_adds_both_notes():
     messages = messages_of(chunk)
     assert messages[0].content == f"{dialog.config.system_prompt} {CUT_REPLY_NOTE}"
     assert messages[-1].content == f"嗯。\n\n[{note}]"
+
+
+@pytest.mark.asyncio
+async def test_an_explicit_dialog_language_applies_only_to_short_utterances_until_cleared():
+    """A clear utterance carries its recognized language, while a short one prefers the configured language until it is cleared."""
+    dialog = build({"kind": "dialog", "language": "English"})
+    outputs = await drain(
+        dialog,
+        [
+            transcript_chunk("嗯。", True, "Chinese"),
+            text_chunk("Hi.", 1),
+            control_chunk(TURN_DONE, turn=1),
+            control_chunk(COMMIT),
+            transcript_chunk("Quel temps fait-il aujourd'hui ?", True, "French"),
+            text_chunk("Il fait beau.", 2),
+            control_chunk(TURN_DONE, turn=2),
+            control_chunk(COMMIT),
+        ],
+    )
+    chunks = [o for o in outputs if o.format == MESSAGES]
+    note = SHORT_UTTERANCE_NOTE.format(language="English")
+    assert [o.payload.get("language") for o in chunks] == ["English", "French"]
+    assert [messages_of(o)[-1].content for o in chunks] == [
+        f"嗯。\n\n[{note}]",
+        "Quel temps fait-il aujourd'hui ?",
+    ]
+    cleared = build({"kind": "dialog"})
+    cleared.adopt(dialog)
+    _, chunk = cleared.respond(3, "Okay.", "English")
+    assert chunk.payload.get("language") == "French"
+    assert (
+        messages_of(chunk)[-1].content
+        == f"Okay.\n\n[{SHORT_UTTERANCE_NOTE.format(language='French')}]"
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "configured, tag, content",
+    [
+        (
+            "English",
+            "English",
+            f"Merci.\n\n[{SHORT_UTTERANCE_NOTE.format(language='English')}]",
+        ),
+        ("", "French", "Merci."),
+    ],
+)
+async def test_an_untagged_short_utterance_asks_for_the_configured_language(
+    configured, tag, content
+):
+    """With dialog.language set, a short utterance the recognizer named no language for was tagged with the configured language while its prompt asked for none, so a reply in the remembered language was spoken in the configured one."""
+    dialog = build({"kind": "dialog", "language": configured})
+    outputs = await drain(
+        dialog,
+        [
+            transcript_chunk("Quel temps fait-il aujourd'hui ?", True, "French"),
+            text_chunk("Il fait beau.", 1),
+            control_chunk(TURN_DONE, turn=1),
+            transcript_chunk("Merci.", True),
+        ],
+    )
+    chunk = [o for o in outputs if o.format == MESSAGES][-1]
+    assert chunk.payload.get("language") == tag
+    assert messages_of(chunk)[-1].content == content
 
 
 @pytest.mark.asyncio
@@ -2954,7 +3252,7 @@ async def test_a_sentence_of_a_style_the_speech_node_lacks_clones_its_own_record
 async def synthesized(
     spec: dict, deltas: list[TimedChunk]
 ) -> tuple[list[dict], list[TimedChunk]]:
-    """The speech requests and the outputs of a synthesizer speaking the deltas of turn 1, one second of audio per request."""
+    """The speech requests and the outputs of one synthesizer speaking the deltas, whose last turn it closes, one second of audio per request."""
     bodies = []
 
     def answer(request: httpx.Request) -> httpx.Response:
@@ -2965,20 +3263,85 @@ async def synthesized(
 
     tts = build({"kind": "openai_speech", **HTTP_SERVICE, **spec})
     tts.client = httpx.AsyncClient(transport=httpx.MockTransport(answer))
-    outputs = await drain(tts, [*deltas, control_chunk(TURN_DONE, turn=1)])
+    outputs = await drain(
+        tts, [*deltas, control_chunk(TURN_DONE, turn=deltas[-1].turn)]
+    )
     return bodies, outputs
 
 
 async def spoken_requests(
     spec: dict, deltas: list[TimedChunk]
 ) -> list[tuple[str, str]]:
-    """The language tag and the input of each sentence the synthesizer speaks for the deltas of turn 1."""
+    """The language tag and the input of each sentence one synthesizer speaks for the deltas."""
     bodies, _ = await synthesized(spec, deltas)
     return [(body["language"], body["input"]) for body in bodies]
 
 
 async def spoken_languages(spec: dict, deltas: list[TimedChunk]) -> list[str]:
     return [language for language, _ in await spoken_requests(spec, deltas)]
+
+
+@pytest.mark.asyncio
+async def test_a_clear_utterance_uses_its_recognized_language_for_speech():
+    dialog = build({"kind": "dialog", "language": "English"})
+    _, prompt_chunk = dialog.respond(1, "Quel temps fait-il aujourd'hui ?", "French")
+    generator = build({"kind": "openai_chat", **HTTP_SERVICE})
+
+    async def complete(
+        prompt_messages: list[ChatMessage],
+        tool_choice: object,
+    ) -> AsyncIterator[ChatChoice]:
+        assert prompt_messages[-1].content == "Quel temps fait-il aujourd'hui ?"
+        yield ChatChoice(delta=ChatDelta(content="Il fait 25 degrés aujourd’hui."))
+
+    generator.complete = complete
+    deltas = [
+        output
+        for output in await drain(generator, [prompt_chunk])
+        if output.format == TEXT_DELTA
+    ]
+    assert await spoken_requests({"language": "auto"}, deltas) == [
+        ("French", "Il fait 25 degrés aujourd’hui.")
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "utterances, tags",
+    [
+        ([("嗯。", "Chinese")], ["French", "English"]),
+        (
+            [("¿Qué tiempo hace hoy?", "Spanish"), ("嗯。", "Chinese")],
+            ["Spanish", "French", "Spanish"],
+        ),
+    ],
+)
+async def test_clearing_the_dialog_language_reaches_the_synthesizer(utterances, tags):
+    """A short turn with dialog.language="French" left the synthesizer on French, so after the client cleared dialog.language the reply to the next short turn was still spoken as French instead of in the language the recognizer last heard, or by the English fallback when it heard none."""
+    dialog = build({"kind": "dialog", "language": "French"})
+    inputs = []
+    for turn, (text, language) in enumerate(utterances, 1):
+        inputs += [
+            transcript_chunk(text, True, language),
+            text_chunk("Bien.", turn),
+            control_chunk(TURN_DONE, turn=turn),
+            control_chunk(COMMIT),
+        ]
+    outputs = await drain(dialog, inputs)
+    cleared = build({"kind": "dialog"})
+    cleared.adopt(dialog)
+    prompt_chunks = [o for o in outputs if o.format == MESSAGES]
+    prompt_chunks += cleared.respond(len(utterances) + 1, "Okay.", "English")[1:]
+    replies = ["Bien."] * len(utterances) + ["Hello there."]
+    deltas = []
+    for chunk, reply in zip(prompt_chunks, replies):
+        deltas += [
+            text_chunk(reply, chunk.turn, chunk.payload.get("language")),
+            control_chunk(TURN_DONE, turn=chunk.turn),
+        ]
+    assert await spoken_requests({"language": "auto"}, deltas[:-1]) == list(
+        zip(tags, replies)
+    )
 
 
 @pytest.mark.asyncio

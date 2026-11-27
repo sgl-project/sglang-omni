@@ -50,8 +50,7 @@ struct BatchOutcome {
 class MossTranscriber {
 public:
   MossTranscriber(const std::filesystem::path &model_directory,
-                  const std::filesystem::path &draft_directory,
-                  int draft_quantization_bits);
+                  const omni_common::DraftOptions &draft);
 
   omni_common::TranscriptionResult
   Transcribe(const std::vector<float> &samples, const MossOptions &options,

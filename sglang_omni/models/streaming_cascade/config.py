@@ -240,6 +240,7 @@ class ComponentGraphConfig(BaseModel):
         self.check_turn_roles()
         self.check_progress()
         self.check_delivery()
+        self.check_languages()
         return self
 
     def check_names(self) -> None:
@@ -474,6 +475,24 @@ class ComponentGraphConfig(BaseModel):
             and SESSION_CONTROL in node.edges().get(other.name, frozenset())
         ]
 
+    def check_languages(self) -> None:
+        """A dialog's language is one every speech node with language="auto" takes, since that node may send it as a sentence's language tag and a tag its service does not take fails the session."""
+        for dialog in self.nodes:
+            for speaker in self.nodes:
+                if (
+                    isinstance(dialog.component, DialogConfig)
+                    and isinstance(speaker.component, OpenAISpeechSynthesizerConfig)
+                    and speaker.component.language == "auto"
+                    and dialog.component.language
+                    and dialog.component.language
+                    not in speaker.component.supported_languages
+                ):
+                    raise ValueError(
+                        f"language {dialog.component.language!r} of node {dialog.name!r} is not one of the supported_languages of node {speaker.name!r}: {list(speaker.component.supported_languages)}"
+                    )
+                else:
+                    pass
+
     def node(self, name: str) -> NodeSettings:
         return next(node for node in self.nodes if node.name == name)
 
@@ -570,6 +589,12 @@ class ComponentGraphConfig(BaseModel):
             controls = frozenset({COMMIT, CONFIGURE, INTERRUPT, TRUNCATE})
         else:
             controls = frozenset({COMMIT, CONFIGURE, TRUNCATE})
+        speakers = [
+            node.component
+            for node in self.nodes
+            if isinstance(node.component, OpenAISpeechSynthesizerConfig)
+            and AUDIO_FORMATS & set(self.publish.get(node.name, ()))
+        ]
         return SessionPorts(
             input=(AudioPort(PCM16, SESSION_INPUT_SAMPLE_RATE_HZ),),
             output=published_audio_port(self.published_audio_ports()),
@@ -579,6 +604,9 @@ class ComponentGraphConfig(BaseModel):
             sampling_parameters=(
                 tuple(SAMPLING_FIELDS) if "sampling" in hot_settings else ()
             ),
+            # note (Haoling Pu): only a speaker whose audio is published reaches the user, and one that says the blocks would leave the client hiding words the user hears, so each of them has to skip the blocks.
+            skips_screen_blocks=bool(speakers)
+            and all(speaker.skip_screen_blocks for speaker in speakers),
         )
 
 

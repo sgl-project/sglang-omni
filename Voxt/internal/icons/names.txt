@@ -12,6 +12,8 @@ pen-new-round           # Rewrite
 target                  # App enhancement
 cloud                   # Remote models
 notebook-bookmark       # Dictionary
+text-square             # Snippets
+sort-vertical           # sort the snippets
 shield-keyhole          # Permissions
 clipboard-list          # Logs
 settings                # Settings, Settings → General
@@ -78,6 +80,7 @@ window-frame             # the app in front (preview)
 pen-2                    # edit a term
 import                   # import terms
 export                   # export terms
+upload-minimalistic      # the Snippets import dialog's drop area
 
 # Home and the setup guide (home_page.go, onboarding.go).
 compass                  # open the setup guide

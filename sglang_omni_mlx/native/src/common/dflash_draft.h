@@ -1,12 +1,13 @@
 // SPDX-License-Identifier: Apache-2.0
-// The DFlash draft for a target on the Qwen3 decoder (Qwen3-ASR, MOSS-TD): a
-// short Qwen3 decoder whose context is the target's hidden states, proposing a
-// block of tokens per round.
+// The DFlash draft for a target on the Qwen3 decoder (Qwen3-ASR, MOSS-TD,
+// ARK-ASR): a short Qwen3 decoder whose context is the target's hidden states,
+// proposing a block of tokens per round.
 #pragma once
 
 #include <atomic>
 #include <filesystem>
 #include <functional>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -21,6 +22,22 @@ enum class DraftPolicy { kAdaptive, kFixed };
 
 DraftPolicy ParseDraftPolicy(const std::string &value);
 
+// A DFlash draft as every server and CLI that takes one reads it, from
+// --draft-model-path DIR and --draft-bits 4|6|8.
+struct DraftOptions {
+  // Empty decodes without a draft.
+  std::filesystem::path directory;
+  // 0 keeps the weights as stored, otherwise the linear layers are quantized
+  // on load.
+  int quantization_bits = 0;
+
+  // Setters for the two flags, as ServedKind::flags takes them.
+  std::map<std::string, std::function<void(const std::string &)>> Flags();
+  // Throws std::invalid_argument for bits other than 4, 6 or 8, or for bits
+  // without a draft.
+  void Check() const;
+};
+
 struct LoadedDraft;
 
 // One draft decode's verification rounds, and the proposals the target
@@ -33,11 +50,9 @@ struct DraftStatistics {
 
 class DFlashDraft {
 public:
-  // Loads a Speculators DFlash checkpoint trained for a target of the given
-  // geometry, refusing one that does not fit it; quantization_bits 0 keeps the
-  // weights as stored, otherwise the linear layers are quantized on load.
-  DFlashDraft(const std::filesystem::path &directory, int quantization_bits,
-              const Qwen3DecoderConfig &target);
+  // Loads the Speculators DFlash checkpoint in options.directory, trained for
+  // a target of the given geometry, refusing one that does not fit it.
+  DFlashDraft(const DraftOptions &options, const Qwen3DecoderConfig &target);
 
   // Greedy decoding with the draft: each round the target verifies the block
   // the draft proposed, cut to the tokens max_new_tokens still allows, and
@@ -57,6 +72,7 @@ public:
   // and the committed tokens but the last extend. guessed_ids, tokens likely
   // to come next, are checked in the prompt's pass and kept while the target
   // agrees. A backoff to plain decoding empties draft_caches.
+  // note (chenye): When set, reports guesses accepted in initial verification.
   DraftStatistics Decode(const Qwen3Decoder &target,
                          const mlx::core::array &embeddings,
                          const std::vector<int> &guessed_ids,
@@ -64,7 +80,13 @@ public:
                          const std::function<bool(int)> &commit,
                          const std::atomic<bool> &cancel, DraftPolicy policy,
                          std::vector<omni_common::KVCache> &caches,
-                         std::vector<omni_common::KVCache> &draft_caches) const;
+                         std::vector<omni_common::KVCache> &draft_caches,
+                         int *accepted_guess_count = nullptr) const;
+  // Extends caches the caller keeps, the target's and the draft's over the
+  // same positions, by embeddings [1, length, hidden] without decoding.
+  void Prefill(const Qwen3Decoder &target, const mlx::core::array &embeddings,
+               std::vector<omni_common::KVCache> &caches,
+               std::vector<omni_common::KVCache> &draft_caches) const;
   // Empty caches for the draft's context.
   std::vector<omni_common::KVCache> NewCaches() const {
     return decoder_.NewCaches();

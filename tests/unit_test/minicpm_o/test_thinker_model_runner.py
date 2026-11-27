@@ -323,6 +323,47 @@ def test_committed_verify_tokens_take_the_leading_rows_of_their_request_block() 
     ), "a request with no committed tokens gets no rows"
 
 
+def test_a_compact_verify_hands_each_request_its_packed_rows() -> None:
+    num_draft_tokens = 4
+    # Requests a and b verified 2 and 3 rows, packed back to back and padded to a tier of 8.
+    packed = torch.arange(8 * 2, dtype=torch.float32).reshape(8, 2)
+    hidden_rows = torch.zeros(16, 2)
+    hidden_rows[:8] = packed
+    runner = speculative_runner(hidden_rows, None)
+    layout = SimpleNamespace(
+        extend_start_loc=torch.tensor([0, 2], dtype=torch.int32),
+        verify_lens=torch.tensor([2, 3], dtype=torch.int32),
+    )
+    batch = SimpleNamespace(reqs=[speculative_request(rid) for rid in "ab"])
+
+    runner.after_speculative_step(
+        batch,
+        is_prefill=False,
+        num_draft_tokens=num_draft_tokens,
+        verify_layout=layout,
+    )
+    hidden_rows.zero_()
+    runner.on_speculative_tokens(
+        SimpleNamespace(request_id="b"), [PLAIN_TOKEN_ID, OTHER_TOKEN_ID]
+    )
+    runner.on_speculative_tokens(SimpleNamespace(request_id="a"), [PLAIN_TOKEN_ID])
+
+    torch.testing.assert_close(committed_rows(runner, "b"), packed[2:4])
+    torch.testing.assert_close(committed_rows(runner, "a"), packed[0:1])
+
+
+@pytest.mark.parametrize(
+    ("length_penalty", "suppress_tokens", "takes_logits_hooks"),
+    [(1.0, None, False), (2.0, None, True), (1.0, [2], True)],
+)
+def test_only_a_length_penalty_or_a_suppress_set_takes_the_verify_hooks(
+    length_penalty: float, suppress_tokens: list[int] | None, takes_logits_hooks: bool
+) -> None:
+    request = verify_request(length_penalty, suppress_tokens)
+
+    assert bare_runner().verify_rows_take_logits_hooks([request]) is takes_logits_hooks
+
+
 def test_overlapped_steps_and_retraction_keep_speculative_hidden_fifo_aligned() -> None:
     """Overlapped speculative steps queue per-request blocks in FIFO order and drop unconsumed blocks on retraction."""
     assert MiniCPMOThinkerModelRunner.supports_speculative_async_decode is True
@@ -506,9 +547,15 @@ def test_a_retracted_request_reprefills_its_prompt_with_its_audio_rows() -> None
     )
 
 
-@pytest.mark.parametrize("mode", ["compact", "cap-accept"])
-def test_thinker_rejects_nonstatic_verify_before_model_loading(
-    monkeypatch: pytest.MonkeyPatch, mode: str
+@pytest.mark.parametrize(
+    ("mode", "error", "message"),
+    [
+        ("compact", AssertionError, "reached model loading"),
+        ("cap-accept", ValueError, "requires static or compact verify"),
+    ],
+)
+def test_thinker_admits_only_static_and_compact_verify_before_model_loading(
+    monkeypatch: pytest.MonkeyPatch, mode: str, error: type[Exception], message: str
 ) -> None:
     server_args = SimpleNamespace(
         disable_cuda_graph=False, speculative_algorithm="DSPARK"
@@ -518,12 +565,68 @@ def test_thinker_rejects_nonstatic_verify_before_model_loading(
     )
     monkeypatch.setattr(
         "sglang_omni.scheduling.bootstrap.create_sglang_infrastructure",
-        Mock(side_effect=AssertionError("unsupported verify reached model loading")),
+        Mock(side_effect=AssertionError("verify reached model loading")),
     )
 
     with envs.SGLANG_RAGGED_VERIFY_MODE.override(mode):
-        with pytest.raises(ValueError, match="requires static verify"):
+        with pytest.raises(error, match=message):
             bootstrap_module.create_thinker_scheduler(server_args)
+
+
+@pytest.mark.parametrize(
+    ("algorithm", "is_cuda", "penalty_owner"),
+    [
+        ("DSPARK", True, "verify_logits"),
+        ("DFLASH", True, "verify_logits"),
+        ("EAGLE3", True, None),
+        ("DSPARK", False, None),
+        (None, True, None),
+    ],
+)
+def test_linear_drafts_apply_repetition_penalty_in_verify_on_cuda(
+    monkeypatch: pytest.MonkeyPatch,
+    algorithm: str | None,
+    is_cuda: bool,
+    penalty_owner: str | None,
+) -> None:
+    server_args = SimpleNamespace(
+        disable_cuda_graph=True,
+        speculative_algorithm=algorithm,
+        speculative_eagle_topk=1,
+    )
+    model_config = SimpleNamespace(model_path="model", vocab_size=8)
+    monkeypatch.setattr(
+        "sglang.srt.arg_groups.model_override_base.resolved_view", lambda value: value
+    )
+    monkeypatch.setattr(
+        "sglang_omni.scheduling.bootstrap.create_sglang_infrastructure",
+        Mock(return_value=(Mock(), None, None, None, model_config)),
+    )
+    monkeypatch.setattr(
+        "sglang.srt.utils.hf_transformers_utils.get_tokenizer",
+        Mock(return_value=Mock(convert_tokens_to_ids=Mock(return_value=1))),
+    )
+    monkeypatch.setattr(
+        "sglang_omni.models.minicpm_o.thinker_model_runner.MiniCPMOThinkerModelRunner",
+        lambda *args: SimpleNamespace(
+            speculative_repetition_penalty_owner=None, reset_request=None
+        ),
+    )
+    monkeypatch.setattr(
+        "sglang_omni.models.minicpm_o.request_builders.make_thinker_scheduler_adapters",
+        Mock(return_value=(None, None)),
+    )
+    monkeypatch.setattr(
+        "sglang_omni.scheduling.omni_scheduler.OmniScheduler",
+        lambda **kwargs: kwargs["model_runner"],
+    )
+    monkeypatch.setattr(
+        bootstrap_module, "current_platform", SimpleNamespace(is_cuda=lambda: is_cuda)
+    )
+
+    with envs.SGLANG_RAGGED_VERIFY_MODE.override("static"):
+        model_runner = bootstrap_module.create_thinker_scheduler(server_args)
+    assert model_runner.speculative_repetition_penalty_owner == penalty_owner
 
 
 @pytest.mark.parametrize(

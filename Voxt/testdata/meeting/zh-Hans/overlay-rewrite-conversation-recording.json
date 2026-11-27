@@ -90,7 +90,8 @@
           "text": "再正式一点",
           "live": true,
           "user": true,
-          "selectable": false
+          "selectable": false,
+          "preview": true
         },
         {
           "key": "",
@@ -126,7 +127,7 @@
       "radius": 24,
       "margin": 96,
       "show_time": false,
-      "live_lines": true
+      "live_lines": false
     }
   }
 }

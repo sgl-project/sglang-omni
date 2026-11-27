@@ -42,9 +42,9 @@ func TestEarlyCleanTranscriptCoveredByCompletedSegment(t *testing.T) {
 	model.finish(t, 0)
 	waitEarlyWorker(t, r)
 
-	got, _, err := r.cleanUpFirst("whole transcript")
-	if err != nil || got != "整理一。" {
-		t.Fatalf("cleanUpFirst = %q, %v; want the completed answer", got, err)
+	output := r.cleanUpFirst("whole transcript")
+	if output.err != nil || output.text != "整理一。" {
+		t.Fatalf("cleanUpFirst = %q, %v; want the completed answer", output.text, output.err)
 	}
 }
 
@@ -88,7 +88,7 @@ func TestEarlyCleanMatchingPrefixCancellationRacesWithCompletion(t *testing.T) {
 		ok      bool
 	}, 1)
 	go func() {
-		parts, answers, tail, _, ok := r.early.drain("one two three tail")
+		parts, answers, tail, _, _, ok := r.early.drain("one two three tail")
 		result <- struct {
 			parts   []compose.Part
 			answers []string
@@ -195,8 +195,8 @@ func TestEarlyCleanPrefixMismatchCancelsHonoringLLM(t *testing.T) {
 	}
 	result := make(chan cleanupResult, 1)
 	go func() {
-		text, _, err := r.cleanUpFirst("changed")
-		result <- cleanupResult{text: text, err: err}
+		output := r.cleanUpFirst("changed")
+		result <- cleanupResult{text: output.text, err: output.err}
 	}()
 	<-model.requestCanceled
 	<-model.fallbackStarted
@@ -224,8 +224,8 @@ func TestEarlyCleanPrefixMismatchDoesNotWaitForCancellationIgnoringLLM(t *testin
 	}
 	result := make(chan cleanupResult, 1)
 	go func() {
-		text, _, err := r.cleanUpFirst("changed")
-		result <- cleanupResult{text: text, err: err}
+		output := r.cleanUpFirst("changed")
+		result <- cleanupResult{text: output.text, err: output.err}
 	}()
 	<-model.requestCanceled
 	<-model.fallbackStarted
@@ -264,12 +264,12 @@ func TestEarlyCleanPrefixMismatchAfterCompletedSegmentUsesWholeText(t *testing.T
 	r.hearPiece("one two")
 	<-model.secondStarted
 
-	result, _, err := r.cleanUpFirst("changed transcript")
-	if err != nil {
-		t.Fatal(err)
+	output := r.cleanUpFirst("changed transcript")
+	if output.err != nil {
+		t.Fatal(output.err)
 	}
-	if result != "fallback" {
-		t.Fatalf("result %q, want whole-text cleanup", result)
+	if output.text != "fallback" {
+		t.Fatalf("result %q, want whole-text cleanup", output.text)
 	}
 	waitEarlyWorker(t, r)
 	model.mu.Lock()

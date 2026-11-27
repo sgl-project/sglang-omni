@@ -1,0 +1,112 @@
+{
+  "name": "settings-experimental-normal",
+  "kind": "settings",
+  "settings": {
+    "open": true,
+    "path": "/experimental",
+    "shown_path": "/settings/experimental",
+    "sections": [
+      {
+        "id": "general",
+        "title": "General",
+        "english": "General language menu bar login"
+      },
+      {
+        "id": "transcribe",
+        "title": "Transcribe",
+        "english": "Transcribe dictation clean-up shortcut"
+      },
+      {
+        "id": "translate",
+        "title": "Translate",
+        "english": "Translate target language shortcut"
+      },
+      {
+        "id": "rewrite",
+        "title": "Rewrite",
+        "english": "Rewrite answer shortcut"
+      },
+      {
+        "id": "models",
+        "title": "Speech models",
+        "english": "Speech models download delete install recognition"
+      },
+      {
+        "id": "language-models",
+        "title": "Language models",
+        "english": "Language models services providers API"
+      },
+      {
+        "id": "permissions",
+        "title": "Permissions",
+        "english": "Permissions microphone accessibility privacy"
+      },
+      {
+        "id": "audio",
+        "title": "Audio",
+        "english": "Audio microphone input device sounds silence"
+      },
+      {
+        "id": "overlay",
+        "title": "Overlay style",
+        "english": "Overlay style position opacity corners recording pill"
+      },
+      {
+        "id": "shortcuts",
+        "title": "Shortcuts",
+        "english": "Shortcuts hotkeys keys fn"
+      },
+      {
+        "id": "appearance",
+        "title": "Appearance",
+        "english": "Appearance theme color palette transparency size sidebar"
+      },
+      {
+        "id": "privacy",
+        "title": "Privacy",
+        "english": "Privacy history audio logs"
+      },
+      {
+        "id": "storage",
+        "title": "Storage",
+        "english": "Storage disk data folder reset"
+      },
+      {
+        "id": "experimental",
+        "title": "Experimental",
+        "english": "Experimental sessions session shortcuts history"
+      },
+      {
+        "id": "about",
+        "title": "About",
+        "english": "Diagnostics about version bug report"
+      }
+    ],
+    "experimental": {
+      "sessions": [
+        {
+          "slot": 3,
+          "title": "Next session",
+          "recorder": {
+            "helper_records_keys": false,
+            "displayed_keys": "⌥Tab",
+            "typed": {
+              "valid": true,
+              "canonical_keys": "Option+Tab",
+              "formatted_keys": "⌥Tab",
+              "error_text": ""
+            },
+            "raw_keys": "",
+            "custom": false,
+            "typing": false,
+            "edited": false,
+            "unknown": false,
+            "record_denied": false,
+            "focused": false
+          },
+          "problems": null
+        }
+      ]
+    }
+  }
+}
