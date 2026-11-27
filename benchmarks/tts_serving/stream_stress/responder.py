@@ -11,7 +11,7 @@ import statistics
 from dataclasses import dataclass
 from typing import Any
 
-from benchmarks.tts_serving.stream_stress.config_parser import StressConfig
+from benchmarks.tts_serving.stream_stress.config_parser import CorpusEntry, StressConfig
 
 LOGGER = logging.getLogger(__name__)
 WAV_HEADER_BYTES = 44
@@ -133,6 +133,7 @@ class RequestRecord:
     labels: dict[str, str]
     sample_id: str
     text: str
+    language: str | None = None
 
     planned_at_s: float
     dispatch_lag_s: float
@@ -183,6 +184,7 @@ class RequestRecord:
             "labels": self.labels,
             "sample_id": self.sample_id,
             "text": self.text,
+            "language": self.language,
             "timing": {
                 "planned_at_s": round(self.planned_at_s, 6),
                 "sent_at_s": round(self.sent_at_s, 6),
@@ -255,6 +257,7 @@ class StreamRecorder:
         text: str,
         warmup: bool,
         planned_at_s: float = 0.0,
+        entry: CorpusEntry | None = None,
     ) -> None:
         self.config = config
         self.sequence = sequence
@@ -263,6 +266,11 @@ class StreamRecorder:
         self.text = text
         self.warmup = warmup
         self.planned_at_s = planned_at_s
+        self.entry = entry
+        per_row_language = (
+            entry.language if entry is not None else config.entry_for(sequence).language
+        )
+        self.language = per_row_language or config.payload_template.get("language")
 
         self.planned_abs: float | None = None
         self.sent_at: float | None = None
@@ -514,6 +522,7 @@ class StreamRecorder:
             labels=dict(config.labels),
             sample_id=self.sample_id,
             text=self.text,
+            language=self.language,
             planned_at_s=self.planned_at_s,
             dispatch_lag_s=max(0.0, sent_at - load_start - self.planned_at_s),
             sent_at_s=max(0.0, sent_at - load_start),
