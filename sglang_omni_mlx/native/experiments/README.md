@@ -1,11 +1,15 @@
 # Qwen3-ASR pause refresh simulation
 
-This deterministic event simulation compares three policies using the native
-admission helper in `src/qwen3_asr/realtime_refresh.h`:
+This deterministic event simulation compares the pause policies using the
+native admission helper in `src/qwen3_asr/realtime_refresh.h`:
 
-- **A:** cadence-only reference.
-- **B:** 300 ms pause threshold; busy hints are discarded.
-- **C:** 300 ms pause threshold; one useful busy hint may be deferred.
+- **A/B:** independent cadence-only reference and pause-disabled candidate;
+  the simulation asserts their admissions and coverage match.
+- **C:** existing 200 ms immediate-pause arm.
+- **D:** 300 ms immediate-pause arm, which discards hints while busy.
+- **E:** 300 ms deferred arm, which retains at most one useful busy hint.
+
+The required OFF / 300 ms discard / 300 ms deferred comparison is A, D, and E.
 
 It also prints the existing 200 ms pause arm. Each trace runs with 100 ms and
 200 ms packet delivery and assumed 200 ms and 400 ms inference durations. The
@@ -40,8 +44,9 @@ quality or equality. It does not measure GPU speed, real-model latency, or
 end-to-end TTLC, and its Final queue delay is a simplified FIFO model. The
 checked-in output is not evidence of a performance improvement.
 
-For real runtime experiments, deferred admission remains opt-in and requires
-the 300 ms pause arm:
+For the required real-model comparison, pair the deferred control with the
+300 ms pause arm. The control is separate and can also be paired with the
+existing 200 ms arm for exploratory tests:
 
 ```sh
 open --env VOXT_EXPERIMENT_ASR_PAUSE_REFRESH_MS=300 \

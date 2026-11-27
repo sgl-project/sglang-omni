@@ -38,14 +38,14 @@ open --env VOXT_EXPERIMENT_ASR_PAUSE_REFRESH_MS=200 build/darwin-arm64/Voxt.app
 
 Use `0` to disable it. Other values are ignored with a warning. This applies only to Qwen3-ASR realtime sessions with an authoritative HTTP Final, and uses speech boundaries from the PCM actually queued for the preview. A pause hint is considered only when at least 200 ms of new speech follows the latest submitted preview; the existing one-second audio-sample cadence remains active otherwise.
 
-To retain at most one useful pause hint that arrives while a refresh is running, set the separate developer-only control together with the 300 ms pause arm:
+For the required 300 ms discard/deferred comparison, retain at most one useful pause hint that arrives while a refresh is running by setting the separate developer-only control with the 300 ms pause arm:
 
 ```sh
 open --env VOXT_EXPERIMENT_ASR_PAUSE_REFRESH_MS=300 \
   --env VOXT_EXPERIMENT_ASR_DEFER_BUSY_PAUSE=1 build/darwin-arm64/Voxt.app
 ```
 
-Deferred admission is disabled by default. It rechecks VAD-reported speech resumption, coverage, the 200 ms minimum, cadence, segment rollover, cancellation, and Final handoff before submitting through the normal refresh path. To collect session-correlated, content-free hint and refresh attribution for either the discard or deferred arm, also set `VOXT_EXPERIMENT_ASR_PAUSE_REFRESH_TRACE=1`. Attribution is off by default.
+Deferred admission is disabled by default. The control is separate from the pause threshold and can also be paired with the existing 200 ms arm for exploratory tests. It rechecks VAD-reported speech resumption, coverage, the 200 ms minimum, cadence, segment rollover, cancellation, and Final handoff before submitting through the normal refresh path. To collect session-correlated, content-free hint and refresh attribution for either the discard or deferred arm, also set `VOXT_EXPERIMENT_ASR_PAUSE_REFRESH_TRACE=1`. Attribution is off by default.
 
 **The release build** is one command, on the Mac: `scripts/release.sh` builds the helper and the Omni runtime, packages and signs the app, and checks the result (`--runtimes DIR` takes prebuilt runtimes; with a Developer ID identity, `--notarize` notarises it; over ssh it runs through `scripts/mac-gui.sh`). A release is that build on GitHub: a `voxt-vX.Y.Z` tag runs the Voxt Release workflow, which signs it with the Developer ID of the team RY2TQTYSKQ, notarises it and puts its disk image and signed update files on a draft GitHub release. Local builds without a feed keep the GitHub update check. See [docs/release.md](release.md).
 
