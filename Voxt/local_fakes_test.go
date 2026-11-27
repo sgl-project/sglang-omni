@@ -102,8 +102,8 @@ type fakeChat struct {
 	// deterministic under any load.
 	chunkDelay time.Duration
 	bodies     []map[string]any
-	// onRequest runs as each request comes (mute_e2e_test.go: is the
-	// output back by then?).
+	// onRequest runs after each request is recorded, before the response
+	// (mute_e2e_test.go: is the output back by then?).
 	onRequest func()
 }
 
@@ -116,9 +116,6 @@ func (f *fakeChat) set(text string, status int) {
 func (f *fakeChat) Info() llm.BackendInfo { return llm.BackendInfo{ID: fakeLLMModel.ID} }
 
 func (f *fakeChat) Chat(ctx context.Context, req llm.Request) (llm.Response, error) {
-	if f.onRequest != nil {
-		f.onRequest()
-	}
 	f.mu.Lock()
 	f.bodies = append(f.bodies, requestBody(req))
 	text, status, delay, stall, chunkDelay := f.text, f.status, f.delay, f.stall, f.chunkDelay
@@ -126,6 +123,9 @@ func (f *fakeChat) Chat(ctx context.Context, req llm.Request) (llm.Response, err
 		text = f.texts[min(len(f.bodies), len(f.texts))-1]
 	}
 	f.mu.Unlock()
+	if f.onRequest != nil {
+		f.onRequest()
+	}
 	if delay > 0 {
 		select {
 		case <-time.After(delay):
