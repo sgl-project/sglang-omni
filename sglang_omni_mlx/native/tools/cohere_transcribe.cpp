@@ -7,6 +7,10 @@
 //     [--min-chunk-duration S] [--vad-model-directory DIR --vad-threshold P
 //     --vad-min-speech-ms MS --vad-min-silence-ms MS --vad-speech-pad-ms MS
 //     --vad-merge-gap-seconds S --vad-max-chunk-seconds S] a.wav...
+//
+// --full-precision loads the weights as stored, without load-time
+// quantization.
+
 #include <atomic>
 #include <chrono>
 #include <fstream>
@@ -20,6 +24,7 @@
 #include "common/audio.h"
 #include "common/form.h"
 #include "common/generation.h"
+#include "common/layers.h"
 #include "nlohmann/json.hpp"
 #include "silero_vad/speech_segments.h"
 
@@ -31,6 +36,11 @@ int main(int argc, char **argv) {
   std::vector<std::string> files;
   for (int i = 1; i < argc; ++i) {
     const std::string argument = argv[i];
+    if (argument == "--full-precision") {
+      omni_common::SetLoadTimeQuantization(false);
+      continue;
+    } else {
+    }
     if (argument.rfind("--", 0) == 0 &&
         (i + 1 >= argc || std::string(argv[i + 1]).rfind("--", 0) == 0)) {
       std::cerr << argv[0] << ": missing value for " << argument << "\n";

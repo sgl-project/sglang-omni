@@ -41,6 +41,7 @@ dependencies = [
     "qwen-vl-utils==0.0.11",
     "numba==0.65.1",
     "librosa>=0.11.0",
+    "soxr>=0.3.7",
     "pandas",
     "tabulate",
     "typer>=0.9.0",
@@ -48,7 +49,7 @@ dependencies = [
     "openai-harmony==0.0.4",
     "soundfile>=0.12.0",
     "mistral_common[audio]>=1.11.0",
-    "silero-vad>=5.1",
+    "silero-vad>=5.1,<6.3",  # note (0xtoward): silero-vad 6.3 tightened speech probabilities for the same threshold; cap until VAD thresholds and fixtures are recalibrated.
     "onnxruntime>=1.17",
     "websockets>=12.0",
     # Testing

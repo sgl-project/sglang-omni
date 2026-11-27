@@ -1,0 +1,8 @@
+{
+  "name": "start-model-unavailable",
+  "kind": "start",
+  "start": {
+    "code": "meeting.model.unavailable",
+    "text": "会议用的语音模型没能加载：load failed"
+  }
+}

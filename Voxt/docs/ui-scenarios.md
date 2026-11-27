@@ -6,7 +6,7 @@
 
 - **起点**：刚装好，语音识别模型已下载，还没有语言模型。首页的通知卡片写着要先设置语言模型。
 - **操作**：点通知卡片上的按钮，进入语言模型页 → 在“在线服务”里点 DeepSeek → 粘贴 API key、选模型 → 点“测试” → 保存。
-- **应看到**：测试连接后在对话框里显示结果；保存后 DeepSeek 卡片显示模型名，转录、翻译、改写页的模型菜单里出现 DeepSeek，通知卡片消失。
+- **应看到**：测试连接后在对话框里显示结果；保存后 DeepSeek 卡片显示模型名，设置 → 转录、设置 → 翻译、设置 → 改写的模型菜单里出现 DeepSeek，通知卡片消失。
 - **边界**：在对话框外点一下或按 Esc 不会丢掉刚粘贴的 key；出错提示里不会出现 key；key 只保存在钥匙串里。
 - **覆盖**：`TestRemotePage`、`TestRemoteModelEndToEnd`、`TestRemoteErrorKeepsNoKey`、`TestOnboardingLanguageModelGuide`；手测 1.6b、9.10。
 
@@ -29,7 +29,7 @@
 ## S4. 设置一个远程语音识别服务
 
 - **起点**：想用云端识别，例如豆包。
-- **操作**：语音识别模型页 → 远程服务 → 豆包 → 填 key 和 App ID → 测试 → 保存，在转录页选它，转录一句。
+- **操作**：语音识别模型页 → 远程服务 → 豆包 → 填 key 和 App ID → 测试 → 保存，在设置 → 转录里选它，转录一句。
 - **应看到**：豆包、阿里云百炼、Gemini 在说话时实时显示文字（标有“实时”），其他服务在停止后出结果；设置好的服务出现在每个功能的语音识别模型菜单里，排在本机模型之后。
 - **边界**：OpenAI Transcribe、阶跃星辰、智谱指向本机的服务（例如本机的 Whisper）时不需要 key；Mac 上没有语音识别模型时自动用设置好的远程服务；词典的词条作为热词或提示发给服务（小米 MiMo 不接收）；隐私说明里列出这些服务会收到音频。
 - **覆盖**：`TestRemoteSpeechDoubaoFlash`、`TestLegacySpeechServicesKnown`、`TestPrivacyNamesSpeechServices`；手测 9.12、8.4。
@@ -76,9 +76,9 @@
 
 ## S10. 写一份个人词典
 
-- **起点**：用户有一张自己的写法表（标准写法、纠正映射、条件），原来分别粘贴在转录、翻译、改写的提示词里。
-- **操作**：词典页 → 切到“个人词典” → 把表格粘贴进编辑框 → 看下面的“怎么使用”，切换转录、翻译、改写。
-- **应看到**：内容自动保存，重启后还在；“怎么使用”分别显示系统提示词、个人词典、你的输入、语音识别文本，再显示语言模型收到的消息，个人词典紧跟在系统提示词的任务规则后面；关掉“加到语言模型的提示词里”后示例里写“不发送”。
+- **起点**：用户有一张自己的写法表（标准写法、可能听成、条件），原来分别粘贴在转录、翻译、改写的提示词里。
+- **操作**：词典页 → 切到“个人词典” → 把表格粘贴进编辑框 → 打开设置 → 转录、设置 → 翻译或设置 → 改写 → “你的规则” → “语言模型收到什么”。
+- **应看到**：内容自动保存，重启后还在；对应功能分节显示该功能实际发出的整条请求：你的规则、个人词典、术语表（开关打开时的启用词条）、输入和最后发出的消息，个人词典紧跟在任务规则后面；关掉“加到语言模型的提示词里”后整条请求里没有它。
 - **边界**：编辑框为空、开关关掉或词典总开关关掉时都不发送；语音识别从来不收到它；原有词条和别名照常生效；用户自己写了完整提示词时也只加一次；200 行的表格整页滚动，不在编辑框里另出一个滚动条。
 - **覆盖**：`TestDictionaryNotes`、`TestPersonalDictionary`、`TestGoldenDictionary`、`TestDictionaryKeepsThePrefix`、`TestDictionaryMarkdown`、`TestDictionaryNotesUpgrade`；截图 `page-dictionary-notes*`。
 
@@ -88,7 +88,7 @@
 - **操作**：转录或语音翻译停止录音后，浮窗显示“整理中”时点“用识别原文”，或按取消键（默认 Esc）。另试：语言模型页 → “等待语言模型”选 5 分钟。
 - **应看到**：马上插入识别原文，没有警告；历史记一条成功的记录。选了等待时长后，模型慢也会等到这个时长；语音翻译超时后插入识别原文并提示“语言模型没有及时响应”。
 - **边界**：改写在处理时没有这个按钮，回答还没开始写进卡片时按取消键仍然取消整段（写进卡片后见 S12）；选区翻译也没有；没有按钮时浮窗照旧让鼠标穿过。
-- **覆盖**：`TestSkipLLMPill`、`TestSkipLLMEndToEnd`、`TestLLMWaitRow`、`TestLLMWaitCustom`、`TestLLMWaitNoLimit`；`internal/session` 的 `TestSkipLLM`、`TestLLMWaitSetting`、`TestLLMWaitNoLimit`、`TestTranslateTimeoutKeepsSpeech`。
+- **覆盖**：`TestSkipLLMPill`、`TestSkipLLMEndToEnd`、`TestLLMWaitRow`、`TestLLMWaitSavedCustom`、`TestLLMWaitNoLimit`；`internal/session` 的 `TestSkipLLM`、`TestLLMWaitSetting`、`TestLLMWaitNoLimit`、`TestTranslateTimeoutKeepsSpeech`。
 
 ## S11b. 听写整理时换思考强度
 

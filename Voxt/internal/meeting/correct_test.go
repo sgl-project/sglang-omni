@@ -104,6 +104,52 @@ func TestCorrectTranscript(t *testing.T) {
 	}
 }
 
+func TestCorrectSystemBlankStyleUsesDefault(t *testing.T) {
+	for _, style := range []string{"", " \n\t"} {
+		if got := correctSystem(TranscriptContext{}, "Box", style); got != correctPrompt {
+			t.Fatalf("blank style %q changed the prompt:\n%s", style, got)
+		}
+	}
+}
+
+// #4134: every correction batch uses the chosen style, while the summary
+// keeps its own prompt and the JSON correction contract stays intact.
+func TestCorrectTranscriptCustomStyle(t *testing.T) {
+	var segs []store.MeetingSegment
+	for i := range 260 {
+		segs = append(segs, store.MeetingSegment{Idx: i, Source: store.SegmentMic, Text: "Box"})
+	}
+	m, _, chat := correctFixture(t, segs...)
+	style := strings.TrimSpace(strings.Repeat("保持原语气，句子简洁。Keep English product names. ", 20))
+	m.cfg.Settings = func() settings.Meeting {
+		return settings.Meeting{CorrectionStyle: style, Feature: settings.Feature{Prompt: "SUMMARY STYLE ONLY"}}
+	}
+	m.correctAndSummarize(context.Background(), "m")
+	if len(chat.reqs) != 3 {
+		t.Fatalf("%d requests, want two correction batches and a summary", len(chat.reqs))
+	}
+	for i, req := range chat.reqs[:2] {
+		sys := req.Messages[0].Content
+		for _, want := range []string{style, "You proofread a meeting transcript", "Answer with only a JSON array", "We say Voxt."} {
+			if !strings.Contains(sys, want) {
+				t.Fatalf("batch %d system prompt lacks %q:\n%s", i, want, sys)
+			}
+		}
+		for _, unwanted := range []string{"Drop stutters", "SUMMARY STYLE ONLY"} {
+			if strings.Contains(sys, unwanted) {
+				t.Fatalf("batch %d system prompt contains %q:\n%s", i, unwanted, sys)
+			}
+		}
+	}
+	var summary string
+	for _, msg := range chat.reqs[2].Messages {
+		summary += msg.Content
+	}
+	if !strings.Contains(summary, "SUMMARY STYLE ONLY") || strings.Contains(summary, style) {
+		t.Fatalf("summary mixed up the prompts:\n%s", summary)
+	}
+}
+
 // After a meeting the summary reads the corrected transcript.
 func TestSummaryReadsCorrectedTranscript(t *testing.T) {
 	m, repo, chat := correctFixture(t, store.MeetingSegment{Idx: -1, Source: store.SegmentMic, Speaker: "me", Text: "Box ships today"})
@@ -124,10 +170,10 @@ func TestSummaryReadsCorrectedTranscript(t *testing.T) {
 // Long transcripts go in several requests, each within its limits.
 func TestCorrectionBatches(t *testing.T) {
 	var segs []store.MeetingSegment
-	for i := range 70 {
+	for i := range 300 {
 		segs = append(segs, store.MeetingSegment{Idx: i, Text: strings.Repeat("字", 100)})
 	}
-	segs = append(segs, store.MeetingSegment{Idx: 70, Text: "  "})
+	segs = append(segs, store.MeetingSegment{Idx: 300, Text: "  "})
 	b := correctionBatches(segs)
 	n := 0
 	for _, batch := range b {
@@ -140,8 +186,20 @@ func TestCorrectionBatches(t *testing.T) {
 		}
 		n += len(batch)
 	}
-	if n != 70 || len(b) != 3 {
+	if n != 300 || len(b) != 2 {
 		t.Fatalf("%d lines in %d batches", n, len(b))
+	}
+}
+
+// A whole meeting's transcript fits one request: the proofread finishes
+// after one language-model round trip instead of several queued ones.
+func TestCorrectionBatchesMeetingFitsOneRequest(t *testing.T) {
+	var segs []store.MeetingSegment
+	for i := range 170 {
+		segs = append(segs, store.MeetingSegment{Idx: i, Text: "The meeting goes over the plan."})
+	}
+	if b := correctionBatches(segs); len(b) != 1 {
+		t.Fatalf("a 170-line meeting became %d requests", len(b))
 	}
 }
 
@@ -180,12 +238,110 @@ func TestCorrectAndSummarizeWarns(t *testing.T) {
 // every line and the others' under none).
 func TestLiveTranslationFindsItsLine(t *testing.T) {
 	m, _, _ := correctFixture(t)
-	m.commitSegment(Segment{Source: SourceSystem, Text: "one"})
-	m.commitSegment(Segment{Source: SourceSystem, Start: time.Second, Text: "two"})
+	m.commitSegment(Segment{Source: SourceSystem, Text: "one"}, nil)
+	m.commitSegment(Segment{Source: SourceSystem, Start: time.Second, Text: "two"}, nil)
 	m.segWrites.Wait()
 	m.applyTranslation(1, "二")
 	segs := m.Current().Segments
 	if len(segs) != 2 || segs[0].Translation != "" || segs[1].Translation != "二" {
 		t.Fatalf("%+v", segs)
+	}
+}
+
+// failAfterChat fails from request n+1 on.
+type failAfterChat struct {
+	inner *fixingChat
+	n     int
+	err   error
+	mu    sync.Mutex
+	calls int
+}
+
+func (f *failAfterChat) Chat(ctx context.Context, req llm.Request) (llm.Response, error) {
+	f.mu.Lock()
+	f.calls++
+	c := f.calls
+	f.mu.Unlock()
+	if c > f.n {
+		return llm.Response{}, f.err
+	}
+	return f.inner.Chat(ctx, req)
+}
+
+// failWrites fails the correction's save.
+type failWrites struct{ store.Meetings }
+
+func (failWrites) UpdateSegmentTexts(context.Context, int64, map[int]string) error {
+	return errors.New("disk full")
+}
+
+// A correction whose save fails surfaces and leaves every line as
+// recognised: no half-corrected transcript reaches the summary.
+func TestCorrectTranscriptWriteFailureIsWhole(t *testing.T) {
+	m, repo, _ := correctFixture(t,
+		store.MeetingSegment{Idx: -1, Source: store.SegmentMic, Speaker: "me", Text: "Box one"},
+		store.MeetingSegment{Idx: -1, Source: store.SegmentMic, Speaker: "me", Text: "Box two"},
+	)
+	m.cfg.Store = failWrites{repo}
+	ctx := context.Background()
+	if err := m.CorrectTranscript(ctx, "m"); err == nil || !strings.Contains(err.Error(), "disk full") {
+		t.Fatalf("the failed save surfaced as %v", err)
+	}
+	_, segs, _ := repo.Meeting(ctx, "m")
+	for _, s := range segs {
+		if !strings.HasPrefix(s.Text, "Box ") {
+			t.Fatalf("line %d was corrected by halves: %q", s.Idx, s.Text)
+		}
+	}
+}
+
+// A batch whose request fails keeps the recognised text, and the other
+// batches still land (the per-part fallback of dictation, 5.31a): a
+// flaky request no longer undoes the whole correction. The failure still
+// surfaces, so it is logged.
+func TestCorrectTranscriptBatchFailureKeepsOtherBatches(t *testing.T) {
+	var segs []store.MeetingSegment
+	for i := 0; i <= correctBatchLines; i++ {
+		segs = append(segs, store.MeetingSegment{Idx: i, Source: store.SegmentMic, StartMS: int64(i * 1000), EndMS: int64(i*1000 + 900), Text: "Box line"})
+	}
+	m, repo, chat := correctFixture(t, segs...)
+	m.cfg.LLM = func(context.Context, string) (SummaryChat, error) {
+		return &failAfterChat{inner: chat, n: 1, err: errors.New("the model stopped")}, nil
+	}
+	ctx := context.Background()
+	if err := m.CorrectTranscript(ctx, "m"); err == nil {
+		t.Fatal("the second batch's failure did not surface")
+	}
+	_, got, err := repo.Meeting(ctx, "m")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, s := range got {
+		want := "Voxt line"
+		if s.Idx == correctBatchLines {
+			want = "Box line" // the failed batch's line stays as recognised
+		}
+		if s.Text != want {
+			t.Fatalf("line %d: %q, want %q", s.Idx, s.Text, want)
+		}
+	}
+}
+
+// TestCorrectTranscriptBoundsReasoning: the proofreading request carries
+// the low-effort thinking bound (revert: it goes out with no Thinking).
+func TestCorrectTranscriptBoundsReasoning(t *testing.T) {
+	m, _, chat := correctFixture(t,
+		store.MeetingSegment{Idx: 0, Source: store.SegmentMic, Text: "Box one"},
+		store.MeetingSegment{Idx: 1, Source: store.SegmentMic, Text: "Box two"},
+	)
+	if err := m.CorrectTranscript(context.Background(), "m"); err != nil {
+		t.Fatal(err)
+	}
+	if len(chat.reqs) != 1 {
+		t.Fatalf("requests %d", len(chat.reqs))
+	}
+	th := chat.reqs[0].Thinking
+	if th == nil || th.Mode != llm.ThinkEffort || th.Effort != "low" {
+		t.Fatalf("correction request thinking %+v", th)
 	}
 }

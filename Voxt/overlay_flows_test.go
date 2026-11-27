@@ -63,9 +63,9 @@ func (f *ovFlow) sample() {
 			st.text = "raw"
 		}
 	case ovAnswer:
-		v := a.cardNow()
+		v := a.cachedCard()
 		st.text = "card"
-		if v.conversation {
+		if v.Conversation {
 			st.text = "card:conversation"
 		}
 	}
@@ -253,10 +253,12 @@ func TestOverlayFlows(t *testing.T) {
 		"translate-speech-not-inserted": "working recording working notice",
 		"translate-selection":           "working",
 		"translate-selection-readonly":  "working answer",
-		"rewrite":                       "recording working answer",
-		"rewrite-selection":             "recording working answer",
-		"rewrite-no-card":               "recording working",
-		"follow-up":                     "answer",
+		// Rewrite's input card shows the recording and the work: no pill
+		// (wall 122).
+		"rewrite":           "answer",
+		"rewrite-selection": "answer",
+		"rewrite-no-card":   "",
+		"follow-up":         "answer",
 	}
 	for _, fl := range overlayFlows() {
 		t.Run(fl.name, func(t *testing.T) {

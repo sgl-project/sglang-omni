@@ -1,0 +1,67 @@
+{
+  "name": "empty-initial",
+  "kind": "overlay",
+  "overlay": {
+    "visible": false,
+    "id": "",
+    "state": "",
+    "stage": "",
+    "mode": "",
+    "progress": 0,
+    "collapsed": false,
+    "show_bar": false,
+    "show_expanded": false,
+    "show_asking": false,
+    "show_finishing": false,
+    "live": false,
+    "paused": false,
+    "starting": false,
+    "status_text": "Meeting in progress",
+    "elapsed_text": "0:00",
+    "mode_title": "Meeting",
+    "mode_hint": "Microphone and system audio",
+    "finishing_text": "Finishing the meeting…",
+    "problem_key": "",
+    "problem_text": "",
+    "show_microphone": true,
+    "show_system": true,
+    "microphone_levels": null,
+    "system_levels": null,
+    "rows": null,
+    "modes": [
+      {
+        "id": "meeting",
+        "title": "Meeting",
+        "hint": "Microphone and system audio",
+        "selected": false
+      },
+      {
+        "id": "subtitles",
+        "title": "Subtitles",
+        "hint": "System audio only",
+        "selected": false
+      },
+      {
+        "id": "recording",
+        "title": "Recording",
+        "hint": "Microphone only",
+        "selected": false
+      }
+    ],
+    "more_items": [
+      {
+        "id": "translate",
+        "label": "Live translation",
+        "selected": false,
+        "danger": false
+      },
+      {
+        "id": "cancel",
+        "label": "Cancel meeting",
+        "selected": false,
+        "danger": true
+      }
+    ],
+    "card_size": 1
+  }
+}

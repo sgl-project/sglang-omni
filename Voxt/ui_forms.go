@@ -26,8 +26,7 @@ type numOpts struct {
 	Label, Tooltip string
 	Width          float32 // of the whole control; 0 for the default
 	Disabled       bool
-	Grow           bool  // take the width the row leaves
-	Over           *bool // set to whether the typed text is a number over hi
+	Grow           bool // take the width the row leaves
 }
 
 // numberInput is a field for *value in [lo, hi] by step, with a − and +
@@ -78,10 +77,6 @@ func numberInput(c *ui.Context, value *float64, lo, hi, step float64, o numOpts)
 		}
 		if !in.Focused() {
 			*text = format(*value) // what the app set, or what was typed, in full
-		}
-		if o.Over != nil {
-			v, err := strconv.ParseFloat(strings.TrimSpace(*text), 64)
-			*o.Over = err == nil && v > hi
 		}
 		ui.Row(c.Key("steps")).AlignItems(ui.Stretch).Radius(px(t, radiusControl)).Border(1, k.Line).Shrink(0).Children(func() {
 			step1 := func(key string, ic icons.Icon, label string, delta float64, off bool) {

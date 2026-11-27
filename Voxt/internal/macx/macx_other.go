@@ -11,3 +11,7 @@ func frontmost() App { return App{} }
 func systemProxies() Proxies { return Proxies{} }
 
 func windowNumber(uintptr) int { return 0 }
+
+func accessibilityFocusedWindowFrame(int) (WindowFrame, bool) { return WindowFrame{}, false }
+
+func windowServerFocusedWindowFrame(int) (WindowFrame, bool) { return WindowFrame{}, false }

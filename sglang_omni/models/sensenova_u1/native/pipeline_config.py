@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Validate deployment options for native SenseNova generation."""
 from dataclasses import dataclass
+from typing import ClassVar
 
 from sglang.multimodal_gen.configs.pipeline_configs.base import (
     ModelTaskType,
@@ -13,6 +14,9 @@ from sglang.multimodal_gen.runtime.pipelines_core.schedule_batch import Req
 from sglang.multimodal_gen.runtime.platforms import current_platform
 from sglang.multimodal_gen.runtime.server_args import ServerArgs
 
+from sglang_omni.models.sensenova_u1.native.cache_dit import (
+    check_environment_cache_dit_params,
+)
 from sglang_omni.models.sensenova_u1.native.options import (
     DEFAULT_THINK_MODE,
     RESOLUTION_ALIGNMENT,
@@ -98,6 +102,10 @@ def set_compatible_runtime_defaults(server_args: ServerArgs) -> None:
 @dataclass
 class SenseNovaU1PipelineConfig(PipelineConfig):
     task_type: ModelTaskType = ModelTaskType.T2I
+    supported_task_types: ClassVar[tuple[ModelTaskType, ...]] = (
+        ModelTaskType.T2I,
+        ModelTaskType.TI2I,
+    )
     model_precision: str = "bf16"
     should_use_guidance: bool = True
     supports_cfg_parallel: bool = False
@@ -107,7 +115,9 @@ class SenseNovaU1PipelineConfig(PipelineConfig):
 
     def supports_dynamic_batching_for_request(self, batch: Req) -> bool:
         sampling_params = batch.sampling_params
-        return not bool(getattr(sampling_params, "think_mode", DEFAULT_THINK_MODE))
+        return sampling_params.image_path is None and not bool(
+            getattr(sampling_params, "think_mode", DEFAULT_THINK_MODE)
+        )
 
     def estimate_request_cost(self, batch: Req) -> float:
         image_token_count = (int(batch.width) // RESOLUTION_ALIGNMENT) * (
@@ -219,6 +229,7 @@ class SenseNovaU1PipelineConfig(PipelineConfig):
             )
         else:
             pass
+        check_environment_cache_dit_params()
 
     def get_model_deployment_config(self) -> ModelDeploymentConfig:
         return ModelDeploymentConfig(

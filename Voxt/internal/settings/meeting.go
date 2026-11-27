@@ -13,6 +13,8 @@ type Meeting struct {
 	NoFinalPass bool `json:"noFinalPass,omitempty"`
 	// NoAutoSummary disables generating a summary when a meeting ends.
 	NoAutoSummary bool `json:"noAutoSummary,omitempty"`
+	// CorrectionStyle replaces the default transcript-correction rules; empty keeps them.
+	CorrectionStyle string `json:"correctionStyle,omitempty"`
 	// Speakers turns on speaker diarisation on the system track (C1-3b).
 	Speakers bool `json:"speakers,omitempty"`
 	// TranslateTarget is the language code for live translation ("" = en).

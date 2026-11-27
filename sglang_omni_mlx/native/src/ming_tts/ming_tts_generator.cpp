@@ -148,6 +148,8 @@ mx::array MingGenerator::Step(GenerationState &state, float cfg, float sigma,
     state.hidden = backbone_.Forward(
         mx::astype(acoustic_.Aggregate(*state.latents), state.hidden.dtype()),
         state.caches);
+    // The backbone runs while the flow's graph is built.
+    mx::async_eval(state.hidden);
     const mx::array appended =
         mx::concatenate({state.history, *state.latents}, 1);
     state.history = mx::slice(

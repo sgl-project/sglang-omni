@@ -7,7 +7,7 @@ package main
 
 import (
 	"context"
-	"errors"
+	"net/url"
 	"path/filepath"
 	"time"
 
@@ -15,6 +15,7 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/core"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/helper/proto"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/llm"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/local"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/meeting"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/session"
@@ -25,10 +26,9 @@ import (
 const meetingLogSource = "meeting"
 
 type meetingState struct {
-	meetMgr        *meeting.Manager
-	meetSnap       meeting.Snapshot
-	meetingUI      *meetingSettingsUI // settings_meeting.go
-	meetingAbandon bool               // abandon while recording
+	meetMgr   *meeting.Manager
+	meetSnap  meeting.Snapshot
+	meetingUI *meetingSettingsUI // settings_meeting.go
 }
 
 func (a *app) openMeetings() {
@@ -53,11 +53,13 @@ func (a *app) openMeetings() {
 		ASR: func(ctx context.Context, src meeting.Source) (meeting.TrackASR, error) {
 			return a.meetingTrackASR(ctx, src)
 		},
-		VAD: a.meetingVAD(),
+		Diarizer: a.meetingDiarizer,
+		VAD:      a.meetingVAD(),
 		LLM: func(ctx context.Context, id string) (meeting.SummaryChat, error) {
 			chat, _, err := a.local.LLM(ctx, id)
 			return chat, err
 		},
+		LLMIsLocal: a.languageModelIsLocal,
 		MainLanguage: func() string {
 			return uitext.LangLabel(a.prefs.General.MainLanguage)
 		},
@@ -87,6 +89,25 @@ func (a *app) systemCaptureOK() bool {
 	return a.host != nil && a.host.sup != nil && a.host.sup.Status().Has(proto.MethodCaptureSystem)
 }
 
+// languageModelIsLocal says whether the language model id is served on
+// this Mac (a loopback address): its meeting correction does not overlap
+// the final pass, which needs the GPU and memory for recognition.
+func (a *app) languageModelIsLocal(id string) bool {
+	endpoint := ""
+	for _, p := range a.prefs.Providers.LLM {
+		if p.ID == id {
+			endpoint = p.Endpoint
+			break
+		}
+	}
+	preset, err := llm.ProviderConfig{ID: id, BaseURL: endpoint}.Resolve()
+	if err != nil {
+		return false
+	}
+	u, err := url.Parse(preset.BaseURL)
+	return err == nil && core.IsLoopback(u.Hostname())
+}
+
 func (a *app) meetingActive() bool {
 	return a.meetMgr != nil && a.meetSnap.State.Active()
 }
@@ -95,7 +116,7 @@ func (a *app) meetingChanged(s meeting.Snapshot) {
 	prev := a.meetSnap
 	a.meetSnap = s
 	if s.ID != prev.ID || s.State != prev.State {
-		a.meetOvMenu = meetingMenuNone // a menu for the state it opened in
+		a.meetOvUI.menu = meetingMenuNone // a menu for the state it opened in
 	}
 	if a.mv.read && (s.ID != prev.ID || s.State != prev.State) {
 		a.loadMeetings() // the meeting's row was written or its status changed (#3990)
@@ -230,6 +251,7 @@ func (a *app) meetingCorrect(id string) {
 	n := &a.mv
 	if n.detail != nil && n.detail.id == id {
 		n.detail.correcting = true
+		a.rebuildMeetingDetail()
 	}
 	a.async(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), time.Hour)
@@ -285,22 +307,4 @@ func (a *app) meetingDiscard() {
 func (a *app) meetingFailed(what, msg string, err error) {
 	a.toast(msg)
 	a.logs.Append(core.LogEntry{Time: time.Now(), Source: meetingLogSource, Level: core.SeverityWarning, Message: what + ": " + err.Error()})
-}
-
-// meetingStartProblem is what the user reads when a meeting does not start.
-func meetingStartProblem(err error) string {
-	var se *meeting.StartError
-	switch {
-	case errors.Is(err, local.ErrNotInstalled):
-		return i18n.T("The speech model for meetings is not downloaded. Download it in Settings → Meetings.")
-	case errors.Is(err, meeting.ErrBusy):
-		return i18n.T("A meeting is already recording.")
-	case errors.As(err, &se) && se.Guidance == meeting.GuidanceModel:
-		return i18n.T("Could not load the speech model for meetings: %v", se.Err)
-	case errors.As(err, &se) && se.Source == meeting.SourceSystem:
-		return i18n.T("Could not record system audio. Allow Voxt in System Settings → Privacy & Security → Screen & System Audio Recording, or record the microphone only.")
-	case errors.As(err, &se):
-		return i18n.T("Could not record the microphone. Allow Voxt in System Settings → Privacy & Security → Microphone.")
-	}
-	return i18n.T("Could not start the meeting: %v", err)
 }

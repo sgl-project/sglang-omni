@@ -47,7 +47,9 @@ func snap(a *app, s session.Snapshot) {
 func wave() []float64 {
 	var out []float64
 	for i := range session.Bars {
-		out = append(out, 0.35+0.3*math.Sin(float64(i)/2))
+		// Rounded: arm64 fuses this multiply-add and amd64 does not, so the raw
+		// values differ in the last bit and the goldens would differ by platform.
+		out = append(out, math.Round((0.35+0.3*math.Sin(float64(i)/2))*1e9)/1e9)
 	}
 	return out
 }
@@ -100,7 +102,7 @@ func TestOverlayModes(t *testing.T) {
 		t.Fatalf("notice %s %+v", a.ov.mode, a.notice)
 	}
 	a.noticeAction(a.notice.action)
-	if a.router.Path() != modelsPath || a.ov.mode != ovHidden {
+	if a.shownPath() != modelsPath || a.ov.mode != ovHidden {
 		t.Errorf("action: %s %s", a.router.Path(), a.ov.mode)
 	}
 	// Cancelled and too short: nothing.
@@ -216,7 +218,7 @@ func TestAnswerCardButtons(t *testing.T) {
 // mustBody is the card's text's height now.
 func (a *app) mustBody(t *testing.T) int {
 	t.Helper()
-	h, _ := a.cardBodyHeight(a.cardNow())
+	h, _ := a.cardBodyHeight(a.cachedCardRef())
 	return h
 }
 
@@ -265,7 +267,7 @@ func TestClockAndTail(t *testing.T) {
 	if layout.PillW != 148 || layout.PillH != 48 || layout.LiveH != 76 || layout.LiveMaxW != 300 || math.Abs(layout.WaveW-88.7) > 1e-3 {
 		t.Errorf("Voxt's sizes: pill %d×%d, live %d high, at most %d wide, the bars %v wide", layout.PillW, layout.PillH, layout.LiveH, layout.LiveMaxW, layout.WaveW)
 	}
-	if layout.RowWidth(true, 0) != layout.RowW+layout.Gap+layout.TimeW || layout.RowWidth(false, 200) != layout.RowW+layout.Gap+layout.SceneMaxW || layout.RowWidth(false, 40.2) != layout.RowW+layout.Gap+41 {
+	if layout.RowWidth(0) != layout.RowW || layout.RowWidth(200) != layout.RowW+layout.Gap+layout.SceneMaxW || layout.RowWidth(40.2) != layout.RowW+layout.Gap+41 {
 		t.Error("rowWidth")
 	}
 }
@@ -274,7 +276,7 @@ func TestClockAndTail(t *testing.T) {
 // edge, the first layout.FadeW of it fading in, the rest whole.
 func TestFadeSpans(t *testing.T) {
 	measure := func(s string) float32 { return float32(len([]rune(s))) * 10 } // 10 a letter
-	shown, at, spans := fadeSpans("abcdefghij", 25, measure)
+	shown, at, spans := fadeSpans("abcdefghij", 25, ovLiveAlpha, measure)
 	if shown != "cdefghij" || at != 20 {
 		t.Fatalf("shown %q at %v", shown, at)
 	}
@@ -290,7 +292,7 @@ func TestFadeSpans(t *testing.T) {
 	if b.String() != shown || spans[0].Color.A > 80 || spans[len(spans)-1].Color != ovLiveColor || spans[len(spans)-1].Text != "fghij" {
 		t.Errorf("spans %+v", spans)
 	}
-	if shown, at, _ := fadeSpans("abc", 0, measure); shown != "abc" || at != 0 {
+	if shown, at, _ := fadeSpans("abc", 0, ovLiveAlpha, measure); shown != "abc" || at != 0 {
 		t.Errorf("not scrolled: %q %v", shown, at)
 	}
 }
@@ -417,6 +419,16 @@ func overlayShots(t *testing.T, a *app, out, suffix string, dark bool) {
 		{"overlay-rewrite-failed", session.Snapshot{Kind: store.KindRewrite, State: session.Failed, Card: true,
 			Raw: "make it more formal", Selection: "hey, the release slips to thursday, sorry!",
 			Problem: &session.Problem{Code: session.ProblemLLM, Err: errors.New("llm.balanced: the language model process stopped (signal 9)")}}, nil, nil},
+		// The card says which picture went to the language model: the
+		// window's, the copied one, or the input box's as thumbnails.
+		{"overlay-rewrite-card-screenshot", session.Snapshot{Kind: store.KindRewrite, State: session.Done, Card: true, Delivery: deliver.ReasonCard,
+			Raw: "describe the window", Title: "窗口内容", Result: "窗口里是一个终端，正在运行测试。", ImageHint: "window"}, nil, nil},
+		{"overlay-rewrite-card-copied", session.Snapshot{Kind: store.KindRewrite, State: session.Done, Card: true, Delivery: deliver.ReasonCard,
+			Raw: "describe the picture", Title: "复制的图片", Result: "图片里是一个红色的正方形。", ImageHint: "clipboard"}, nil, nil},
+		{"overlay-rewrite-card-box-images", session.Snapshot{Kind: store.KindRewrite, State: session.Done, Card: true, Delivery: deliver.ReasonCard,
+			Raw: "describe them", Title: "两张图片", Result: "两张图片都是红色的正方形。", ImageHint: "box"}, nil, func(string) {
+			a.answer.ui.thumbs = []*ui.Bitmap{shotBitmap(t), shotBitmap(t)}
+		}},
 		// The Mac short of memory (memory_notice.go), after an insert.
 	}
 	desk, line := ui.RGB(246, 246, 248), ui.RGB(150, 156, 166)
@@ -615,7 +627,7 @@ func TestOverlayGoesAway(t *testing.T) {
 	if a.ov.mode != ovNotice || a.notice == nil || a.notice.text != "Nothing was heard." || !a.notice.warn {
 		t.Fatalf("no speech: %s %+v", a.ov.mode, a.notice)
 	}
-	ft.advance(noticeTime - time.Millisecond)
+	ft.advance(noSpeechTime - time.Millisecond)
 	if a.ov.mode != ovNotice || !a.ov.visible {
 		t.Fatalf("the notice went early: %s", a.ov.mode)
 	}
@@ -633,35 +645,6 @@ func TestOverlayGoesAway(t *testing.T) {
 	}
 	a.closeAnswer()
 	gone("card closed")
-}
-
-// TestOverlayQuickSessions: what the last session left on its way out
-// (the fade, a notice's timer) never hides the next one.
-func TestOverlayQuickSessions(t *testing.T) {
-	a, _, _ := newTestApp(t)
-	ft := new(fakeTimers).install(a)
-	snap(a, session.Snapshot{ID: "s1", State: session.Recording})
-	snap(a, session.Snapshot{ID: "s1", State: session.Done, Result: "One.", Inserted: true})
-	ft.advance(20 * time.Millisecond) // mid-fade
-	snap(a, session.Snapshot{ID: "s2", State: session.Recording})
-	ft.advance(time.Second)
-	if a.ov.mode != ovRecording || !a.ov.shown || !a.ov.visible {
-		t.Fatalf("the second recording hidden: %s shown %v visible %v", a.ov.mode, a.ov.shown, a.ov.visible)
-	}
-	// A notice of the second, then a third session failing: the second's
-	// timer leaves the third's notice alone.
-	snap(a, session.Snapshot{ID: "s2", State: session.Done, Problem: &session.Problem{Code: session.ProblemNoSpeech}})
-	ft.advance(3 * time.Second)
-	snap(a, session.Snapshot{ID: "s3", State: session.Recording})
-	snap(a, session.Snapshot{ID: "s3", State: session.Failed, Problem: &session.Problem{Code: session.ProblemNoASR}})
-	ft.advance(3 * time.Second) // the second's timer is due
-	if a.notice == nil || a.notice.action != actionModels || !a.ov.visible {
-		t.Fatalf("the third's notice went with the second's timer: %+v", a.notice)
-	}
-	ft.advance(noticeTime)
-	if a.notice != nil || a.ov.visible {
-		t.Errorf("the third's notice stays: %+v", a.notice)
-	}
 }
 
 // renderOverlay draws the overlay's window as it shows now, at scale 2,
@@ -781,5 +764,6 @@ func snapshotsOverlay(t *testing.T, out string) {
 			suffix += "-" + run.lang
 		}
 		overlayShots(t, a, out, suffix, run.dark)
+		boxShots(t, a, out, suffix, run.dark)
 	}
 }

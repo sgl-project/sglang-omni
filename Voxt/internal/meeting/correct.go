@@ -24,23 +24,40 @@ type TranscriptContext struct {
 	Speech string
 }
 
-// A correction request holds at most this many lines and runes of text.
-const (
-	correctBatchLines = 30
-	correctBatchRunes = 3000
+// A correction request holds at most this many lines and runes of text. A
+// whole meeting's transcript usually fits one request: every extra request
+// is another full round trip of queueing on the language model. Variables
+// only so a test can batch a small transcript the way a long one is.
+var (
+	correctBatchLines = 250
+	correctBatchRunes = 20000
 )
 
-const correctPrompt = `You proofread a meeting transcript that speech recognition wrote. The user message is a JSON array of its lines: [{"i": number, "text": "..."}].
+const correctionRequest = `You proofread a meeting transcript that speech recognition wrote. The user message is a JSON array of its lines: [{"i": number, "text": "..."}].`
 
-1. Fix what recognition got wrong, from the context of the meeting: words and characters that sound like the right ones, misheard names, product names and terms (write the glossary's terms as it gives them), and the punctuation.
+// DefaultCorrectionStyle is the built-in transcript-correction behavior.
+const DefaultCorrectionStyle = `1. Fix what recognition got wrong, from the context of the meeting: words and characters that sound like the right ones, misheard names, product names and terms (write the glossary's terms as it gives them), and the punctuation.
 2. Drop stutters ("I I I") and filler sounds (um, uh, 嗯, 呃). Keep everything else as it was said, in the language it was said in: do not rewrite, summarize, translate, merge, split, reorder or add anything.
-3. Leave a word you cannot make out as it is.
+3. Leave a word you cannot make out as it is.`
 
-Answer with only a JSON array, one item for each line, with its i: [{"i": number, "text": "the corrected line"}].`
+const correctionResponse = `Answer with only a JSON array, one item for each line, with its i: [{"i": number, "text": "the corrected line"}].`
+
+const correctPrompt = correctionRequest + "\n\n" + DefaultCorrectionStyle + "\n\n" + correctionResponse
+
+// correctionThinking bounds the reasoning a reasoning model does before
+// proofreading: the full budget costs tens of seconds per batch and can
+// exhaust the service's output limit on degenerate text. Services without
+// such a field see no change (applyThinking), and a service that rejects
+// the field gets the request retried without it (OpenAI.chat's relax).
+var correctionThinking = &llm.Thinking{Mode: llm.ThinkEffort, Effort: "low"}
 
 // CorrectTranscript has the language model correct a stored meeting's
 // lines in place: their times, speakers and order stay. A line the
-// answer leaves out or empties stays as it was recognised.
+// answer leaves out or empties stays as it was recognised, and so does a
+// whole batch whose request fails; the other batches still land, in one
+// atomic save (the same per-part fallback as dictation, behavior.md
+// 5.31a). When the final pass overlapped the first track's correction,
+// the batches it finished are reused, not asked again.
 func (m *Manager) CorrectTranscript(ctx context.Context, id string) error {
 	mt, segs, err := m.cfg.Store.Meeting(ctx, id)
 	if err != nil {
@@ -49,7 +66,15 @@ func (m *Manager) CorrectTranscript(ctx context.Context, id string) error {
 	if m.cfg.LLM == nil {
 		return fmt.Errorf("meeting: no language model")
 	}
-	chat, err := m.cfg.LLM(ctx, m.cfg.Settings().LLM)
+	m.mu.Lock()
+	overlap := m.cfg.correctOverlap
+	m.mu.Unlock()
+	var speculative map[string]string
+	if overlap != nil && overlap.meeting == id {
+		speculative = overlap.take()
+	}
+	currentSettings := m.cfg.Settings()
+	chat, err := m.cfg.LLM(ctx, currentSettings.LLM)
 	if err != nil {
 		return err
 	}
@@ -57,20 +82,49 @@ func (m *Manager) CorrectTranscript(ctx context.Context, id string) error {
 	if m.cfg.Context != nil {
 		tc = m.cfg.Context(ctx)
 	}
+	fixed := map[int]string{}
+	var firstErr error
 	for _, batch := range correctionBatches(segs) {
-		fixed, err := correctBatch(ctx, chat, tc, batch)
+		if speculativelyCorrected(batch, speculative) {
+			for _, s := range batch {
+				if t := speculative[s.Text]; t != s.Text {
+					fixed[s.Idx] = t
+				}
+			}
+			continue
+		}
+		got, err := overlap.correctBatch(ctx, chat, tc, currentSettings.CorrectionStyle, batch)
 		if err != nil {
-			return err
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue // this batch's lines stay as recognised; the rest land
 		}
 		for _, s := range batch {
-			if t, ok := fixed[s.Idx]; ok && t != s.Text {
-				if err := m.cfg.Store.UpdateSegmentText(ctx, mt.Seq, s.Idx, t); err != nil {
-					return err
-				}
+			if t, ok := got[s.Idx]; ok && t != s.Text {
+				fixed[s.Idx] = t
 			}
 		}
 	}
-	return nil
+	// A failed save still lands nothing: no half-written transcript.
+	if err := m.cfg.Store.UpdateSegmentTexts(ctx, mt.Seq, fixed); err != nil {
+		return err
+	}
+	return firstErr
+}
+
+// speculativelyCorrected says whether the overlap corrected every line
+// of the batch during the final pass.
+func speculativelyCorrected(batch []store.MeetingSegment, speculative map[string]string) bool {
+	if speculative == nil {
+		return false
+	}
+	for _, s := range batch {
+		if _, ok := speculative[s.Text]; !ok {
+			return false
+		}
+	}
+	return len(batch) > 0
 }
 
 // correctionBatches splits the lines with text into requests.
@@ -103,7 +157,7 @@ type correctLine struct {
 
 // correctBatch asks for one batch; it returns the corrected text by
 // segment index, without the lines the answer has no text for.
-func correctBatch(ctx context.Context, chat SummaryChat, tc TranscriptContext, batch []store.MeetingSegment) (map[int]string, error) {
+func correctBatch(ctx context.Context, chat SummaryChat, tc TranscriptContext, style string, batch []store.MeetingSegment) (map[int]string, error) {
 	lines := make([]correctLine, len(batch))
 	var text strings.Builder
 	for i, s := range batch {
@@ -115,8 +169,8 @@ func correctBatch(ctx context.Context, chat SummaryChat, tc TranscriptContext, b
 		return nil, err
 	}
 	zero := 0.0
-	resp, err := chat.Chat(ctx, llm.Request{Temperature: &zero, Messages: []llm.Message{
-		{Role: llm.System, Content: correctSystem(tc, text.String())},
+	resp, err := chat.Chat(ctx, llm.Request{Temperature: &zero, Thinking: correctionThinking, Messages: []llm.Message{
+		{Role: llm.System, Content: correctSystem(tc, text.String(), style)},
 		{Role: llm.User, Content: string(user)},
 	}})
 	if err != nil {
@@ -126,8 +180,12 @@ func correctBatch(ctx context.Context, chat SummaryChat, tc TranscriptContext, b
 }
 
 // correctSystem is the system prompt: the rules, then the user's context.
-func correctSystem(tc TranscriptContext, text string) string {
-	parts := []string{correctPrompt}
+func correctSystem(tc TranscriptContext, text, style string) string {
+	prompt := correctPrompt
+	if style = strings.TrimSpace(style); style != "" {
+		prompt = correctionRequest + "\n\n" + style + "\n\n" + correctionResponse
+	}
+	parts := []string{prompt}
 	if s := strings.TrimSpace(tc.Speech); s != "" {
 		parts = append(parts, "What the meeting is about, in the user's words:\n"+s)
 	}

@@ -83,6 +83,16 @@ std::optional<std::string> ReadBody(mg_connection *connection,
   return body;
 }
 
+std::string EncodeBase64(const std::string &bytes) {
+  std::string base64(4 * ((bytes.size() + 2) / 3) + 1, '\0');
+  size_t base64_length = base64.size();
+  mg_base64_encode(reinterpret_cast<const unsigned char *>(bytes.data()),
+                   bytes.size(), base64.data(), &base64_length);
+  // Note (XXXXRT666): civetweb counts the terminating NUL it writes.
+  base64.resize(base64_length - 1);
+  return base64;
+}
+
 bool IsPost(mg_connection *connection) {
   return std::strcmp(mg_get_request_info(connection)->request_method, "POST") ==
          0;
@@ -172,6 +182,14 @@ Field(const std::map<std::string, omni_common::FormField> &form,
   } else {
     return found->second.value;
   }
+}
+
+bool SendWebSocketText(mg_connection *connection, const std::string &text) {
+  mg_lock_connection(connection);
+  const int written = mg_websocket_write(connection, MG_WEBSOCKET_OPCODE_TEXT,
+                                         text.data(), text.size());
+  mg_unlock_connection(connection);
+  return written > 0;
 }
 
 } // namespace omni_server

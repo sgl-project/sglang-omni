@@ -12,6 +12,7 @@ build/
 # Virtual environments
 venv/
 .venv/
+.venv-inkling/
 env/
 /omni
 
@@ -50,6 +51,7 @@ benchmarks/cache/
 .tune-runs/
 .eval-runs/
 .profiling-runs/
+/.hmz-evidence/
 .e2e-cosyvoice-ab/
 benchmarks/eval/*.edit.lock
 asr_seedtts_results.json

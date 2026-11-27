@@ -74,9 +74,11 @@ const (
 	// app installed them (Borrowed).
 	LLMQwen3  = "llm.qwen3"
 	LLMGemma4 = "llm.gemma4"
-	// The speech models' DFlash drafts (Draft), one each.
-	ASRAccurateDraft = "asr.accurate.draft"
-	ASRFastDraft     = "asr.fast.draft"
+	// The speech models' DFlash drafts (Draft), one per size: quants of a size share it.
+	ASRAccurateDraft     = "asr.accurate.draft"
+	ASRFastDraft         = "asr.fast.draft"
+	ASRMossDraft         = "asr.moss.draft"
+	ASRWhisperLargeDraft = "asr.whisper-large.draft"
 )
 
 // File is one file of a model, at its path in the repo (and in the
@@ -130,6 +132,12 @@ type Model struct {
 	// speech model's card; the runtime passes it while it is installed.
 	// "" for none.
 	Draft string
+	// DraftOptIn: the draft came with another model's download (a shared
+	// draft), so a settings document that never saw this model's switch
+	// must not turn it on: Faster transcription waits for the user's own
+	// switch (settings.Models.Faster), as the download never said yes
+	// for this model.
+	DraftOptIn bool
 	// Alternatives are models that may stand in for it while it is not
 	// installed (the same kind, lighter or another app's), offered to the
 	// user, never chosen silently (family spec §7.2, §7.10.1).
@@ -181,7 +189,8 @@ func Lookup(id string) (Model, bool) {
 // The pins are the family pins table's where it has the repo
 // (TestFamilyPins); the omni models' are also sglang_omni_mlx/native/ci's
 // models.json or model_pins.json, the Whisper tokenizers that file's
-// (TestOmniPins). The speech models after the first two are Voxt 1.x's
+// (TestOmniPins). Qwen3-ASR 1.7B (8bit) is first, the recommended one;
+// MOSS-Transcribe-Diarize follows the two Qwen3-ASR ones, then Voxt 1.x's
 // other local models, with the files their native servers read.
 // The language models' files are those Voxt's loaders take (weights,
 // configs, tokenizer, chat template): Qwen3.5-4B-OptiQ without its
@@ -221,7 +230,21 @@ var catalog = []Model{
 		},
 	},
 	{
-		ID: ASRQwen6bit, Name: "Qwen3-ASR 1.7B (6bit)", Kind: ASR, Runtime: Omni, Needs: []string{VADSilero},
+		ID: ASRMoss, Name: "MOSS-Transcribe-Diarize", Kind: ASR, Runtime: Omni, Needs: []string{VADSilero},
+		Family: "moss-transcribe-diarize", Quant: "bf16", Draft: ASRMossDraft,
+		Repo: "OpenMOSS-Team/MOSS-Transcribe-Diarize", Revision: "704aa4a9c304e8520be88901e0d1960158ef5b15",
+		Files: []File{
+			{"config.json", 2335, "2b2b7a6e61334152bdd7ecf8a4da3073b4940a097e193d1d2b22093e77535234", false},
+			{"merges.txt", 1671853, "8831e4f1a044471340f7c0a83d7bd71306a5b867e95fd870f74d0c5308a904d5", false},
+			{"model-00000-of-00001.safetensors", 1817113576, "9a0ceb4ab7330357db3ff583dba8d83625d5b733b00e1d55d6970e11b07026c4", true},
+			{"processor_config.json", 292, "a978c2dd54a65b576c3dae4b654fe9bcbac1184c6db2df0afb2c90fcdc872ae7", false},
+			{"tokenizer.json", 11423222, "bcf03774334462d6e34b5005cb11120a62275f146ee2953e68731ecdbce84fbb", true},
+			{"tokenizer_config.json", 503, "61d04c96104177240688396655ae3f7cf38ce2ea036db867a1d2b6883e27c3d5", false},
+			{"vocab.json", 2776833, "ca10d7e9fb3ed18575dd1e277a2579c16d108e32f27439684afa0e10b1440910", false},
+		},
+	},
+	{
+		ID: ASRQwen6bit, Name: "Qwen3-ASR 1.7B (6bit)", Kind: ASR, Runtime: Omni, Needs: []string{VADSilero}, Draft: ASRAccurateDraft, DraftOptIn: true,
 		Family: "qwen3-asr", Quant: "6bit",
 		Repo: "mlx-community/Qwen3-ASR-1.7B-6bit", Revision: "edd077a475c4da058e25b6e6ec1199115ca1be2b",
 		Files: []File{
@@ -247,7 +270,7 @@ var catalog = []Model{
 	},
 	{
 		ID: ASRWhisperLarge, Name: "Whisper Large v3", Kind: ASR, Runtime: Omni, Needs: []string{VADSilero, AuxWhisperLarge},
-		Family: "whisper", Quant: "fp16",
+		Family: "whisper", Quant: "fp16", Draft: ASRWhisperLargeDraft,
 		Repo: "mlx-community/whisper-large-v3-mlx", Revision: "49e6aa286ad60c14352c404340ded53710378a11",
 		Files: []File{
 			{"config.json", 269, "34982ce6ae286095000f82ae9583b3431639e8b092bf60c961f203745e6500e3", false},
@@ -304,20 +327,6 @@ var catalog = []Model{
 		},
 	},
 	{
-		ID: ASRMoss, Name: "MOSS-Transcribe-Diarize", Kind: ASR, Runtime: Omni, Needs: []string{VADSilero},
-		Family: "moss-transcribe-diarize", Quant: "bf16",
-		Repo: "OpenMOSS-Team/MOSS-Transcribe-Diarize", Revision: "704aa4a9c304e8520be88901e0d1960158ef5b15",
-		Files: []File{
-			{"config.json", 2335, "2b2b7a6e61334152bdd7ecf8a4da3073b4940a097e193d1d2b22093e77535234", false},
-			{"merges.txt", 1671853, "8831e4f1a044471340f7c0a83d7bd71306a5b867e95fd870f74d0c5308a904d5", false},
-			{"model-00000-of-00001.safetensors", 1817113576, "9a0ceb4ab7330357db3ff583dba8d83625d5b733b00e1d55d6970e11b07026c4", true},
-			{"processor_config.json", 292, "a978c2dd54a65b576c3dae4b654fe9bcbac1184c6db2df0afb2c90fcdc872ae7", false},
-			{"tokenizer.json", 11423222, "bcf03774334462d6e34b5005cb11120a62275f146ee2953e68731ecdbce84fbb", true},
-			{"tokenizer_config.json", 503, "61d04c96104177240688396655ae3f7cf38ce2ea036db867a1d2b6883e27c3d5", false},
-			{"vocab.json", 2776833, "ca10d7e9fb3ed18575dd1e277a2579c16d108e32f27439684afa0e10b1440910", false},
-		},
-	},
-	{
 		ID: AuxWhisperLarge, Name: "Whisper Large v3 tokenizer", Kind: Aux, Runtime: Omni, Family: "whisper",
 		Repo: "openai/whisper-large-v3", Revision: "06f233fe06e710322aca913c1bc4249a0d71fce1",
 		Files: []File{
@@ -359,6 +368,23 @@ var catalog = []Model{
 		Files: []File{
 			{"config.json", 1858, "de349d2f8494363a3a3641ca6554a3841e001f769de089974a5349c9580931da", false},
 			{"model.safetensors", 262451248, "bbfc427b9e57cb3663d23ab796d05ca82070bbdfe4c42dc9a5813430a0ace219", true},
+		},
+	},
+	{
+		ID: ASRMossDraft, Name: "MOSS-Transcribe-Diarize DFlash draft", Kind: Draft, Runtime: Omni, Family: "moss-transcribe-diarize-dflash", Quant: "bf16",
+		Repo: "wilsonzheng0327/MOSS-Transcribe-Diarize-dflash", Revision: "2e3f00b0932112e4f92a4ef67a4cd60ee855056c",
+		Files: []File{
+			{"config.json", 1888, "c240f41c98040d6eec7ca8f0f6bd548d3d9df302cbe10f5a91e2e833d1463250", false},
+			{"model.safetensors", 262451248, "b7ee3fde257d5f0c95a0f8805f62934e202e4d6b7d993f04dd53e4d512045a10", true},
+		},
+	},
+	{
+		ID: ASRWhisperLargeDraft, Name: "Whisper Large v3 Distil draft", Kind: Draft, Runtime: Omni, Family: "whisper-distil", Quant: "bf16",
+		Repo: "wilsonzheng0327/Whisper-large-v3-distil-draft", Revision: "257104348ea24677cf6338967592a9d6078b383b",
+		Files: []File{
+			{"config.json", 1225, "e771f2e9f9ebb1838830c00d3aa2ce7e240874ef0133fa5fab8cd189ca766cdb", false},
+			{"generation_config.json", 4242, "2d07fa6d3ad06295b03b3be822a20b817949c26fdcb45d73c6e73cd4cdbd91b1", false},
+			{"model.safetensors", 1512875008, "de43643bd06cb2139943899fe56ef43a21ed8623f3bf24e57d96592105c30bf3", true},
 		},
 	},
 	{

@@ -20,6 +20,7 @@ import (
 	"github.com/hehehai/actnowkit/family"
 	fammodels "github.com/hehehai/actnowkit/models"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/actnow"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/local"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/models"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/models/modelstest"
@@ -64,6 +65,24 @@ func useModels(t *testing.T, a *app, ids ...string) {
 func onDisk(a *app, id string) bool {
 	m, _ := models.Lookup(id)
 	return models.Installed(a.models.Hub(), m) != ""
+}
+
+func modelRowFamilyText(t *testing.T, a *app, id string) string {
+	t.Helper()
+	state := a.modelsPageModel()
+	cards := append(append(append([]modelCardViewState{}, state.ASR...), state.LLM...), state.Hidden...)
+	if state.Dictation != nil {
+		cards = append(cards, *state.Dictation)
+	}
+	for _, card := range cards {
+		for _, row := range card.Rows {
+			if row.ID == id {
+				return row.FamilyText
+			}
+		}
+	}
+	t.Fatalf("no model row for %s", id)
+	return ""
 }
 
 // toasted reports whether msg was toasted (still queued, or shown).
@@ -185,17 +204,24 @@ func TestModelDeleteShared(t *testing.T) {
 	useModels(t, a, models.ASRFast)
 	claimFor(t, a, audioSmithID, models.ASRFast)
 	a.navigate(modelsPath)
-	if !has(tt, "Shared with AudioSmith") {
-		t.Fatalf("no Shared with: %q", tt.Texts())
+	frames(tt)
+	if got := modelRowFamilyText(t, a, models.ASRFast); got != "Shared with AudioSmith" {
+		t.Fatalf("Shared with tooltip %q", got)
 	}
 
 	// Remove from VoxtNew: the claim goes, the files stay for AudioSmith.
-	click(t, tt, "Delete Qwen3-ASR 0.6B (4bit)…")
+	drain := queuePosts(a)
+	scrollSettingsToText(tt, "Delete Qwen3-ASR 0.6B (4bit)…")
+	clickControl(t, tt, "Delete Qwen3-ASR 0.6B (4bit)…")
+	drain()
+	frames(tt)
 	if !has(tt, `Remove "Qwen3-ASR 0.6B (4bit)" from Voxt?`) ||
 		!has(tt, "AudioSmith also uses this model, so its files (712.8 MB) stay on this Mac.") {
 		t.Fatalf("no family dialog: %q", tt.Texts())
 	}
 	click(t, tt, "Remove from Voxt")
+	drain()
+	frames(tt)
 	if !onDisk(a, models.ASRFast) || a.models.Status(models.ASRFast).Mine {
 		t.Errorf("after Remove from VoxtNew: on disk %v, %+v", onDisk(a, models.ASRFast), a.models.Status(models.ASRFast))
 	}
@@ -206,12 +232,20 @@ func TestModelDeleteShared(t *testing.T) {
 	// Delete for all apps…: asks again, then the files go and AudioSmith
 	// finds a tombstone.
 	useModels(t, a, models.ASRFast)
-	click(t, tt, "Delete Qwen3-ASR 0.6B (4bit)…")
+	a.modelsChanged()
+	frames(tt)
+	scrollSettingsToText(tt, "Delete Qwen3-ASR 0.6B (4bit)…")
+	clickControl(t, tt, "Delete Qwen3-ASR 0.6B (4bit)…")
+	drain()
+	frames(tt)
 	click(t, tt, "Delete for all apps…")
+	frames(tt)
 	if !has(tt, `Delete "Qwen3-ASR 0.6B (4bit)" for all apps?`) || !has(tt, "AudioSmith will need to download it again (712.8 MB).") {
 		t.Fatalf("no second confirmation: %q", tt.Texts())
 	}
 	click(t, tt, "Delete Qwen3-ASR 0.6B (4bit) for all apps")
+	drain()
+	frames(tt)
 	if onDisk(a, models.ASRFast) || a.modelStatus[models.ASRFast].Installed {
 		t.Error("the files stayed")
 	}
@@ -228,10 +262,12 @@ func TestModelDeleteCancelShared(t *testing.T) {
 	claimFor(t, a, dictaID, models.LLMTranslate)
 	claimFor(t, a, audioSmithID, models.LLMTranslate)
 	a.navigate(modelsPath)
-	if !has(tt, "Shared with AudioSmith and Dicta") {
-		t.Fatalf("no Shared with: %q", tt.Texts())
+	frames(tt)
+	scrollSettingsToText(tt, uitext.ModelName(models.LLMTranslate))
+	if got := modelRowFamilyText(t, a, models.LLMTranslate); got != "Shared with AudioSmith and Dicta" {
+		t.Fatalf("Shared with tooltip %q", got)
 	}
-	click(t, tt, "Delete Hy-MT2 1.8B (Q4_K_M)…")
+	clickControl(t, tt, "Delete Hy-MT2 1.8B (Q4_K_M)…")
 	if !has(tt, "AudioSmith and Dicta also use this model, so its files (1.1 GB) stay on this Mac.") {
 		t.Fatalf("dialog: %q", tt.Texts())
 	}
@@ -254,8 +290,15 @@ func TestModelDeleteBusy(t *testing.T) {
 	}
 	defer lock.Release()
 	a.navigate(modelsPath)
-	click(t, tt, "Delete Qwen3-ASR 0.6B (4bit)…")
+	frames(tt)
+	drain := queuePosts(a)
+	scrollSettingsToText(tt, "Delete Qwen3-ASR 0.6B (4bit)…")
+	clickControl(t, tt, "Delete Qwen3-ASR 0.6B (4bit)…")
+	drain()
+	frames(tt)
 	click(t, tt, "Delete Qwen3-ASR 0.6B (4bit)")
+	drain()
+	frames(tt)
 	if msg := "AudioSmith is downloading or using this model. Try again later."; !toasted(a, tt, msg) {
 		t.Errorf("no toast %q: %q", msg, tt.Texts())
 	}
@@ -280,8 +323,9 @@ func TestModelElsewhere(t *testing.T) {
 	}
 	a.models.Refresh()
 	a.navigate(modelsPath)
-	if !has(tt, "Downloading in AudioSmith…") || a.modelStatus[models.ASRAccurate].Elsewhere != audioSmithID {
-		t.Fatalf("elsewhere: %+v %q", a.modelStatus[models.ASRAccurate], tt.Texts())
+	frames(tt)
+	if got := modelRowFamilyText(t, a, models.ASRAccurate); got != "Downloading in AudioSmith…" || a.modelStatus[models.ASRAccurate].Elsewhere != audioSmithID {
+		t.Fatalf("elsewhere: %+v, tooltip %q", a.modelStatus[models.ASRAccurate], got)
 	}
 	click(t, tt, "Download Qwen3-ASR 1.7B (8bit)") // disabled
 	if st := a.models.Status(models.ASRAccurate); st.Downloading || st.Err != nil {
@@ -291,7 +335,7 @@ func TestModelElsewhere(t *testing.T) {
 	lock.Release()
 	modelstest.Seed(a.models.Hub(), models.ASRAccurate)
 	a.models.Refresh()
-	if !a.modelStatus[models.ASRAccurate].Installed || has(tt, "Downloading in AudioSmith…") {
+	if !a.modelStatus[models.ASRAccurate].Installed || modelRowFamilyText(t, a, models.ASRAccurate) == "Downloading in AudioSmith…" {
 		t.Errorf("not installed: %+v", a.modelStatus[models.ASRAccurate])
 	}
 
@@ -301,8 +345,8 @@ func TestModelElsewhere(t *testing.T) {
 		t.Fatal(err)
 	}
 	a.models.Refresh()
-	if !has(tt, "Deleted in AudioSmith") || !has(tt, "Download again") {
-		t.Errorf("deleted in: %+v %q", a.modelStatus[models.ASRAccurate], tt.Texts())
+	if got := modelRowFamilyText(t, a, models.ASRAccurate); got != "Deleted in AudioSmith" || !has(tt, "Download again") {
+		t.Errorf("deleted in: %+v, tooltip %q, %q", a.modelStatus[models.ASRAccurate], got, tt.Texts())
 	}
 }
 
@@ -335,6 +379,7 @@ func TestModelWaitingFor(t *testing.T) {
 	}
 	defer lock.Release()
 	a.navigate(modelsPath)
+	frames(tt)
 	a.downloadModel(models.LLMTranslate)
 	deadline := time.Now().Add(5 * time.Second)
 	for !has(tt, "Downloading in Dicta… 0%") && time.Now().Before(deadline) {
@@ -364,9 +409,38 @@ func TestModelFamilyText(t *testing.T) {
 		{qwen, models.Status{OnDisk: true}, "Already on this Mac"},
 		{qwen, models.Status{OnDisk: true, Installed: true, Mine: true, Users: []string{"Dicta"}}, "Shared with Dicta"},
 	} {
-		if got := modelFamilyText(c.m, c.st); got != c.want {
+		if got := modelFamilyTextFor(i18n.CurrentTranslator(), c.m, c.st); got != c.want {
 			t.Errorf("%s %+v: %q, want %q", c.m.ID, c.st, got, c.want)
 		}
+	}
+}
+
+func queuedModelTester(a *app) *ui.Tester {
+	drain := queuePosts(a)
+	return ui.NewTester(func(context *ui.Context) {
+		drain()
+		a.view(context)
+	}, windowWidth, windowHeight)
+}
+
+func TestModelPostedUpdatesQueueUntilFrame(t *testing.T) {
+	a, _, _ := newTestApp(t)
+	tester := queuedModelTester(a)
+	posted := make(chan struct{})
+	go func() {
+		a.post(func() {
+			a.modelStatus = map[string]models.Status{"posted": {}}
+			a.modelMem = map[string]int64{"posted": 1}
+		})
+		close(posted)
+	}()
+	<-posted
+	if _, ok := a.modelStatus["posted"]; ok || a.modelMem != nil {
+		t.Fatal("background post ran outside the frame's serialized queue")
+	}
+	tester.Frame()
+	if _, ok := a.modelStatus["posted"]; !ok || a.modelMem["posted"] != 1 {
+		t.Fatalf("frame did not apply both posted model maps: %+v %+v", a.modelStatus, a.modelMem)
 	}
 }
 
@@ -377,7 +451,8 @@ func TestModelFamilyText(t *testing.T) {
 // (the borrowed language models) another app installed is not listed.
 func TestBorrowedModel(t *testing.T) {
 	t.Run("retired", func(t *testing.T) {
-		a, _, tt := newTestApp(t)
+		a, _, _ := newTestApp(t)
+		tt := queuedModelTester(a)
 		tt.SetSize(windowWidth, 1600)
 		m, _ := models.Lookup(models.LLMQwen3)
 		if err := modelstest.SeedModel(a.models.Hub(), m); err != nil {
@@ -385,6 +460,7 @@ func TestBorrowedModel(t *testing.T) {
 		}
 		claimFor(t, a, dictaID, models.LLMQwen3)
 		a.navigate(modelsPath)
+		frames(tt)
 		if has(tt, uitext.ModelName(models.LLMQwen3)) || len(a.installed(local.LLM)) != 0 {
 			t.Fatalf("a retired model of Dicta's is listed: %q", tt.Texts())
 		}
@@ -399,10 +475,12 @@ func TestBorrowedModel(t *testing.T) {
 		{models.ASRFast, false, "Delete", true},
 	} {
 		t.Run(fmt.Sprintf("%s/needs-installed=%v", tc.id, tc.needsThere), func(t *testing.T) {
-			a, _, tt := newTestApp(t)
+			a, _, _ := newTestApp(t)
+			tt := queuedModelTester(a)
 			tt.SetSize(windowWidth, 1600)
 			name := uitext.ModelName(tc.id)
 			a.navigate(modelsPath)
+			frames(tt)
 			if tc.borrowed && has(tt, name) {
 				t.Fatal("a borrowed model not on this Mac is listed")
 			}
@@ -423,11 +501,15 @@ func TestBorrowedModel(t *testing.T) {
 			if has(tt, "Download "+name) {
 				t.Fatalf("the card offers Download, which does nothing for a model on disk")
 			}
-			if !has(tt, name) || !has(tt, "Installed by Dicta") {
+			if !has(tt, name) || modelRowFamilyText(t, a, tc.id) != "Installed by Dicta" {
 				t.Fatalf("installed by Dicta: %q", tt.Texts())
 			}
-			click(t, tt, "Use "+name)
-			if st := a.models.Status(tc.id); !st.Installed || !st.Mine || !has(tt, "Shared with Dicta") {
+			drain := queuePosts(a)
+			scrollSettingsToText(tt, "Use "+name)
+			clickControl(t, tt, "Use "+name)
+			drain()
+			frames(tt)
+			if st := a.models.Status(tc.id); !st.Installed || !st.Mine || modelRowFamilyText(t, a, tc.id) != "Shared with Dicta" {
 				t.Fatalf("used: %+v %q", st, tt.Texts())
 			}
 			// What it needs comes with it: Dicta's voice detection is used,
@@ -438,12 +520,17 @@ func TestBorrowedModel(t *testing.T) {
 					t.Errorf("%s needs %s: neither used nor downloading (%+v)", tc.id, need, st)
 				}
 			}
-			click(t, tt, tc.remove+" "+name+"…")
+			scrollSettingsToText(tt, tc.remove+" "+name+"…")
+			clickControl(t, tt, tc.remove+" "+name+"…")
+			drain()
+			frames(tt)
 			if !has(tt, fmt.Sprintf("Remove %q from Voxt?", name)) {
 				t.Fatalf("dialog: %q", tt.Texts())
 			}
 			click(t, tt, "Remove from Voxt")
-			if st := a.models.Status(tc.id); st.Installed || !st.OnDisk || !has(tt, "Installed by Dicta") {
+			drain()
+			frames(tt)
+			if st := a.models.Status(tc.id); st.Installed || !st.OnDisk || modelRowFamilyText(t, a, tc.id) != "Installed by Dicta" {
 				t.Errorf("removed: %+v %q", st, tt.Texts())
 			}
 		})

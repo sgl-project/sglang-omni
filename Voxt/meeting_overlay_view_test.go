@@ -6,9 +6,43 @@ import (
 	"testing"
 	"time"
 
+	"github.com/egoist/mygo/ui"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/meeting"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/overlay/layout"
 )
+
+func overlayModel(snapshot meeting.Snapshot, collapsed bool, size int, menu meetingMenu) meetingOverlayModel {
+	return meetingOverlayLayoutModel(buildMeetingOverlayViewState(i18n.NewTranslator(i18n.Locale()), snapshot, collapsed, size), menu)
+}
+
+func (a *app) meetingOverlayView(c *ui.Context) {
+	model := a.meetingOverlayModel()
+	mode, faceHeight := meetingOverlayFace(model)
+	style := meetingOverlayFaceStyle{radius: faceRadius(a.prefs.Overlay, mode, faceHeight), alpha: layout.FaceAlpha(a.prefs.Overlay), palette: a.prefs.Appearance.Palette}
+	animation := meetingOverlayAnimation{motion: a.overlayMotion(), phase: a.overlayPhase()}
+	meetingOverlayView(c, a.meetOvView, model, a, &a.meetOvUI, animation, style)
+}
+
+func (a *app) meetingOverlayBenchmarkView(c *ui.Context) {
+	model := a.meetOvModel
+	mode, faceHeight := meetingOverlayFace(model)
+	style := meetingOverlayFaceStyle{radius: faceRadius(a.prefs.Overlay, mode, faceHeight), alpha: layout.FaceAlpha(a.prefs.Overlay), palette: a.prefs.Appearance.Palette}
+	animation := meetingOverlayAnimation{motion: a.overlayMotion(), phase: a.overlayPhase()}
+	meetingOverlayView(c, a.meetOvView, model, a, &a.meetOvUI, animation, style)
+}
+
+func meetingOverlayRows(snapshot meeting.Snapshot) []meetingOverlayTranscriptRow {
+	return meetingOverlayTranscriptRows(i18n.NewTranslator(i18n.Locale()), snapshot)
+}
+
+func meetingOverlayProblemText(key string) string {
+	return meetingOverlayStateProblemText(i18n.NewTranslator(i18n.Locale()), key)
+}
+
+func formatMeetingElapsed(duration time.Duration) string {
+	return formatMeetingOverlayElapsed(duration)
+}
 
 func TestMeetingOverlayModelSizes(t *testing.T) {
 	s := meeting.Snapshot{State: meeting.StateRecording}
@@ -78,8 +112,25 @@ func TestMeetingOverlayGrowsWithText(t *testing.T) {
 		t.Fatalf("size 2: %d wide", w)
 	}
 	// The modes' menu fits before any text.
-	if h := overlayModel(meeting.Snapshot{State: meeting.StateRecording}, false, 0, meetingMenuMode).Layout.Height; h < meetingOvChrome+menuHeight(meetingMenuMode, s)+2*layout.Pad {
+	if h := overlayModel(meeting.Snapshot{State: meeting.StateRecording}, false, 0, meetingMenuMode).Layout.Height; h < meetingOvChrome+menuHeight(meetingMenuMode, buildMeetingOverlayViewState(i18n.NewTranslator(i18n.Locale()), s, false, 0))+2*layout.Pad {
 		t.Fatalf("menu height %d", h)
+	}
+}
+
+func TestMeetingOverlaySizeButtonClampsSavedStep(t *testing.T) {
+	for _, step := range []int{3, 9} {
+		var next int
+		tester := ui.NewTester(func(context *ui.Context) {
+			next, _ = meetingOverlaySizeButton(context, step)
+		}, 800, 200)
+		frames(tester)
+		if err := tester.ClickControl("Make the card smaller"); err != nil {
+			t.Errorf("step %d: %v (controls %q)", step, err, tester.AccessLabels())
+			continue
+		}
+		if next != 0 {
+			t.Errorf("step %d: next %d, want 0", step, next)
+		}
 	}
 }
 

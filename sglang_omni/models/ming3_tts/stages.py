@@ -64,6 +64,8 @@ from sglang_omni.proto.request import StagePayload
 from sglang_omni.scheduling.bootstrap import create_sglang_infrastructure
 from sglang_omni.scheduling.generation_batch_policy import (
     CudaGraphBackend,
+    falls_back_to_breakable_prefill,
+    get_prefill_cuda_graph_backend,
     operator_selected_prefill_backend,
 )
 from sglang_omni.scheduling.omni_scheduler import OmniScheduler
@@ -595,6 +597,8 @@ def create_tts_engine_executor(
         json_model_override_args=json.dumps({"architectures": [backbone_architecture]}),
         disable_radix_cache=True,
     )
+    operator_selected_prefill = operator_selected_prefill_backend(overrides)
+    defaults_full_prefill = False
     overrides.setdefault("chunked_prefill_size", max_seq_len if dense else -1)
     overrides.setdefault("enable_mixed_chunk", dense)
     if dense:
@@ -607,7 +611,8 @@ def create_tts_engine_executor(
             "disable_prefill_cuda_graph"
         )
         if not disables_prefill and prefill_graph_token_counts:
-            if not operator_selected_prefill_backend(overrides):
+            if not operator_selected_prefill:
+                defaults_full_prefill = True
                 overrides.setdefault(
                     "cuda_graph_backend_prefill", CudaGraphBackend.FULL
                 )
@@ -626,6 +631,17 @@ def create_tts_engine_executor(
     server_args = build_sglang_server_args(
         checkpoint, context_length=max_seq_len, **overrides
     )
+    if (
+        defaults_full_prefill
+        and get_prefill_cuda_graph_backend(server_args) == CudaGraphBackend.FULL
+        and falls_back_to_breakable_prefill(server_args, "Ming 3 TTS")
+    ):
+        overrides["cuda_graph_backend_prefill"] = CudaGraphBackend.BREAKABLE
+        server_args = build_sglang_server_args(
+            checkpoint, context_length=max_seq_len, **overrides
+        )
+    else:
+        pass
     worker, tree_cache, request_pool, token_pool, model_config = (
         create_sglang_infrastructure(
             server_args,

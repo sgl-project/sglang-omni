@@ -1,6 +1,7 @@
 package hotkey
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"testing"
@@ -98,8 +99,12 @@ func TestOverlaps(t *testing.T) {
 
 func TestBuildDefaults(t *testing.T) {
 	f := settings.Defaults().Features
+	if off := Build(f, []string{Transcribe}); len(off.Bindings) != 3 || len(off.Carbon) != 1 || HotkeysOf(f, Sessions[0]) != nil {
+		t.Fatalf("sessions are off by default: %+v", off.Bindings)
+	}
+	f.SessionsOn = true
 	p := Build(f, []string{Transcribe})
-	if len(p.Bindings) != 3 {
+	if len(p.Bindings) != 4 {
 		t.Fatalf("bindings %+v", p.Bindings)
 	}
 	ropt, paste, note := p.Bindings[0], p.Bindings[1], p.Bindings[2]
@@ -116,21 +121,44 @@ func TestBuildDefaults(t *testing.T) {
 	if note.ID != Note || note.Key != nil || note.Behavior != proto.BehaviorTap || note.Modifiers[proto.ModCommand] != proto.SideRight || len(note.Modifiers) != 1 {
 		t.Errorf("note %+v", note)
 	}
-	if len(p.Carbon) != 1 || p.Carbon[0] != (Carbon{ID: PasteLast, Accelerator: "Control+Option+V"}) {
+	// Of the session shortcuts only "Next session" is bound by default:
+	// two keys, Option+Tab, tapped (#4005).
+	if b := p.Bindings[3]; b.ID != SessionNext || b.Key == nil || b.Behavior != proto.BehaviorTap || len(b.Modifiers) != 1 ||
+		b.Modifiers[proto.ModOption] != proto.SideAny {
+		t.Errorf("next session %+v", b)
+	}
+	if len(p.Carbon) != 2 || p.Carbon[0] != (Carbon{ID: PasteLast, Accelerator: "Control+Option+V"}) {
 		t.Errorf("carbon %+v", p.Carbon)
 	}
 	// No fn in the defaults: fn and 🌐 are left alone (Auralink's).
 	cfg := p.Configure(true)
-	if cfg.SwallowFn || !cfg.Active || len(cfg.Bindings) != 3 || cfg.DoubleTapMS != 0 {
+	if cfg.SwallowFn || !cfg.Active || len(cfg.Bindings) != 4 || cfg.DoubleTapMS != 0 {
 		t.Errorf("configure %+v", cfg)
 	}
 	all := Build(f, Features)
-	if len(all.Bindings) != 5 || all.Bindings[1].ID != "translate/0" || all.Bindings[2].ID != "rewrite/0" || all.Bindings[3].ID != PasteLast ||
-		all.Bindings[4].ID != Note {
+	if len(all.Bindings) != 6 || all.Bindings[1].ID != "translate/0" || all.Bindings[2].ID != "rewrite/0" || all.Bindings[3].ID != PasteLast ||
+		all.Bindings[4].ID != Note || all.Bindings[5].ID != SessionNext {
+		t.Errorf("all %+v", all.Bindings)
+	}
+	// A session's own shortcut binds once the user gives it keys.
+	f.Sessions[1] = settings.Hotkey{Keys: "F6", Trigger: settings.TriggerTap}
+	if all = Build(f, Features); len(all.Bindings) != 7 || all.Bindings[5].ID != Session2 {
 		t.Errorf("all %+v", all.Bindings)
 	}
 	if got := Build(settings.Features{}, Features).Configure(false); got.Bindings == nil || len(got.Bindings) != 0 || got.SwallowFn {
 		t.Errorf("empty %+v", got)
+	}
+}
+
+// TestBuildLeavesOutAHiddenNotes: hiding Notes in Settings → General
+// stops its shortcut, as hiding Translate stops Translate's (#4224).
+func TestBuildLeavesOutAHiddenNotes(t *testing.T) {
+	f := settings.Defaults().Features
+	f.Hidden = []string{settings.HideNotes}
+	for _, b := range Build(f, Features).Bindings {
+		if b.ID == Note {
+			t.Fatalf("hidden Notes still binds %+v", b)
+		}
 	}
 }
 
@@ -261,6 +289,53 @@ func TestBuildCancel(t *testing.T) {
 	}
 }
 
+func TestCardBindingsMarshalEmptyModifiers(t *testing.T) {
+	for _, binding := range CardBindings(1, nil) {
+		if binding.Modifiers == nil {
+			t.Errorf("%s has nil modifiers", binding.ID)
+		}
+		raw, err := json.Marshal(binding)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Contains(raw, []byte(`"modifiers":{}`)) {
+			t.Errorf("%s marshals as %s, want modifiers {}", binding.ID, raw)
+		}
+	}
+}
+
+// TestBuildFinish: Return is an active-only binding when the app asks for
+// it during Transcribe recording. It never becomes a Carbon shortcut,
+// which would take Return from other apps while idle.
+func TestBuildFinish(t *testing.T) {
+	p := Build(settings.Defaults().Features, []string{"finish"})
+	for _, active := range []bool{false, true} {
+		for range 2 { // configuring again must not add another Return
+			cfg := p.Configure(active)
+			var finish []proto.HotkeyBinding
+			for _, b := range cfg.Bindings {
+				if b.ID == "finish" {
+					finish = append(finish, b)
+				}
+			}
+			if !active {
+				if len(finish) != 0 {
+					t.Errorf("idle: Return is bound: %+v", finish)
+				}
+				continue
+			}
+			if len(finish) != 1 || finish[0].Key == nil || *finish[0].Key != 36 || finish[0].Behavior != proto.BehaviorTap || len(finish[0].Modifiers) != 0 {
+				t.Fatalf("active: Return binding %+v", finish)
+			}
+		}
+	}
+	for _, c := range p.Carbon {
+		if c.ID == "finish" {
+			t.Errorf("Return became a global Carbon shortcut: %+v", c)
+		}
+	}
+}
+
 func TestParseID(t *testing.T) {
 	for id, want := range map[string]struct {
 		f  string
@@ -291,9 +366,11 @@ func TestCheck(t *testing.T) {
 		Rewrite: settings.Rewrite{Feature: settings.Feature{Hotkeys: []settings.Hotkey{
 			hk("Control+Command+V", ""),
 		}}},
-		PasteLast: hk("Command+Control+V", ""),
-		Note:      hk("Fn", settings.TriggerDouble), // always a tap: Transcribe's fn tap has it
-		Cancel:    hk("Fn", ""),
+		PasteLast:  hk("Command+Control+V", ""),
+		Note:       hk("Fn", settings.TriggerDouble), // always a tap: Transcribe's fn tap has it
+		Cancel:     hk("Fn", ""),
+		Sessions:   [4]settings.Hotkey{hk("Fn", settings.TriggerDouble)}, // a tap, as Cancel's
+		SessionsOn: true,
 	}
 	got := map[string]Problem{}
 	for _, p := range Check(f) {
@@ -308,6 +385,7 @@ func TestCheck(t *testing.T) {
 		"translate/1 duplicate":  func(p Problem) bool { return p.Other == Translate && p.OtherIndex == 0 },
 		"paste-last/0 conflict":  func(p Problem) bool { return p.Other == Rewrite },
 		"note/0 conflict":        func(p Problem) bool { return p.Other == Transcribe && p.OtherIndex == 0 },
+		"session-1/0 conflict":   func(p Problem) bool { return p.Other == Transcribe && p.OtherIndex == 0 },
 		"cancel/0 conflict":      func(p Problem) bool { return p.Other == Transcribe && p.OtherIndex == 0 },
 	} {
 		p, ok := got[key]
@@ -367,17 +445,54 @@ func TestRoute(t *testing.T) {
 		{"other release does nothing", ev("transcribe/3", proto.PhaseUp), Recording, "transcribe/2", Decision{}},
 		{"long press while recording stops", ev("transcribe/3", proto.PhaseDown), Recording, "", Decision{Action: Stop}},
 		{"busy waits", ev("transcribe/0", proto.PhaseTrigger), Busy, "", Decision{}},
+		{"composing starts", ev("transcribe/0", proto.PhaseTrigger), Composing, "", Decision{Action: Start, Feature: Transcribe}},
+		{"composing starts held", ev("transcribe/2", proto.PhaseDown), Composing, "", Decision{Action: Start, Feature: Transcribe, Hold: true}},
+		{"composing up does nothing", ev("transcribe/2", proto.PhaseUp), Composing, "", Decision{}},
+		{"paste last while composing", ev(PasteLast, proto.PhaseTrigger), Composing, "", Decision{}},
+		{"cancel shortcut cancels composing", ev(proto.HotkeyCancel, proto.PhaseTrigger), Composing, "", Decision{Action: Cancel}},
 		{"cancel shortcut cancels recording", ev(proto.HotkeyCancel, proto.PhaseTrigger), Recording, "", Decision{Action: Cancel}},
 		{"cancel shortcut cancels busy", ev(proto.HotkeyCancel, proto.PhaseTrigger), Busy, "", Decision{Action: Cancel}},
 		{"cancel shortcut idle", ev(proto.HotkeyCancel, proto.PhaseTrigger), Idle, "", Decision{}},
 		{"paste last", ev(PasteLast, proto.PhaseTrigger), Idle, "", Decision{Action: Paste}},
-		{"paste last while recording", ev(PasteLast, proto.PhaseTrigger), Recording, "", Decision{}},
+		{"paste last waits without the finish", ev(PasteLast, proto.PhaseTrigger), Recording, "", Decision{}},
 		{"note starts", ev(Note, proto.PhaseTrigger), Idle, "", Decision{Action: Start, Feature: Note}},
 		{"note stops", ev(Note, proto.PhaseTrigger), Recording, "", Decision{Action: Stop}},
+		{"session slot switches", ev(Session2, proto.PhaseTrigger), Idle, "", Decision{Action: Start, Feature: Session2}},
+		{"session slot waits while recording", ev(Session2, proto.PhaseTrigger), Recording, "", Decision{}},
+		{"session slot waits while busy", ev(Session2, proto.PhaseTrigger), Busy, "", Decision{}},
+		{"session slot switches while composing", ev(Session2, proto.PhaseTrigger), Composing, "", Decision{Action: Start, Feature: Session2}},
+		{"session slot down does nothing", ev(Session2, proto.PhaseDown), Idle, "", Decision{}},
 		{"unknown binding", ev("try/x", proto.PhaseTrigger), Idle, "", Decision{}},
 	} {
-		if got := Route(tc.e, tc.phase, tc.hold, ""); got != tc.want {
+		if got := Route(tc.e, tc.phase, tc.hold, "", false); got != tc.want {
 			t.Errorf("%s: %+v, want %+v", tc.name, got, tc.want)
+		}
+	}
+}
+
+// TestRouteFinish: Return stops only a recording, whether Voxt's own
+// dictation card or another app is in front. Idle and busy sessions leave
+// the key alone.
+func TestRouteFinish(t *testing.T) {
+	voxt := proto.App{PID: 1, BundleID: "dev.hehehai.voxtnew", Name: "Voxt"}
+	other := proto.App{PID: 2, BundleID: "com.apple.TextEdit", Name: "TextEdit"}
+	for _, front := range []proto.App{voxt, other} {
+		for _, tc := range []struct {
+			phase  Phase
+			finish bool
+			want   Decision
+		}{
+			{Recording, false, Decision{}},
+			{Recording, true, Decision{Action: Stop}},
+			{Idle, false, Decision{}},
+			{Busy, false, Decision{}},
+			{Idle, true, Decision{}},
+			{Busy, true, Decision{}},
+		} {
+			e := proto.HotkeyEventParams{Binding: "finish", Phase: proto.PhaseTrigger, Behavior: proto.BehaviorTap, Front: &front}
+			if got := Route(e, tc.phase, "", "", tc.finish); got != tc.want {
+				t.Errorf("%s, %v, finish %v: %+v, want %+v", front.Name, tc.phase, tc.finish, got, tc.want)
+			}
 		}
 	}
 }
@@ -385,8 +500,9 @@ func TestRoute(t *testing.T) {
 // TestRouteStrict: with Strict shortcuts, while recording only the
 // bindings of the feature that started the session stop it (tap, double
 // tap, the release of its long press); another feature's tap, down and up
-// do nothing; Cancel and PasteLast route as in the default mode, which
-// stops on any feature's binding.
+// do nothing; Cancel routes as in the default mode, and PasteLast stops
+// with Return finishing live, whatever strict says (Build's dedup counts
+// its Return as the finish then).
 func TestRouteStrict(t *testing.T) {
 	ev := func(binding, phase string) proto.HotkeyEventParams {
 		return proto.HotkeyEventParams{Binding: binding, Phase: phase}
@@ -412,31 +528,98 @@ func TestRouteStrict(t *testing.T) {
 					} else if start.hold != "" && tc.e.Phase == proto.PhaseUp {
 						tc.defaultTo = Decision{} // only the hold's own release stops
 					}
-					if got := Route(tc.e, Recording, start.hold, own); got != tc.strict {
+					if got := Route(tc.e, Recording, start.hold, own, false); got != tc.strict {
 						t.Errorf("strict, %s started by %s, %+v: %+v, want %+v", own, start.name, tc.e, got, tc.strict)
 					}
-					if got := Route(tc.e, Recording, start.hold, ""); got != tc.defaultTo {
+					if got := Route(tc.e, Recording, start.hold, "", false); got != tc.defaultTo {
 						t.Errorf("default, %s started by %s, %+v: %+v, want %+v", own, start.name, tc.e, got, tc.defaultTo)
 					}
 				}
 			}
 		}
 		for _, strict := range []string{own, ""} {
-			if got := Route(ev(proto.HotkeyCancel, proto.PhaseTrigger), Recording, "", strict); got != (Decision{Action: Cancel}) {
+			if got := Route(ev(proto.HotkeyCancel, proto.PhaseTrigger), Recording, "", strict, false); got != (Decision{Action: Cancel}) {
 				t.Errorf("%q: cancel %+v", strict, got)
 			}
-			if got := Route(ev(PasteLast, proto.PhaseTrigger), Recording, "", strict); got != (Decision{}) {
-				t.Errorf("%q: paste last while recording %+v", strict, got)
+			if got := Route(ev(PasteLast, proto.PhaseTrigger), Recording, "", strict, true); got != (Decision{Action: Stop}) {
+				t.Errorf("%q: paste last while recording with the finish %+v", strict, got)
 			}
-			if got := Route(ev(own+"/0", proto.PhaseTrigger), Idle, "", strict); got != (Decision{Action: Start, Feature: own}) {
+			if got := Route(ev(own+"/0", proto.PhaseTrigger), Idle, "", strict, false); got != (Decision{Action: Start, Feature: own}) {
 				t.Errorf("%q: idle tap %+v", strict, got)
 			}
 		}
 	}
-	if got := Route(ev("transcribe/0", proto.PhaseTrigger), Recording, "", Note); got != (Decision{}) {
+	if got := Route(ev("transcribe/0", proto.PhaseTrigger), Recording, "", Note, false); got != (Decision{}) {
 		t.Errorf("strict note session, transcribe tap: %+v", got)
 	}
-	if got := Route(ev(Note, proto.PhaseTrigger), Recording, "", Note); got != stop {
+	if got := Route(ev(Note, proto.PhaseTrigger), Recording, "", Note, false); got != stop {
 		t.Errorf("strict note session, note tap: %+v", got)
+	}
+}
+
+// TestBuildFinishDedup: an existing Return chord covers Finish only when
+// it stops the recording as routed: Paste last (Route stops it there),
+// any feature's with Strict shortcuts off, only Transcribe's own with
+// them on (Route filters the rest, so Finish is bound and leads).
+func TestBuildFinishDedup(t *testing.T) {
+	hk := func(keys string) settings.Hotkey { return settings.Hotkey{Keys: keys} }
+	f := settings.Defaults().Features
+	f.PasteLast = hk("Return")
+	if p := Build(f, []string{"finish", PasteLast}); p.Finish != nil {
+		t.Errorf("paste-last on Return did not cover: %+v", p.Finish)
+	}
+	f = settings.Defaults().Features
+	f.Translate.Hotkeys = []settings.Hotkey{hk("Return")}
+	if p := Build(f, []string{"finish", Translate}); p.Finish != nil {
+		t.Errorf("translate on Return did not cover: %+v", p.Finish)
+	}
+	f.StrictShortcuts = true
+	p := Build(f, []string{"finish", Translate})
+	if p.Finish == nil {
+		t.Fatal("strict: no finish beside a filtered Return")
+	}
+	if cfg := p.Configure(true); len(cfg.Bindings) == 0 || cfg.Bindings[0].ID != "finish" {
+		t.Errorf("strict: finish does not lead: %+v", cfg.Bindings)
+	}
+	f = settings.Defaults().Features
+	f.StrictShortcuts = true
+	f.Transcribe.Hotkeys = []settings.Hotkey{hk("Return")}
+	if p := Build(f, []string{"finish", Transcribe}); p.Finish != nil {
+		t.Errorf("strict: transcribe's own Return did not cover: %+v", p.Finish)
+	}
+}
+
+// TestBuildFinishBeatsCancelOnReturn: while Return finishes a recording,
+// the same chord cannot also be configured as its cancelling shortcut.
+func TestBuildFinishBeatsCancelOnReturn(t *testing.T) {
+	f := settings.Defaults().Features
+	f.Cancel = settings.Hotkey{Keys: "Return", Trigger: settings.TriggerTap}
+	p := Build(f, []string{FinishID})
+	if p.Finish == nil {
+		t.Fatal("Return was not bound to finish the recording")
+	}
+	if p.Cancel != nil {
+		t.Fatalf("Return was also bound to cancel: %+v", p.Cancel)
+	}
+}
+
+// TestRoutePasteLastRoute: paste last pastes in Idle. While Recording it
+// stops only with Return finishing live (its Return may be the finish the
+// plan dropped for it); with the setting off, or in a session the plan
+// never binds Finish for (Translate, Rewrite, a note), it waits, as in
+// Busy.
+func TestRoutePasteLastRoute(t *testing.T) {
+	e := proto.HotkeyEventParams{Binding: PasteLast, Phase: proto.PhaseTrigger, Behavior: proto.BehaviorTap}
+	if got := Route(e, Recording, "", "", true); got != (Decision{Action: Stop}) {
+		t.Errorf("recording with the finish: %+v", got)
+	}
+	if got := Route(e, Recording, "", "", false); got != (Decision{}) {
+		t.Errorf("recording without the finish: %+v", got)
+	}
+	if got := Route(e, Idle, "", "", false); got != (Decision{Action: Paste}) {
+		t.Errorf("idle: %+v", got)
+	}
+	if got := Route(e, Busy, "", "", false); got != (Decision{}) {
+		t.Errorf("busy: %+v", got)
 	}
 }

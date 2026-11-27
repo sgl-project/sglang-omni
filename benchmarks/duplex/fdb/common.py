@@ -137,6 +137,10 @@ class Settings:
         return self.fdb_work / "aligner-venv" / "bin" / "python"
 
     @property
+    def inkling_venv(self) -> Path:
+        return self.fdb_work / "inkling-venv"
+
+    @property
     def run_root(self) -> Path:
         return self.fdb_work / "runs" / self.run_name
 

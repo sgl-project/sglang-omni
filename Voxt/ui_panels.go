@@ -15,7 +15,7 @@ import (
 func (a *app) pageWidth(c *ui.Context) float32 {
 	t := c.Theme()
 	w, _ := c.Size()
-	side := a.sideW
+	side := a.navUI.sideW
 	if a.railMode() {
 		side = px(t, railWidth)
 	}
@@ -68,8 +68,8 @@ type panelState struct {
 
 // layout says whether the panel, width wide, fits beside a main column
 // of at least minMain (inline), and whether it shows.
-func (sp *panelState) layout(a *app, c *ui.Context, width, minMain float32) (inline, shown bool) {
-	inline = a.pageWidth(c)-width >= minMain
+func (sp *panelState) layout(pageWidth, width, minMain float32) (inline, shown bool) {
+	inline = pageWidth-width >= minMain
 	shown = inline
 	if sp.set {
 		shown = sp.open

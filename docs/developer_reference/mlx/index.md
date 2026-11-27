@@ -55,16 +55,19 @@ agree on it with a maintainer first.
 | `mlx-community/Qwen3-ASR-0.6B-4bit` | `wilsonzheng0327/Qwen3-ASR-0.6B-dflash` | `ci/golden/qwen3-asr-0.6b-4bit-dflash.json` |
 | `mlx-community/Qwen3-ASR-1.7B-{6bit,8bit}` | `wilsonzheng0327/Qwen3-ASR-1.7B-dflash` | `ci/golden/qwen3-asr-1.7b-8bit-dflash.json` |
 | `OpenMOSS-Team/MOSS-Transcribe-Diarize` | `wilsonzheng0327/MOSS-Transcribe-Diarize-dflash` | `ci/model_golden/moss-transcribe-diarize-dflash.json` |
+| `Edge0/ARK-ASR-3B` | `wilsonzheng0327/ARK-ASR-3B-dflash` | `ci/model_golden/arkasr-3b-dflash.json` |
 
-The Qwen3-ASR drafts are pinned in `ci/models.json`; the MOSS-TD draft is pinned in `ci/model_pins.json`. A draft for another target is one pin and one golden whose request names it under `draft_model_path`. Verifying a block moves the target's low-precision logits slightly, so a few percent of clips differ from plain decoding in punctuation or a near-tie word; the goldens hold each chip's draft outputs like any other.
+The Qwen3-ASR drafts are pinned in `ci/models.json`; the MOSS-TD and ARK-ASR drafts are pinned in `ci/model_pins.json`. A draft for another target is one pin and one golden whose request names it under `draft_model_path`. Verifying a block moves the target's low-precision logits slightly, so a few percent of clips differ from plain decoding in punctuation or a near-tie word; the goldens hold each chip's draft outputs like any other.
 
 `moss_transcribe_diarize_server` and `moss_transcribe` take the same two flags; the CLI's `verify_rounds` sums over audio chunks.
+
+`arkasr_server` and `arkasr_transcribe` take the same two flags as MOSS-TD. Each 30 s window decodes with the draft under the request's one token budget, so stop rules, budget and window joining are plain decoding's; the draft counts and the CLI's `verify_rounds` sum over windows. ARK-ASR decodes greedily only, so every request uses the draft.
 
 Qwen3-ASR uses adaptive backoff by default: after warmup and two four-round windows, a five-token plain probe measures cost per committed token. If both windows are over 5% slower, the request continues with plain decoding and the existing target KV cache. Otherwise speculation resumes. A winning plain measurement expires after 64 post-warmup draft rounds; an observed slowdown can trigger an earlier recheck.
 
 The probe and fallback batch single-row affine projections to avoid MLX 0.32.3's scalar/batched rounding discontinuity on M5. Only matrix rows are padded: each step still advances the target KV cache by one real token. Standalone plain decoding is unchanged.
 
-`--draft-policy fixed` preserves always-draft behavior; the exact golden checker uses it because adaptive switching can change low-precision near-ties. MOSS-TD retains fixed drafting.
+`--draft-policy fixed` preserves always-draft behavior; the exact golden checker uses it because adaptive switching can change low-precision near-ties. MOSS-TD and ARK-ASR always draft fixed: on Apple M5, adaptive gave ARK-ASR the same corpus outputs as fixed and was slower overall and on every long recording.
 
 `whisper_server` and `whisper_transcribe` take `--draft-model-path DIR` and `--draft-steps N` (proposals per round, 7 by default). The draft is a distil Whisper decoder: each round it proposes N tokens and the target verifies them in one pass, so a greedy request keeps the target's transcript; a request with a positive `temperature` samples without the draft. The draft decodes the target's encoder states, so only its decoder is loaded, in the target's dtype, after its width, vocabulary and text positions are checked against the target. For `mlx-community/whisper-large-v3-mlx`, convert `wilsonzheng0327/Whisper-large-v3-distil-draft` (pinned in `ci/model_pins.json`) with `python ci/convert_whisper_draft.py HF_DIRECTORY NATIVE_DIRECTORY`. The CLI reports `verify_rounds`, `proposed_draft_token_count` and `accepted_draft_token_count` per file.
 
@@ -82,7 +85,7 @@ For adaptive Qwen3-ASR, the draft counts cover speculative rounds only; plain pr
   (`common`, `swift_port`, `silero_vad`, `sortformer`, `fish_dac`). Shared code goes in
   `src/common/`, not in another model's directory or library. Include project
   headers by their path under `src/`, e.g. `#include "common/layers.h"`.
-- Shared audio, checkpoint/layer, tokenizer and multipart APIs use the `omni_common` namespace and the `common` library. HTTP helpers use `omni_server` and the `common_http` library; neither library depends on a model. Whisper-style log-mel extraction is `omni_common::LogMel` in `common/audio.h`; Qwen3-ASR audio layouts and encoder token counts belong to `qwen3_asr/qwen3_audio.h`. Shared decoder and ASR serving types still live under `qwen3_asr/`; their extraction is separate from the common primitive APIs.
+- Shared audio, checkpoint/layer, tokenizer and multipart APIs use the `omni_common` namespace and the `common` library. HTTP helpers use `omni_server` and the `common_http` library; neither library depends on a model. Whisper-style log-mel extraction is `omni_common::LogMel` in `common/audio.h`; the Kaldi fbank pieces (Kaldi's mel filters, the symmetric Hamming window, the fbank on MLX and its low frame rate stacking) that CAM++, SenseVoice and Fun-ASR-Nano share are in `common/kaldi_fbank.h`, and the SAN-M encoder SenseVoice and Fun-ASR-Nano share (under SenseVoice's weight names) is `common/sanm_encoder.h`; Qwen3-ASR audio layouts and encoder token counts belong to `qwen3_asr/qwen3_audio.h`. Shared decoder and ASR serving types still live under `qwen3_asr/`; their extraction is separate from the common primitive APIs.
 - Reuse `layers`, `swift_port`, the Sortformer front end, the Silero VAD
   port and the Fish DAC. If your code duplicates something on `main`, move it into the shared
   file in the same PR.
@@ -94,7 +97,10 @@ For adaptive Qwen3-ASR, the draft counts cover speculative rounds only; plain pr
 - Keep the reference's behavior. Behavior changes go in a separate PR.
 - Report English WER, Chinese CER and mixed MER on the 392-clip corpus,
   reference vs native, plus the count of identical clips. Explain where
-  differing clips diverge.
+  differing clips diverge. Report silence and noise separately: for each, count
+  clips whose rendered transcript contains a letter or number. On an unrecorded
+  chip neither count may exceed the reference chip's count. Recorded chips
+  still require exact matches.
 
 **Golden and pins**
 

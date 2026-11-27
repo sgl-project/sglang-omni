@@ -2,9 +2,12 @@ package main
 
 import (
 	"context"
+	"os"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/models"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/omni"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/omni/omnitest"
@@ -30,8 +33,8 @@ func TestKeepIdle(t *testing.T) {
 			t.Errorf("%q: %v, want %v", c.v, got, c.idle)
 		}
 	}
-	if len(keepLabels()) != len(settings.KeepChoices) {
-		t.Errorf("%d labels for %d choices", len(keepLabels()), len(settings.KeepChoices))
+	if len(keepLabelsFor(i18n.CurrentTranslator())) != len(settings.KeepChoices) {
+		t.Errorf("%d labels for %d choices", len(keepLabelsFor(i18n.CurrentTranslator())), len(settings.KeepChoices))
 	}
 }
 
@@ -42,10 +45,11 @@ func TestKeepLoadedRow(t *testing.T) {
 	a, _, tt := newTestApp(t)
 	tt.SetSize(windowWidth, 4800) // the section under every card
 	a.navigate(modelsPath)
+	scrollSettingsToText(tt, "Speech context")
 	if !hasExact(tt, "Advanced") || has(tt, "Keep models loaded") {
 		t.Fatalf("the section is not folded: %q", tt.Texts())
 	}
-	click(t, tt, "Advanced")
+	clickControl(t, tt, "Advanced")
 	if !hasExact(tt, "Keep models loaded") || !hasExact(tt, "Automatic") {
 		t.Fatalf("open: %q", tt.Texts())
 	}
@@ -115,5 +119,21 @@ func TestKeepLoadedLive(t *testing.T) {
 	}
 	if _, ok := a.loadedModel(t, models.VADSilero); !ok {
 		t.Error("Silero went too")
+	}
+}
+
+// TestKeepLoadedManualTestDoc keeps the tooltip check separate from the
+// manual family-unload check that follows it.
+func TestKeepLoadedManualTestDoc(t *testing.T) {
+	doc, err := os.ReadFile("docs/manual-test.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(doc)
+	if !strings.Contains(text, "ⓘ 说明立即开始、继续占用内存，“自动”在闲置 10 分钟后卸载。") {
+		t.Error("manual test 7.5a does not describe the actual Keep models loaded tooltip")
+	}
+	if strings.Contains(text, "使用这个模型库的其他 app 仍可请 Voxt 释放内存") {
+		t.Error("manual test 7.5a assigns the family-unload behavior to the tooltip")
 	}
 }

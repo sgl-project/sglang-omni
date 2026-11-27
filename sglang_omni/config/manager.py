@@ -94,8 +94,16 @@ class ConfigManager:
     dynamically configure their runtime settings.
     """
 
-    def __init__(self, config: PipelineConfig | None = None):
+    def __init__(
+        self,
+        config: PipelineConfig | None = None,
+        source_patches: ConfigPatchSet | None = None,
+    ):
         self.config = config
+        # The file's own patches, so a launch can tell what the user set from a model default.
+        self.source_patches = (
+            source_patches if source_patches is not None else ConfigPatchSet()
+        )
 
     def parse_extra_args(self, args: list[str]) -> list[tuple[str, str]]:
         """Parse the CLI arguments into ordered ``(key, value)`` pairs.
@@ -180,23 +188,19 @@ class ConfigManager:
         return ConfigManager(config)
 
     @staticmethod
-    def from_file(file_path: str) -> "ConfigManager":
-        """
-        Load the configuration from the file path.
-
-        The file's stages: mapping entries are folded into the
-        configuration that comes back, so callers holding a ConfigManager
-        see one settled config rather than a config plus a pile of pending
-        overrides. sgl-omni config explain wants the opposite and calls
-        sources_from_config_file directly.
-        """
-        config, patches = sources_from_config_file(file_path)
+    def from_file(
+        file_path: str, *, model_path_override: str | None = None
+    ) -> "ConfigManager":
+        """Load the file with stage settings and any model path override applied."""
+        config, patches = sources_from_config_file(
+            file_path, model_path_override=model_path_override
+        )
         if not patches:
             return ConfigManager(config)
         else:
             pass
         resolved = ConfigResolver(config).resolve(patches)
-        return ConfigManager(resolved.config)
+        return ConfigManager(resolved.config, source_patches=patches)
 
 
 def normalize_flag_key(key: str) -> str:

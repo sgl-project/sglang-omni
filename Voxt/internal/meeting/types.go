@@ -5,6 +5,7 @@ import (
 	"errors"
 	"time"
 
+	"github.com/sgl-project/sglang-omni/Voxt/internal/asr"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/local"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/session"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
@@ -116,6 +117,9 @@ type Config struct {
 	ModelHold local.Holder
 	// ASR resolves live recognition per track; nil keeps WAV-only capture (tests).
 	ASR func(ctx context.Context, src Source) (TrackASR, error)
+	// Diarizer resolves MOSS-Transcribe-Diarize for the system track's final
+	// pass; a nil diarizer keeps the selected model's plain transcription.
+	Diarizer func(ctx context.Context) (asr.Diarizer, error)
 	// VAD finds speech regions for the final pass; nil uses energy analysis.
 	VAD vad.Model
 	// Context is what the language model corrects a transcript with;
@@ -123,6 +127,14 @@ type Config struct {
 	Context func(ctx context.Context) TranscriptContext
 	// LLM opens the language model for summary and live translation.
 	LLM func(ctx context.Context, id string) (SummaryChat, error)
+	// LLMIsLocal says whether the language model id is served on this Mac
+	// (a loopback address); nil means no model is local. A local model's
+	// correction does not overlap the final pass: it would share the GPU
+	// and memory with recognition (as live polish avoids, 5.31b).
+	LLMIsLocal func(id string) bool
+	// correctOverlap carries the first track's speculative correction
+	// from the final pass to CorrectTranscript; runFinalize arms it.
+	correctOverlap *correctionOverlap
 	// MainLanguage names the user's primary language for summary prompts;
 	// "" writes them in the transcript's language.
 	MainLanguage func() string
@@ -142,9 +154,12 @@ var ErrBusy = errors.New("meeting: one is running already")
 var ErrNoMeeting = errors.New("meeting: not found")
 
 // StartError means a track failed to start; the meeting does not begin.
-// GuidanceModel is StartError.Guidance when the track's speech model did
-// not load, as opposed to its capture.
-const GuidanceModel = "meeting.model.unavailable"
+// The Guidance values identify which capture or model needs attention.
+const (
+	GuidanceModel  = "meeting.model.unavailable"
+	GuidanceMic    = "meeting.mic.unavailable"
+	GuidanceSystem = "meeting.system.unavailable"
+)
 
 type StartError struct {
 	Source   Source

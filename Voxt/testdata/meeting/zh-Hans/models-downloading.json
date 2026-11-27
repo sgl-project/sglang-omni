@@ -1,0 +1,60 @@
+{
+  "name": "models-downloading",
+  "kind": "onboarding",
+  "onboarding": {
+    "open": true,
+    "step": 2,
+    "step_titles": [
+      "欢迎",
+      "权限",
+      "模型",
+      "转录",
+      "翻译",
+      "改写",
+      "更多"
+    ],
+    "passed": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ],
+    "title": "模型",
+    "subtitle": "Voxt 用这台 Mac 上的模型识别语音，用你设置的语言模型整理、翻译和改写。下面这个模型最适合起步，“设置 → 语音识别模型”里还有其他模型。",
+    "recording": false,
+    "models": {
+      "reuse_shown": false,
+      "reuse_ids": null,
+      "reuse_subtitle": "",
+      "reuse_names": "",
+      "speech": {
+        "id": "asr.accurate",
+        "name": "Qwen3-ASR 1.7B (8bit)",
+        "ready": false,
+        "on_disk": false,
+        "installed_by": "",
+        "size_label": "2.5 GB",
+        "show_download": false,
+        "download_label": "",
+        "downloading": true,
+        "download_fraction": 0.33333333319826336,
+        "about": "最准确。能识别口音、方言、人名，以及一句话里夹杂的多种语言，边说边出文字。"
+      },
+      "language_ready": false,
+      "language_name": "",
+      "needs_download": false,
+      "download_left": "1.6 GB"
+    },
+    "footer": {
+      "mode": "downloading",
+      "busy": false,
+      "back": true,
+      "continue_label": "继续",
+      "continue_tooltip": "语音识别模型还在下载，下载好后才能试后面的步骤，也可以跳过。",
+      "continue_disabled": false
+    }
+  }
+}

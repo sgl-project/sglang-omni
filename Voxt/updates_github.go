@@ -15,10 +15,10 @@ package main
 // disk image, else its release page), says the app is up to date, or why
 // the check failed. Once a day, and a minute after launch when the last
 // check is older than that, a check runs in the background: a newer
-// version becomes a card in the sidebar (Download, ×), never a window;
-// the card dismissed stays away for that version. A failed background
-// check shows nothing: the log says it. The preferences (automatic
-// checks, the last check, the version dismissed) are in settings.Updates.
+// version surfaces in the sidebar footer update button and the menu bar
+// tray, never a window. A failed background check shows nothing: the log
+// says it. The preferences (automatic checks, the last check, the last
+// available version, legacy dismissed version) are in settings.Updates.
 
 import (
 	"context"
@@ -27,7 +27,6 @@ import (
 	"fmt"
 	"io"
 	"log"
-	"net"
 	"net/http"
 	"regexp"
 	"slices"
@@ -37,8 +36,6 @@ import (
 	"time"
 
 	"github.com/egoist/mygo"
-	"github.com/egoist/mygo/ui"
-	"github.com/egoist/mygo/ui/markdown"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/core"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
@@ -213,6 +210,7 @@ type releaseUpdates struct {
 	url     string
 	version string // the running one
 	open    func() // CheckNow: the app's dialog (main thread)
+	bgCheck func() // CheckBackground: non-dialog check (main thread)
 
 	mu      sync.Mutex
 	pre     bool        // SetPrereleases
@@ -227,7 +225,16 @@ func newReleaseUpdates(store settings.Service, url, version string, open func())
 
 func (r *releaseUpdates) Prefs() updatePrefs {
 	u := r.store.Get().Updates
-	return updatePrefs{Enabled: true, CheckOnly: true, AutoCheck: !u.NoAutoCheck, LastCheck: u.LastCheck}
+	avail := u.Available
+	if avail != "" {
+		if v, ok := parseVersion(avail); !ok || !r.newer(v) || (v[3] == 0 && !u.BetaOn(r.version)) || u.Dismissed == avail {
+			avail = ""
+		}
+	}
+	return updatePrefs{
+		Enabled: true, CheckOnly: true, AutoCheck: !u.NoAutoCheck, LastCheck: u.LastCheck,
+		AvailableVersion: avail,
+	}
 }
 
 func (r *releaseUpdates) SetAutomaticChecks(on bool) {
@@ -244,6 +251,20 @@ func (r *releaseUpdates) SetPrereleases(on bool) {
 }
 
 func (r *releaseUpdates) CheckNow() { r.open() }
+
+func (r *releaseUpdates) CheckBackground() {
+	if r.bgCheck != nil {
+		r.bgCheck()
+	}
+}
+
+func (r *releaseUpdates) clearAvailable(version string) {
+	u := r.store.Get().Updates
+	if u.Available == "" || (version != "" && u.Available != version) {
+		return
+	}
+	r.save(func(u *settings.Updates) { u.Available = "" })
+}
 
 func (r *releaseUpdates) OnChange(fn func()) func() {
 	p := &fn
@@ -291,8 +312,16 @@ func (r *releaseUpdates) check(ctx context.Context, client *http.Client) (releas
 		r.mu.Unlock()
 	}
 	rel, v, ok := newestRelease(list, beta)
-	r.save(func(u *settings.Updates) { u.LastCheck = time.Now() })
-	return rel, ok && r.newer(v), nil
+	isNewer := ok && r.newer(v)
+	avail := ""
+	if isNewer {
+		avail = rel.Version
+	}
+	r.save(func(u *settings.Updates) {
+		u.LastCheck = time.Now()
+		u.Available = avail
+	})
+	return rel, isNewer, nil
 }
 
 // newer reports whether v is newer than the running version.
@@ -303,13 +332,11 @@ func (r *releaseUpdates) newer(v version) bool {
 
 // releaseState is the dialog of Check for Updates… (main thread).
 type releaseState struct {
-	relOpen  bool
 	relDone  bool // the check finished: relErr or relFound
 	relSeq   int  // the dialog's check: an older one's answer is late
 	relErr   error
 	relFound release
 	relNewer bool
-	relMD    markdown.Options
 }
 
 // releases is the check of GitHub's releases, nil in builds with another
@@ -317,6 +344,17 @@ type releaseState struct {
 func (a *app) releases() *releaseUpdates {
 	r, _ := a.upd.(*releaseUpdates)
 	return r
+}
+
+func (a *app) releaseDialogModel() releaseViewState {
+	r := a.releases()
+	if !a.updUI.relOpen || r == nil {
+		return releaseViewState{}
+	}
+	return buildReleaseViewState(i18n.CurrentTranslator(), releaseViewStateInput{
+		Available: true, RunningVersion: r.version, Done: a.relDone,
+		Newer: a.relNewer, Found: a.relFound, Err: a.relErr,
+	})
 }
 
 // runReleaseCheck checks in the background, then calls done on the main
@@ -340,7 +378,7 @@ func (a *app) runReleaseCheck(done func(release, bool, error)) {
 func (a *app) checkReleasesNow() {
 	a.relSeq++
 	seq := a.relSeq
-	a.relOpen, a.relDone = true, false
+	a.updUI.relOpen, a.relDone = true, false
 	a.runReleaseCheck(func(rel release, newer bool, err error) {
 		if seq != a.relSeq {
 			return
@@ -352,8 +390,10 @@ func (a *app) checkReleasesNow() {
 	})
 }
 
+func (a *app) downloadRelease(address string) { openExternal(address) }
+
 // autoCheckReleases is the background check, when it is on and the last
-// one is a day old: a newer version becomes a card.
+// one is a day old: a newer version surfaces in the sidebar and tray.
 func (a *app) autoCheckReleases() {
 	r := a.releases()
 	if r == nil {
@@ -362,21 +402,23 @@ func (a *app) autoCheckReleases() {
 	if u := r.store.Get().Updates; u.NoAutoCheck || time.Since(u.LastCheck) < releaseEvery {
 		return
 	}
-	a.runReleaseCheck(func(rel release, newer bool, err error) {
+	a.checkReleasesBackground()
+}
+
+// checkReleasesBackground runs a non-dialog release check right away;
+// a newer version surfaces via the sidebar footer button and tray menu
+// (OnChange → loadUpdates), and any legacy sidebar card is cleared.
+func (a *app) checkReleasesBackground() {
+	r := a.releases()
+	if r == nil {
+		return
+	}
+	a.runReleaseCheck(func(_ release, _ bool, err error) {
 		if err != nil {
 			log.Printf("updates: %v", err)
 			return
 		}
-		if !newer {
-			a.setProblem(problemRelease, "", nil)
-			return
-		}
-		if r.store.Get().Updates.Dismissed == rel.Version {
-			return
-		}
-		a.setProblem(problemRelease, rel.Version, &core.Notification{Severity: core.SeverityInfo,
-			Title: i18n.T("Voxt %s is available", rel.Version), Body: i18n.T("Install it from its disk image, or with brew upgrade --cask voxt."),
-			Link: linkDownload + rel.Download, Version: rel.Version})
+		a.setProblem(problemRelease, "", nil)
 	})
 }
 
@@ -395,15 +437,20 @@ func (a *app) watchReleases() {
 	}()
 }
 
-// keepReleaseCard drops a card kept from before a restart whose version
-// is not newer than running (it was installed since); main calls it.
+// keepReleaseCard drops a legacy card and any persisted Available version
+// kept from before a restart that is not newer than running; main calls it.
 func (a *app) keepReleaseCard(running string) {
+	now, runningOK := parseVersion(running)
+	if avail := a.prefs.Updates.Available; avail != "" && runningOK {
+		if v, ok := parseVersion(avail); !ok || slices.Compare(v[:], now[:]) <= 0 {
+			a.updateSettings(func(s *settings.Settings) { s.Updates.Available = "" })
+		}
+	}
 	i := slices.IndexFunc(a.notices, func(n core.Notification) bool { return n.ID == problemRelease })
 	if i < 0 {
 		return
 	}
 	v, ok := parseVersion(a.notices[i].Version)
-	now, _ := parseVersion(running)
 	if !ok || slices.Compare(v[:], now[:]) <= 0 {
 		a.setProblem(problemRelease, "", nil)
 	}
@@ -414,80 +461,13 @@ func (a *app) releaseCardGone(n core.Notification) {
 	if n.ID == problemRelease && n.Version != "" {
 		v := n.Version
 		a.updateSettings(func(s *settings.Settings) { s.Updates.Dismissed = v })
+		if r := a.releases(); r != nil {
+			r.clearAvailable(v)
+		}
 	}
 }
 
 // releaseErrText says why a check failed.
 func releaseErrText(err error) string {
-	var ne net.Error
-	switch {
-	case errors.Is(err, errRateLimited):
-		return i18n.T("GitHub limits how often Voxt can check. Try again in an hour.")
-	case errors.As(err, &ne) && ne.Timeout(), errors.Is(err, context.DeadlineExceeded):
-		return i18n.T("GitHub did not answer in time. Check your connection, or the proxy in Speech models → Network.")
-	}
-	return i18n.T("Voxt could not read the list of releases on GitHub: %v", err)
-}
-
-// releaseDialog is Check for Updates…'s dialog: checking, then the new
-// version, up to date, or the failure. Escape, × and Cancel close it.
-func (a *app) releaseDialog(c *ui.Context) {
-	r := a.releases()
-	if !a.relOpen || r == nil {
-		return
-	}
-	t := c.Theme()
-	title, sub := i18n.T("Checking for updates…"), ""
-	switch {
-	case !a.relDone:
-	case a.relErr != nil:
-		title = i18n.T("Couldn't check for updates")
-	case a.relNewer:
-		title, sub = i18n.T("Voxt %s is available", a.relFound.Version), i18n.T("You have Voxt %s.", r.version)
-	default:
-		title, sub = i18n.T("You're up to date"), i18n.T("Voxt %s is the newest version.", r.version)
-	}
-	dialogFrame(c, "release", &a.relOpen, title, sub, 520, func() {
-		switch {
-		case !a.relDone:
-			ui.Row(c).Gap(px(t, sp2)).AlignItems(ui.Center).Children(func() {
-				ui.Spinner(c).Size(px(t, 16), px(t, 16))
-				caption(c, i18n.T("Looking for the newest release on GitHub."))
-			})
-		case a.relErr != nil:
-			ui.Text(c, releaseErrText(a.relErr)).Selectable()
-		case a.relNewer:
-			if a.relFound.Notes != "" {
-				markdown.View(c, a.relFound.Notes, &a.relMD)
-			}
-			caption(c, i18n.T("Download gets it from GitHub. With Homebrew, run brew upgrade --cask voxt instead."))
-		}
-	}, func() {
-		ui.Spacer(c)
-		switch {
-		case !a.relDone:
-			if ui.Button(c.Key("release-cancel"), i18n.T("Cancel")).Clicked() {
-				a.relOpen = false
-			}
-		case a.relErr != nil:
-			if ui.Button(c.Key("release-cancel"), i18n.T("Cancel")).Clicked() {
-				a.relOpen = false
-			}
-			if primaryButton(c.Key("release-retry"), i18n.T("Try again")).Clicked() {
-				a.checkReleasesNow()
-			}
-		case a.relNewer:
-			if ui.Button(c.Key("release-later"), i18n.T("Later")).Clicked() {
-				a.relOpen = false
-			}
-			if primaryButton(c.Key("release-download"), i18n.T("Download")).Clicked() {
-				a.relOpen = false
-				openExternal(a.relFound.Download)
-			}
-		default:
-			if primaryButton(c.Key("release-ok"), i18n.T("Done")).Clicked() {
-				a.relOpen = false
-			}
-		}
-	})
+	return releaseErrTextFor(i18n.CurrentTranslator(), err)
 }

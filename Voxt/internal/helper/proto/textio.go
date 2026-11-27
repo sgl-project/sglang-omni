@@ -35,11 +35,26 @@ type TextRange struct {
 type SelectionParams struct {
 	AllowCopy     bool `json:"allowCopy,omitempty"`
 	CopyTimeoutMS int  `json:"copyTimeoutMs,omitempty"`
+	// CaretSettleMS (default 600) and CaretPollMS (default 60): a
+	// caret-only Accessibility reading can predate a selection made with
+	// ⌘A in the same motion as the shortcut, so it waits out a settle, a
+	// reading every CaretPollMS, before it is the answer (#4467).
+	// Pointers, so an explicit 0 reaches the helper and disables the
+	// wait; nil is the default.
+	CaretSettleMS *int `json:"caretSettleMs,omitempty"`
+	CaretPollMS   *int `json:"caretPollMs,omitempty"`
+	// ModifierWaitMS (default 800): the helper's ⌘C waits this long for a
+	// shortcut's still-held Control, Option or Shift to lift, so the app
+	// reads ⌘C and not a key that copies nothing (#3835).
+	ModifierWaitMS *int `json:"modifierWaitMs,omitempty"`
 }
 
-// SelectionResult is the text ("" for none) and how it was read.
+// SelectionResult is the text ("" for none) and how it was read. Image
+// is the JPEG from the image the copy fallback captured before restoring
+// the old clipboard, so a selected image is not an earlier copied one.
 type SelectionResult struct {
 	Text  string   `json:"text,omitempty"`
+	Image []byte   `json:"image,omitempty"`
 	Via   string   `json:"via"` // Via*
 	MS    float64  `json:"ms"`
 	Steps []string `json:"steps,omitempty"` // what was tried, for the log

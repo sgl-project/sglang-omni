@@ -14,14 +14,18 @@ const windowTimeout = 3 * time.Second
 
 // shootWindow starts taking a picture of the target app's window, when
 // the settings send one to the language model (Privacy.SendWindow): at
-// the start, while the window the user speaks into is still in front.
-// Not for a try, nor in Voxt itself, nor for Transcribe without its
-// clean-up (no language model).
+// the start, while the window the user speaks into is still in front
+// (the input box's session defers it until the box's other inputs are
+// known, then shows it for review before the request). Not for a try, nor in Voxt itself,
+// nor for Transcribe without its clean-up (no language model), nor when
+// the picture would not be sent: the box's own pictures, and the
+// clipboard's, win over it.
 func (r *run) shootWindow() {
 	cfg := r.m.cfg
 	t := r.req.Target
-	noLLM := r.req.Kind == store.KindTranscribe && !r.settings.Features.Transcribe.Enhance
-	if !r.settings.Privacy.SendWindow || noLLM || cfg.Window == nil || r.req.Try || t.PID == 0 || t.PID == cfg.Self {
+	noLLM := r.req.Kind == store.KindTranscribe && !r.windowCleanup()
+	if r.shot != nil || !r.settings.Privacy.SendWindow || noLLM || cfg.Window == nil || r.req.Try || t.PID == 0 || t.PID == cfg.Self ||
+		len(r.req.Images) > 0 || r.clip != nil {
 		return
 	}
 	done := make(chan []byte, 1)
@@ -56,4 +60,31 @@ func (r *run) readClipboardImage() {
 		r.logf("info", "the clipboard's picture goes to the language model (%d bytes)", len(jpeg))
 	}
 	r.clip = jpeg
+}
+
+// previewClip shows the clipboard's picture in the box once it is known
+// to go with the request: a selection drops it (readSelection), and the
+// box never shows a picture that will not be sent (VX-141).
+func (r *run) previewClip() {
+	if r.clip != nil {
+		r.previewImage("clipboard", r.clip)
+	}
+}
+
+// previewImage publishes display-only bytes without changing which image
+// the language model receives; llmChat's ImageHint remains that record.
+func (r *run) previewImage(kind string, jpeg []byte) {
+	r.m.update(r, func(s *Snapshot) {
+		s.ImagePreviewKind, s.ImagePreview = kind, jpeg
+	})
+}
+
+func (r *run) previewImageContext(ctx context.Context, kind string, jpeg []byte) {
+	r.m.updateIf(r, func(s *Snapshot) bool {
+		if ctx.Err() != nil || r.ctx.Err() != nil || !r.cleanupDecisionOpenLocked() {
+			return false
+		}
+		s.ImagePreviewKind, s.ImagePreview = kind, jpeg
+		return true
+	})
 }

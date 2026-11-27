@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import argparse
 import asyncio
 import io
 import json
@@ -21,6 +22,7 @@ from benchmarks.eval import benchmark_asr_seedtts as seedtts_benchmark
 from benchmarks.eval.asr_profiling import (
     UtilizationSampler,
     build_stage_breakdown,
+    event_buffer_capacity_for_samples,
     run_profiled_pass,
     start_request_profile,
     stop_request_profile,
@@ -39,8 +41,10 @@ class FakeResponse:
         return self.payload
 
 
+@pytest.mark.parametrize("event_buffer_capacity", [None, 32768])
 def test_profile_control_posts_run_id_and_event_dir(
     monkeypatch: pytest.MonkeyPatch,
+    event_buffer_capacity: int | None,
 ) -> None:
     calls: list[tuple[str, dict]] = []
     headers_sent: list[dict] = []
@@ -54,13 +58,23 @@ def test_profile_control_posts_run_id_and_event_dir(
     monkeypatch.setenv("SGLANG_OMNI_ADMIN_KEY", "")
     monkeypatch.setattr(asr_profiling.requests, "post", fake_post)
 
-    started = start_request_profile("http://127.0.0.1:8000/", "run-1", "/tmp/e")
+    started = start_request_profile(
+        "http://127.0.0.1:8000/",
+        "run-1",
+        "/tmp/e",
+        event_buffer_capacity=event_buffer_capacity,
+    )
     stopped = stop_request_profile("http://127.0.0.1:8000")
 
     assert started["run_id"] == "run-1"
     assert stopped["run_id"] is None
     assert calls[0][0] == "http://127.0.0.1:8000/start_request_profile"
-    assert calls[0][1] == {"run_id": "run-1", "event_dir": "/tmp/e"}
+    expected_payload: dict[str, str | int] = {"run_id": "run-1", "event_dir": "/tmp/e"}
+    if event_buffer_capacity is not None:
+        expected_payload["event_buffer_capacity"] = event_buffer_capacity
+    else:
+        pass
+    assert calls[0][1] == expected_payload
     assert calls[1][0] == "http://127.0.0.1:8000/stop_request_profile"
     assert headers_sent == [{}, {}]
 
@@ -114,13 +128,15 @@ def test_profile_control_sends_the_admin_key_when_it_is_set(
 def test_profiled_pass_runs_shared_lifecycle_and_builds_report(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    started: list[tuple[str, str, str]] = []
+    started: list[tuple[str, str, str, int]] = []
     stopped: list[tuple[str, str]] = []
 
     monkeypatch.setattr(
         asr_profiling,
         "start_request_profile",
-        lambda url, run_id, event_dir: started.append((url, run_id, event_dir)),
+        lambda url, run_id, event_dir, *, event_buffer_capacity: started.append(
+            (url, run_id, event_dir, event_buffer_capacity)
+        ),
     )
     monkeypatch.setattr(
         asr_profiling,
@@ -145,14 +161,15 @@ def test_profiled_pass_runs_shared_lifecycle_and_builds_report(
             run_id="run-1",
             event_dir="/tmp/profile/run-1",
             profile_urls=["http://worker-0:8000", "http://worker-1:8000"],
+            event_buffer_capacity=32768,
             run_pass=run_pass,
             log_prefix="[conc=4]",
         )
     )
 
     assert started == [
-        ("http://worker-0:8000", "run-1", "/tmp/profile/run-1"),
-        ("http://worker-1:8000", "run-1", "/tmp/profile/run-1"),
+        ("http://worker-0:8000", "run-1", "/tmp/profile/run-1", 32768),
+        ("http://worker-1:8000", "run-1", "/tmp/profile/run-1", 32768),
     ]
     assert stopped == [
         ("http://worker-0:8000", "run-1"),
@@ -175,7 +192,13 @@ def test_profiled_pass_cleans_up_after_partial_start_failure(
     pass_started = False
     error_stream = io.StringIO()
 
-    def fake_start(url: str, run_id: str, event_dir: str) -> None:
+    def fake_start(
+        url: str,
+        run_id: str,
+        event_dir: str,
+        *,
+        event_buffer_capacity: int | None,
+    ) -> None:
         if url.endswith("worker-1:8000"):
             raise asr_profiling.requests.RequestException("unavailable")
 
@@ -215,19 +238,30 @@ def test_seedtts_profiled_pass_delegates_shared_lifecycle(
 ) -> None:
     lifecycle: dict[str, object] = {}
     repeat_call: dict[str, object] = {}
-    args = SimpleNamespace(
-        profile_event_dir="/tmp/asr-profile",
-        profile_urls="http://worker-0:8000,http://worker-1:8000",
+    parser = argparse.ArgumentParser()
+    seedtts_benchmark.add_common_args(parser, default_output="results.json")
+    args = parser.parse_args(
+        [
+            "--port",
+            "8000",
+            "--profile-event-dir",
+            "/tmp/asr-profile",
+            "--profile-urls",
+            "http://worker-0:8000,http://worker-1:8000",
+            "--profile-event-buffer-capacity",
+            "32768",
+        ]
     )
 
     monkeypatch.setattr(seedtts_benchmark.time, "time", lambda: 123)
 
-    async def fake_run_repeat(args, samples, concurrency, repeat):
+    async def fake_run_repeat(args, samples, concurrency, repeat, *, session=None):
         repeat_call.update(
             args=args,
             samples=samples,
             concurrency=concurrency,
             repeat=repeat,
+            session=session,
         )
         return {"wall_clock_s": 2.0}
 
@@ -243,9 +277,10 @@ def test_seedtts_profiled_pass_delegates_shared_lifecycle(
     )
 
     samples = [object()]
+    fake_session = object()
     profile = asyncio.run(
         seedtts_benchmark._run_profiled_pass(
-            args, samples, concurrency=4
+            args, samples, concurrency=4, session=fake_session
         )  # noqa: leading-underscore  # production name
     )
 
@@ -256,11 +291,13 @@ def test_seedtts_profiled_pass_delegates_shared_lifecycle(
         "http://worker-1:8000",
     ]
     assert lifecycle["log_prefix"] == "[conc=4]"
+    assert lifecycle["event_buffer_capacity"] == 32768
     assert repeat_call == {
         "args": args,
         "samples": samples,
         "concurrency": 4,
         "repeat": 0,
+        "session": fake_session,
     }
     assert profile == {"pass_metrics": {"wall_clock_s": 2.0}}
 
@@ -415,3 +452,50 @@ def test_server_identity_reports_models_best_effort(
     identity = collect_server_identity("http://127.0.0.1:8000")
     assert identity["url"] == "http://127.0.0.1:8000"
     assert identity["models"] is None
+
+
+def test_profile_control_forwards_event_buffer_capacity_when_sized_for_pass(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    payloads: list[dict[str, object]] = []
+
+    def fake_post(url, *, json, timeout, proxies, headers):
+        payloads.append(json)
+        return FakeResponse({"run_id": json.get("run_id"), "event_dir": "/tmp/e"})
+
+    monkeypatch.setenv("SGLANG_OMNI_ADMIN_KEY", "")
+    monkeypatch.setattr(asr_profiling.requests, "post", fake_post)
+    capacity = event_buffer_capacity_for_samples(1010)
+    assert capacity == 16160
+    assert event_buffer_capacity_for_samples(10) == 1024
+    start_request_profile(
+        "http://127.0.0.1:8000", "run-full", "/tmp/e", event_buffer_capacity=capacity
+    )
+    assert payloads == [
+        {
+            "run_id": "run-full",
+            "event_dir": "/tmp/e",
+            "event_buffer_capacity": 16160,
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_wait_for_profile_flush_waits_for_all_status_sidecars(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "events_asr_101.jsonl").write_text("")
+    (tmp_path / "events_coordinator_102.jsonl").write_text("")
+    (tmp_path / "run_status_101.json").write_text("{}")
+
+    async def publish_second_status() -> None:
+        await asyncio.sleep(0.03)
+        (tmp_path / "run_status_102.json").write_text("{}")
+
+    publisher = asyncio.create_task(publish_second_status())
+    flushed = await asr_profiling.wait_for_profile_flush(
+        str(tmp_path), timeout_seconds=1.0
+    )
+    await publisher
+    assert flushed is True
+    assert (tmp_path / "run_status_102.json").is_file()

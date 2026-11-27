@@ -26,6 +26,20 @@ var loopback = &http.Client{Transport: &http.Transport{
 	IdleConnTimeout:     30 * time.Second,
 }}
 
+// prior is what a live session already has for a Final: the preview's text
+// of a recording the Final starts with, whose beginning the server keeps while
+// decoding agrees, and the session, whose encoded audio it reuses ("" none).
+// Of the rest after the pieces the session has what it prefilled from where
+// the last one ended, and no text. All of it only saves work: the text is
+// decoding's.
+//
+// note (chenye): guessAutoLanguage opts into server-side language-header
+// and transcript guesses for a whole, auto-language Final.
+type prior struct {
+	text, session     string
+	guessAutoLanguage bool
+}
+
 // finalRequest is one request of a Final.
 type finalRequest struct {
 	pcm       []byte // PCM16 mono at 16 kHz
@@ -33,15 +47,23 @@ type finalRequest struct {
 	context   string
 	maxTokens int
 	layout    string
-	preview   bool // the batch preview's: not logged (one a second)
+	preview   bool  // a provisional request with faster disconnect detection
+	known     prior // what the live session has of the audio
 }
 
 // finalResult is a request's answer.
 type finalResult struct {
-	text     string
-	tokens   int    // generated
-	language string // detected (or the hint), "" when none
-	length   bool   // the budget ended it
+	text        string
+	tokens      int    // generated
+	language    string // detected (or the hint), "" when none
+	length      bool   // the budget ended it
+	windowTexts []string
+	segments    []struct {
+		Start   float64 `json:"start"`
+		End     float64 `json:"end"`
+		Speaker string  `json:"speaker"`
+		Text    string  `json:"text"`
+	}
 }
 
 // body is the request's multipart form (Voxt's OmniMultipartBody for
@@ -65,8 +87,20 @@ func (r finalRequest) body(model string) (*bytes.Buffer, string) {
 	field("stop_at_end_of_text", "true")
 	field("stop_on_token_loop", "true")
 	field("include_generation_metadata", "true")
+	if r.preview {
+		field("preview", "true")
+	}
 	if r.layout != "" {
 		field("audio_layout", r.layout)
+	}
+	if r.known.text != "" {
+		field("guessed_text", r.known.text)
+	}
+	if r.known.session != "" {
+		field("realtime_session", r.known.session)
+		if r.known.guessAutoLanguage && r.language == "" && r.known.text == "" && !r.preview {
+			field("guess_auto_language", "true")
+		}
 	}
 	fw, _ := w.CreateFormFile("file", "audio.wav")
 	_, _ = fw.Write(asr.WAV(r.pcm, sampleRate))
@@ -78,7 +112,15 @@ func (r finalRequest) body(model string) (*bytes.Buffer, string) {
 // A stream silent for stall (the server's heartbeat is every 250 ms) has
 // hung the server: it is killed.
 func transcribe(ctx context.Context, l *lease, r finalRequest, stall time.Duration) (finalResult, error) {
+	return transcribeTimed(ctx, l, r, stall, 0)
+}
+
+func transcribeTimed(ctx context.Context, l *lease, r finalRequest, stall time.Duration, requestID uint64) (finalResult, error) {
+	totalStarted := time.Now()
+	defer func() { logRequestStage(l.s.rt, requestID, "final", "total", totalStarted, len(r.pcm), 0) }()
+	started := time.Now()
 	body, ctype := r.body(l.endpoint().model)
+	logRequestStage(l.s.rt, requestID, "final", "multipart", started, len(r.pcm), body.Len())
 	// The hint goes to the log, never the recognised text: a wrong hint
 	// translated Chinese dictation (#3398) and nothing showed it.
 	if !r.preview {
@@ -94,7 +136,9 @@ func transcribe(ctx context.Context, l *lease, r finalRequest, stall time.Durati
 	var stalled atomic.Bool
 	watch := time.AfterFunc(stall, func() { stalled.Store(true); cancel() })
 	defer watch.Stop()
+	started = time.Now()
 	resp, err := loopback.Do(req)
+	logRequestStage(l.s.rt, requestID, "final", "http_headers", started, body.Len(), 0)
 	if err != nil {
 		return finalResult{}, stallOr(ctx, l, stalled.Load(), err)
 	}
@@ -108,6 +152,8 @@ func transcribe(ctx context.Context, l *lease, r finalRequest, stall time.Durati
 		}
 		return finalResult{}, e
 	}
+	started = time.Now()
+	defer func() { logRequestStage(l.s.rt, requestID, "final", "sse", started, 0, 0) }()
 	rd := bufio.NewReaderSize(resp.Body, 64<<10)
 	var done *finalResult
 	for {
@@ -150,10 +196,17 @@ func parseEvent(payload string) (*finalResult, error) {
 	var ev struct {
 		Type     string `json:"type"`
 		Text     string `json:"text"`
+		Segments []struct {
+			Start   float64 `json:"start"`
+			End     float64 `json:"end"`
+			Speaker string  `json:"speaker"`
+			Text    string  `json:"text"`
+		} `json:"segments"`
 		Metadata *struct {
-			Tokens   *int    `json:"generated_token_count"`
-			Language *string `json:"language"`
-			Finish   string  `json:"finish_reason"`
+			Tokens      *int     `json:"generated_token_count"`
+			Language    *string  `json:"language"`
+			Finish      string   `json:"finish_reason"`
+			WindowTexts []string `json:"window_texts"`
 		} `json:"generation_metadata"`
 		Error *struct {
 			Type string `json:"type"`
@@ -165,12 +218,13 @@ func parseEvent(payload string) (*finalResult, error) {
 	}
 	switch ev.Type {
 	case "transcript.text.done":
-		r := &finalResult{text: ev.Text}
+		r := &finalResult{text: ev.Text, segments: ev.Segments}
 		if m := ev.Metadata; m != nil {
 			if m.Tokens == nil || m.Finish == "" {
 				return nil, &asr.Error{Kind: asr.KindProtocol, Provider: Provider, Detail: "the generation metadata is incomplete"}
 			}
 			r.tokens, r.length = *m.Tokens, m.Finish == "length"
+			r.windowTexts = m.WindowTexts
 			if m.Language != nil {
 				r.language = *m.Language
 			}

@@ -1,0 +1,12 @@
+{
+  "name": "notices-error",
+  "kind": "shell-notices",
+  "shell_notices": [
+    {
+      "id": "n1",
+      "severity": "error",
+      "title": "It broke",
+      "body": "The thing did not work."
+    }
+  ]
+}

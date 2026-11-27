@@ -32,16 +32,27 @@ func (c *fakeClock) Advance(d time.Duration) {
 }
 
 type fakeAudio struct {
-	startErr error
-	pcm      []byte
-	levels   []float64 // dBFS levels sent after the audio
-	mu       sync.Mutex
-	stops    map[string]chan struct{}
-	jobs     []string
+	startErr   error
+	pcm        []byte
+	levels     []float64 // dBFS levels sent after the audio
+	levelsSent chan struct{}
+	mu         sync.Mutex
+	stops      map[string]chan struct{}
+	jobs       []string
+	// onStop runs once, at the next Stop, before the capture stops: a
+	// test acts on the meeting while the manager waits for it.
+	onStop func()
 }
 
 func newFakeAudio(pcm []byte) *fakeAudio {
 	return &fakeAudio{pcm: pcm, stops: map[string]chan struct{}{}}
+}
+
+// running is how many captures are open: started and not stopped.
+func (f *fakeAudio) running() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.stops)
 }
 
 func (f *fakeAudio) jobIDs() []string {
@@ -70,6 +81,9 @@ func (f *fakeAudio) Record(ctx context.Context, id string, _ proto.CaptureParams
 	for _, db := range f.levels {
 		fn(session.AudioEvent{Level: &proto.LevelParams{Job: id, RMS: db}})
 	}
+	if f.levelsSent != nil {
+		close(f.levelsSent)
+	}
 	select {
 	case <-ctx.Done():
 		return proto.CaptureResult{}, ctx.Err()
@@ -79,6 +93,13 @@ func (f *fakeAudio) Record(ctx context.Context, id string, _ proto.CaptureParams
 }
 
 func (f *fakeAudio) Stop(ctx context.Context, id string) error {
+	f.mu.Lock()
+	hook := f.onStop
+	f.onStop = nil
+	f.mu.Unlock()
+	if hook != nil {
+		hook()
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if ch, ok := f.stops[id]; ok {

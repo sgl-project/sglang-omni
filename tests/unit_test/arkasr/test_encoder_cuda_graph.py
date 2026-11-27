@@ -20,7 +20,19 @@ from sglang_omni.models.arkasr.encoder_cuda_graph import (
     t_buckets_upto,
 )
 from sglang_omni.models.arkasr.sglang_model import ArkasrForConditionalGeneration
+from sglang_omni.utils.device import has_device_streams
+from tests.unit_test.fixtures import accelerator as accelerator_fixture
 from tests.unit_test.fixtures.accelerator import require_device_streams
+
+
+@pytest.fixture(autouse=True)
+def runner_gate_matches_production(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The graph runner gates on has_device_streams (npu included, measured on
+    Ascend 910); align the shared accelerator fixture for this file only, so
+    dots_tts and other models keep their conservative gate."""
+    monkeypatch.setattr(
+        accelerator_fixture, "supports_device_streams", has_device_streams
+    )
 
 
 def test_batch_buckets_are_powers_of_two_plus_limit() -> None:
@@ -268,10 +280,15 @@ def test_capture_exit_failure_restores_stream_and_stays_eager(
     """A failed capture leaves the caller on its own stream and the bucket eager."""
     device = require_device_streams()
     device_module = torch.get_device_module(device)
-    graph_class = torch.xpu.XPUGraph if device.type == "xpu" else torch.cuda.CUDAGraph
+    if device.type == "xpu":
+        graph_class: type = torch.xpu.XPUGraph
+    elif device.type == "npu":
+        graph_class = torch.npu.NPUGraph
+    else:
+        graph_class = torch.cuda.CUDAGraph
     real_capture_end = graph_class.capture_end
 
-    def capture_end_then_boom(graph: torch.cuda.CUDAGraph | torch.xpu.XPUGraph) -> None:
+    def capture_end_then_boom(graph: object) -> None:
         real_capture_end(graph)
         raise RuntimeError("capture end boom")
 
