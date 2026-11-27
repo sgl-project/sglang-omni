@@ -28,6 +28,14 @@ speculative = pytest.importorskip("sglang_omni.models.whisper_asr.speculative")
 
 NUM_DECODE_STEPS = 3
 NUM_KV_SLOTS = 128
+# note (Tz22z): in the draft's vocabulary of 32, tokens below 20 are text and tokens from 28 are timestamps.
+TIMESTAMP_PARAMS = {
+    "segment_timestamps": True,
+    "timestamp_begin_id": 28,
+    "no_timestamps_token_id": 27,
+    "eos_token_id": 20,
+    "max_initial_timestamp_index": None,
+}
 
 
 class LastTokenLogits(nn.Module):
@@ -157,11 +165,17 @@ def draft_runner(monkeypatch: pytest.MonkeyPatch, device: str) -> SimpleNamespac
     )
 
 
-def suppression_bias(num_requests: int, device: str) -> torch.Tensor:
-    """A Whisper-style logit bias per request that leaves a few tokens open, so a step that skips it drafts another token."""
+def suppression_bias(
+    num_requests: int, device: str, *, timestamp_requests: tuple[int, ...] = ()
+) -> torch.Tensor:
+    """A Whisper-style logit bias per request that leaves a few tokens open, so a step that skips it drafts another token; timestamp_requests open four text tokens and, 50 below them, timestamp 29, so plain argmax drafts text where the timestamp rules leave only that timestamp."""
     logit_bias = torch.full((num_requests, 32), -1e9, device=device)
     for row in range(num_requests):
-        logit_bias[row, torch.randperm(32, device=device)[:4]] = 0
+        if row in timestamp_requests:
+            logit_bias[row, torch.randperm(20, device=device)[:4]] = 0
+            logit_bias[row, 29] = -50.0
+        else:
+            logit_bias[row, torch.randperm(32, device=device)[:4]] = 0
     return logit_bias
 
 
@@ -173,9 +187,9 @@ def round_batch(
     *,
     logit_bias: torch.Tensor | None = None,
     is_greedy: bool = True,
-    custom_params: dict[str, int | bool | None] | None = None,
+    timestamp_requests: tuple[int, ...] = (),
 ) -> SimpleNamespace:
-    """A decode round of one request per request pool row, each with its own lengths and the same sampling."""
+    """A decode round of one request per request pool row, each with its own lengths and the same sampling; timestamp_requests are the places in the round of the requests with segment timestamps."""
     num_requests = len(rows)
     seq_lens = torch.tensor(committed_lengths, device=device)
     return SimpleNamespace(
@@ -188,10 +202,14 @@ def round_batch(
         ),
         reqs=[
             SimpleNamespace(
-                sampling_params=SimpleNamespace(custom_params=custom_params),
+                sampling_params=SimpleNamespace(
+                    custom_params=(
+                        TIMESTAMP_PARAMS if request in timestamp_requests else None
+                    )
+                ),
                 output_ids=[3],
             )
-            for _ in rows
+            for request in range(num_requests)
         ],
         sampling_info=SimpleNamespace(
             logit_bias=logit_bias,
@@ -209,6 +227,9 @@ def round_worker(
 ) -> speculative.WhisperSpeculativeWorker:
     """A worker drafting NUM_DECODE_STEPS + 1 tokens whose chain forward returns chain_logits and whose verify records the token ids it checks."""
     num_requests = chain_logits.shape[0] // 2
+    # note (Tz22z): the target prefers timestamp 31 over every bias, and the rules close it to a row only while the row's last two tokens are timestamps, so the tokens verify commits tell which rule state it holds for each row.
+    target_logits = torch.zeros(num_requests * (NUM_DECODE_STEPS + 2), 32)
+    target_logits[:, 31] = 2e9
     worker = object.__new__(speculative.WhisperSpeculativeWorker)
     worker.device = "cpu"
     worker.speculative_num_steps = NUM_DECODE_STEPS + 1
@@ -216,6 +237,7 @@ def round_worker(
     worker.req_to_token_pool = runner.req_to_token_pool
     worker.draft_runner = runner
     worker.draft_graphs = []
+    worker.timestamp_draft_graphs = []
     worker.chain_forward = lambda batch, runner, **chain: chain_logits
     worker.chain_batch = lambda batch, runner, *, token_ids, **chain: (
         verified_token_ids.append(token_ids)
@@ -223,9 +245,7 @@ def round_worker(
     worker._target_worker = SimpleNamespace(  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
         model_runner=None,
         forward_batch_generation=lambda batch, **verify: SimpleNamespace(
-            logits_output=SimpleNamespace(
-                next_token_logits=torch.zeros(num_requests * (NUM_DECODE_STEPS + 2), 32)
-            ),
+            logits_output=SimpleNamespace(next_token_logits=target_logits),
             can_run_cuda_graph=True,
         ),
     )
@@ -233,15 +253,23 @@ def round_worker(
 
 
 @pytest.mark.parametrize(
-    ("rows", "graph_batch_size"),
-    [([2], 1), ([1, 2, 3], 4)],
-    ids=["lone_request", "three_requests_in_a_graph_of_four"],
+    ("rows", "graph_batch_size", "timestamp_requests"),
+    [([2], 1, ()), ([1, 2, 3], 4, ()), ([2], 1, (0,)), ([1, 2, 3], 4, (0, 2))],
+    ids=[
+        "lone_request",
+        "three_requests_in_a_graph_of_four",
+        "lone_request_with_timestamps",
+        "two_of_three_requests_with_timestamps_in_a_graph_of_four",
+    ],
 )
 @torch.no_grad()
 def test_a_greedy_round_drafts_through_the_graph_steps_as_through_the_step_loop(
-    monkeypatch: pytest.MonkeyPatch, rows: list[int], graph_batch_size: int
+    monkeypatch: pytest.MonkeyPatch,
+    rows: list[int],
+    graph_batch_size: int,
+    timestamp_requests: tuple[int, ...],
 ) -> None:
-    """The graph's steps draft the tokens and write the K/V of the worker's step-by-step draft loop, whose offsets and KV slots they must follow for every request."""
+    """The graph's steps draft the tokens and write the K/V of the worker's step-by-step draft loop, whose offsets and KV slots they must follow for every request, under the timestamp rules for the requests that have them and by plain argmax for the others. Verify then commits the same tokens, so it got the same rule state for every draft."""
     torch.manual_seed(0)
     runner = draft_runner(monkeypatch, "cpu")
     pool = runner.token_to_kv_pool
@@ -279,34 +307,51 @@ def test_a_greedy_round_drafts_through_the_graph_steps_as_through_the_step_loop(
         ),
     )
     num_requests = len(rows)
-    logit_bias = suppression_bias(num_requests, "cpu")
+    logit_bias = suppression_bias(
+        num_requests, "cpu", timestamp_requests=timestamp_requests
+    )
     chain_logits = torch.zeros(2 * num_requests, 32)
     # note (Haoling Pu): each first draft is a token its request's bias closes, so no later draft repeats it and a step fed the wrong token writes other K/V.
+    # note (Tz22z): a request with timestamps drafts timestamp 28 first, which closes text to its next draft and every timestamp to the one after, so a step that skips the rules, or reads them from the first draft's tokens again, drafts another token.
     for row in range(num_requests):
-        chain_logits[2 * row + 1, int((logit_bias[row] < 0).nonzero()[0])] = 2e9
+        first_draft = (
+            28 if row in timestamp_requests else int((logit_bias[row] < 0).nonzero()[0])
+        )
+        chain_logits[2 * row + 1, first_draft] = 2e9
     batch = round_batch(
         rows,
         [5, 8, 3][:num_requests],
         [4, 9, 2][:num_requests],
         "cpu",
         logit_bias=logit_bias,
+        timestamp_requests=timestamp_requests,
     )
     verified_token_ids = []
     worker = round_worker(runner, chain_logits, verified_token_ids)
     start = pool.snapshot()
-    worker.forward_decode(batch)
+    loop_result = worker.forward_decode(batch)
     loop_buffers = pool.snapshot()
 
     pool.restore(start)
-    graph = DraftDecodeGraph(runner, NUM_DECODE_STEPS, graph_batch_size)
+    graph = DraftDecodeGraph(
+        runner,
+        NUM_DECODE_STEPS,
+        graph_batch_size,
+        timestamp_params=TIMESTAMP_PARAMS if timestamp_requests else None,
+    )
     # note (Haoling Pu): the eager steps stand in for the replay on CPU; the CUDA test checks that the replay equals them.
     graph.replay = lambda: torch.cat(
         [graph.first_draft_token_ids[:, None], graph.run_steps()], dim=1
     )
-    worker.draft_graphs = [graph]
-    worker.forward_decode(batch)
+    if timestamp_requests:
+        worker.timestamp_draft_graphs = [graph]
+    else:
+        worker.draft_graphs = [graph]
+    graph_result = worker.forward_decode(batch)
 
     assert verified_token_ids[1].tolist() == verified_token_ids[0].tolist()
+    assert graph_result.next_token_ids.tolist() == loop_result.next_token_ids.tolist()
+    assert graph_result.accept_lens.tolist() == loop_result.accept_lens.tolist()
     # note (Haoling Pu): slot 0 is the padding slot, which the graph's rows past the round write.
     for graph_buffer, loop_buffer in zip(pool.snapshot(), loop_buffers, strict=True):
         torch.testing.assert_close(graph_buffer[1:], loop_buffer[1:])
@@ -341,6 +386,44 @@ def test_a_round_after_a_larger_one_writes_only_its_own_requests_slots(
     assert written_slots - {0} == set(req_to_token[2, written_columns].tolist())
 
 
+@torch.no_grad()
+def test_a_request_without_timestamps_drafts_by_plain_argmax_in_a_row_a_timestamp_request_left(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A timestamp graph's rows keep the marks and the rule tokens of the round before, and the rules run on every row, so they must reach only the rows the round marks."""
+    torch.manual_seed(0)
+    runner = draft_runner(monkeypatch, "cpu")
+    pool = runner.token_to_kv_pool
+    batch = round_batch([1, 2, 3], [5, 8, 3], [4, 9, 2], "cpu")
+    first_draft_token_ids = torch.tensor([1, 2, 3])
+    logit_bias = suppression_bias(3, "cpu", timestamp_requests=(0, 1, 2))
+    start = pool.snapshot()
+    plain_graph = DraftDecodeGraph(runner, NUM_DECODE_STEPS, 4)
+    plain_graph.load_inputs(batch, first_draft_token_ids, logit_bias)
+    plain_token_ids = plain_graph.run_steps()[:3]
+
+    pool.restore(start)
+    graph = DraftDecodeGraph(
+        runner, NUM_DECODE_STEPS, 4, timestamp_params=TIMESTAMP_PARAMS
+    )
+    graph.load_inputs(batch, first_draft_token_ids, logit_bias)
+    after_a_timestamp = (
+        torch.full((3,), 28),
+        torch.full((3,), 3),
+        torch.full((3,), 28),
+    )
+    graph.load_timestamp_state(torch.tensor([0, 1, 2]), after_a_timestamp)
+    graph.load_timestamp_state(
+        torch.tensor([0]), tuple(tokens[:1] for tokens in after_a_timestamp)
+    )
+    token_ids = graph.run_steps()[:3]
+
+    # note (Tz22z): after a lone timestamp the rules leave a request only timestamp 29, which plain argmax ranks below its open text tokens.
+    assert token_ids[0, 0] == 29
+    assert plain_token_ids[0, 0] < 20
+    assert token_ids[1:].tolist() == plain_token_ids[1:].tolist()
+
+
 @pytest.mark.parametrize(
     ("graph_batch_sizes", "rows", "is_greedy", "has_segment_timestamps", "used_graph"),
     [
@@ -349,7 +432,9 @@ def test_a_round_after_a_larger_one_writes_only_its_own_requests_slots(
         ((4,), [2, 3], True, False, 4),
         ((1, 2), [1, 2, 3], True, False, None),
         ((1, 2), [2], False, False, None),
-        ((1, 2), [2], True, True, None),
+        ((1, 2), [2], True, True, 1),
+        ((1, 2), [2, 3], True, True, 2),
+        ((1, 2), [2], False, True, None),
     ],
     ids=[
         "lone_greedy",
@@ -358,9 +443,11 @@ def test_a_round_after_a_larger_one_writes_only_its_own_requests_slots(
         "more_requests_than_any_graph",
         "sampled",
         "segment_timestamps",
+        "two_requests_one_with_segment_timestamps",
+        "sampled_with_segment_timestamps",
     ],
 )
-def test_a_greedy_round_without_timestamps_drafts_through_the_smallest_graph_that_fits(
+def test_a_greedy_round_drafts_through_the_smallest_graph_of_its_kind_that_fits(
     monkeypatch: pytest.MonkeyPatch,
     graph_batch_sizes: tuple[int, ...],
     rows: list[int],
@@ -368,17 +455,10 @@ def test_a_greedy_round_without_timestamps_drafts_through_the_smallest_graph_tha
     has_segment_timestamps: bool,
     used_graph: int | None,
 ) -> None:
-    """The draft graphs decode by plain argmax for a fixed number of rows, so more requests than any graph, a sampled draft or timestamp rules must draft step by step."""
+    """The draft graphs decode by argmax for a fixed number of rows, so more requests than any graph or a sampled draft must draft step by step. Only the graphs captured with the timestamp rules apply them, so a round takes those when any of its requests has segment timestamps and the plain ones otherwise."""
     eager_draft = 2
     draft_logits = torch.zeros(len(rows), 32)
     draft_logits[:, eager_draft] = 50.0
-    timestamp_params = {
-        "segment_timestamps": True,
-        "timestamp_begin_id": 28,
-        "no_timestamps_token_id": 27,
-        "eos_token_id": 20,
-        "max_initial_timestamp_index": None,
-    }
     verified_token_ids = []
     worker = round_worker(
         draft_runner(monkeypatch, "cpu"),
@@ -386,18 +466,28 @@ def test_a_greedy_round_without_timestamps_drafts_through_the_smallest_graph_tha
         verified_token_ids,
     )
     worker.decode_forward = lambda batch, runner, **step: draft_logits
+    timestamp_rows_loaded = []
+
     # note (Haoling Pu): each stand-in graph drafts 10 plus its batch size on all of its rows, so the verify input names the graph and its row count.
-    worker.draft_graphs = [
-        SimpleNamespace(
-            batch_size=graph_batch_size,
-            load_inputs=lambda batch, first_draft_token_ids, logit_bias: None,
-            replay=lambda graph_batch_size=graph_batch_size: torch.tensor(
-                [[eager_draft] + [10 + graph_batch_size] * NUM_DECODE_STEPS]
-                * graph_batch_size
-            ),
-        )
-        for graph_batch_size in graph_batch_sizes
-    ]
+    def stand_in_graphs(draft_base: int) -> list[SimpleNamespace]:
+        return [
+            SimpleNamespace(
+                batch_size=graph_batch_size,
+                load_inputs=lambda batch, first_draft_token_ids, logit_bias: None,
+                load_timestamp_state=lambda timestamp_rows, timestamp_state: (
+                    timestamp_rows_loaded.append(timestamp_rows.tolist())
+                ),
+                replay=lambda graph_batch_size=graph_batch_size: torch.tensor(
+                    [[eager_draft] + [draft_base + graph_batch_size] * NUM_DECODE_STEPS]
+                    * graph_batch_size
+                ),
+            )
+            for graph_batch_size in graph_batch_sizes
+        ]
+
+    worker.draft_graphs = stand_in_graphs(10)
+    # note (Tz22z): the timestamp graphs draft 14 plus their batch size, which no plain graph here drafts, so the verify input also names the kind.
+    worker.timestamp_draft_graphs = stand_in_graphs(14)
 
     worker.forward_decode(
         round_batch(
@@ -406,14 +496,21 @@ def test_a_greedy_round_without_timestamps_drafts_through_the_smallest_graph_tha
             [4] * len(rows),
             "cpu",
             is_greedy=is_greedy,
-            custom_params=timestamp_params if has_segment_timestamps else None,
+            timestamp_requests=(0,) if has_segment_timestamps else (),
         )
     )
 
-    later_draft = eager_draft if used_graph is None else 10 + used_graph
+    if used_graph is None:
+        later_draft = eager_draft
+    else:
+        later_draft = (14 if has_segment_timestamps else 10) + used_graph
     assert verified_token_ids[0][:, 1:].tolist() == [
         [eager_draft] + [later_draft] * NUM_DECODE_STEPS
     ] * len(rows)
+    # note (Tz22z): the graph gets the rule tokens of the requests with timestamps only, by their place in the round.
+    assert timestamp_rows_loaded == (
+        [[0]] if has_segment_timestamps and used_graph is not None else []
+    )
 
 
 def test_a_draft_graph_refuses_torch_cuda_graphs_default_capture_stream(
@@ -431,8 +528,8 @@ def capture_draft_graphs(
     monkeypatch: pytest.MonkeyPatch,
     max_requests: int,
     streams_since_default: int | None = None,
-) -> list[tuple[int, object]]:
-    """Run init_cuda_graphs for a request pool of max_requests rows, with a stand-in for PyTorch's 32 pool streams handed out in turn, and return each captured graph's batch size and stream; with streams_since_default, torch.cuda.graph's default stream was made that many pool streams earlier."""
+) -> list[tuple[int, object, dict[str, int | bool | None] | None]]:
+    """Run init_cuda_graphs for a request pool of max_requests rows, with a stand-in for PyTorch's 32 pool streams handed out in turn, and return each captured graph's batch size, stream and timestamp params; with streams_since_default, torch.cuda.graph's default stream was made that many pool streams earlier."""
     pool_streams = itertools.cycle([object() for _ in range(32)])
     monkeypatch.setattr(torch.cuda, "Stream", lambda: next(pool_streams))
     monkeypatch.setattr(torch.cuda, "graph_pool_handle", lambda: (0, 0))
@@ -449,15 +546,27 @@ def capture_draft_graphs(
     monkeypatch.setattr(
         speculative,
         "DraftDecodeGraph",
-        lambda runner, num_decode_steps, batch_size: SimpleNamespace(
+        lambda runner, num_decode_steps, batch_size, *, timestamp_params: SimpleNamespace(
             capture=lambda memory_pool, capture_stream: captured.append(
-                (batch_size, capture_stream)
+                (batch_size, capture_stream, timestamp_params)
             )
         ),
     )
     worker = object.__new__(speculative.WhisperSpeculativeWorker)
     worker._draft_worker = SimpleNamespace(  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
         init_cuda_graphs=lambda: None
+    )
+    worker._target_worker = SimpleNamespace(  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+        model_runner=SimpleNamespace(
+            model_config=SimpleNamespace(
+                hf_generation_config=SimpleNamespace(
+                    no_timestamps_token_id=TIMESTAMP_PARAMS["no_timestamps_token_id"]
+                )
+            ),
+            model=SimpleNamespace(
+                config=SimpleNamespace(eos_token_id=TIMESTAMP_PARAMS["eos_token_id"])
+            ),
+        )
     )
     worker.speculative_num_steps = NUM_DECODE_STEPS + 1
     worker.draft_runner = SimpleNamespace(
@@ -467,6 +576,7 @@ def capture_draft_graphs(
     )
     worker.req_to_token_pool = SimpleNamespace(size=max_requests)
     worker.draft_graphs = []
+    worker.timestamp_draft_graphs = []
     worker.init_cuda_graphs()
     return captured
 
@@ -483,7 +593,8 @@ def test_the_draft_graphs_never_capture_on_torch_cuda_graphs_default_stream(
     captured = capture_draft_graphs(monkeypatch, 64, streams_since_default)
     assert torch.cuda.graph.default_capture_stream is not None
     assert all(
-        stream is not torch.cuda.graph.default_capture_stream for _, stream in captured
+        stream is not torch.cuda.graph.default_capture_stream
+        for _, stream, _ in captured
     )
 
 
@@ -496,9 +607,17 @@ def test_the_draft_graphs_stop_at_the_first_size_that_holds_every_running_reques
     max_requests: int,
     captured_batch_sizes: list[int],
 ) -> None:
-    """A round holds at most the request pool's rows, so a larger graph would only take memory."""
+    """A round holds at most the request pool's rows, so a larger graph would only take memory. Every size is captured once by plain argmax and once under the timestamp rules, whose ids are the target's: its generation config names the no-timestamps token, and the timestamps start right after it."""
     captured = capture_draft_graphs(monkeypatch, max_requests)
-    assert sorted(batch_size for batch_size, _ in captured) == captured_batch_sizes
+    for graph_timestamp_params in (None, TIMESTAMP_PARAMS):
+        assert (
+            sorted(
+                batch_size
+                for batch_size, _, timestamp_params in captured
+                if timestamp_params == graph_timestamp_params
+            )
+            == captured_batch_sizes
+        )
 
 
 @pytest.mark.accelerator
@@ -507,31 +626,58 @@ def test_the_draft_graphs_stop_at_the_first_size_that_holds_every_running_reques
 def test_replay_decodes_the_loaded_round_as_the_steps_run_eagerly(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Graphs of 4 and 1 requests, captured on the padding row largest first in one pool, read every round's requests, lengths, first drafts and biases from their inputs, replayed in any order."""
+    """Graphs of 4 and 1 requests, with and without the timestamp rules, captured on the padding row largest first in one pool, read every round's requests, lengths, first drafts, biases, timestamp rows and rule tokens from their inputs, replayed in any order."""
     torch.manual_seed(0)
     runner = draft_runner(monkeypatch, "cuda")
     pool = runner.token_to_kv_pool
     graphs = {
-        batch_size: DraftDecodeGraph(runner, NUM_DECODE_STEPS, batch_size)
+        (batch_size, timestamp_params is not None): DraftDecodeGraph(
+            runner, NUM_DECODE_STEPS, batch_size, timestamp_params=timestamp_params
+        )
         for batch_size in (4, 1)
+        for timestamp_params in (TIMESTAMP_PARAMS, None)
     }
     memory_pool = torch.cuda.graph_pool_handle()
     capture_stream = draft_capture_stream()
     for graph in graphs.values():
         graph.capture(memory_pool, capture_stream)
 
-    for graph_batch_size, rows, encoder_lengths, committed_lengths, first_drafts in (
-        (4, [1, 2, 3], [5, 8, 3], [4, 9, 2], [7, 20, 11]),
-        (1, [3], [6], [5], [9]),
-        (4, [2], [8], [9], [5]),
+    for (
+        graph_batch_size,
+        rows,
+        encoder_lengths,
+        committed_lengths,
+        first_drafts,
+        timestamp_requests,
+    ) in (
+        (4, [1, 2, 3], [5, 8, 3], [4, 9, 2], [7, 20, 11], ()),
+        (4, [1, 2, 3], [5, 8, 3], [4, 9, 2], [28, 20, 28], (0, 2)),
+        (1, [3], [6], [5], [9], ()),
+        (1, [3], [6], [5], [28], (0,)),
+        (4, [2], [8], [9], [5], ()),
+        (4, [1, 3], [5, 3], [4, 2], [11, 28], (1,)),
     ):
-        graph = graphs[graph_batch_size]
+        graph = graphs[graph_batch_size, bool(timestamp_requests)]
         round_size = len(rows)
+        first_draft_token_ids = torch.tensor(first_drafts, device="cuda")
         graph.load_inputs(
             round_batch(rows, encoder_lengths, committed_lengths, "cuda"),
-            torch.tensor(first_drafts, device="cuda"),
-            suppression_bias(round_size, "cuda"),
+            first_draft_token_ids,
+            suppression_bias(round_size, "cuda", timestamp_requests=timestamp_requests),
         )
+        if timestamp_requests:
+            # note (Tz22z): every request with timestamps has committed text token 3 and drafted timestamp 28 first.
+            timestamp_rows = torch.tensor(timestamp_requests, device="cuda")
+            graph.load_timestamp_state(
+                timestamp_rows,
+                (
+                    first_draft_token_ids[timestamp_rows],
+                    torch.full_like(timestamp_rows, 3),
+                    first_draft_token_ids[timestamp_rows],
+                ),
+            )
+        else:
+            pass
         start = pool.snapshot()
         replayed_token_ids = graph.replay()[:round_size]
         replayed_buffers = pool.snapshot()
@@ -544,6 +690,10 @@ def test_replay_decodes_the_loaded_round_as_the_steps_run_eagerly(
                 first_drafts, eager_token_ids.tolist(), strict=True
             )
         ]
+        # note (Tz22z): after a lone timestamp the rules leave a request only timestamp 29, so a replay that kept the capture's unmarked rows would draft text there.
+        assert replayed_token_ids[list(timestamp_requests), 1].tolist() == [29] * len(
+            timestamp_requests
+        )
         # note (Haoling Pu): the rows past the round all write the padding slot 0, in no fixed order.
         for replayed_buffer, eager_buffer in zip(
             replayed_buffers, pool.snapshot(), strict=True

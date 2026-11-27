@@ -1,4 +1,4 @@
-<!-- Thank you for your contribution! We appreciate it. The following guidelines will help improve your pull request and facilitate feedback. If anything is unclear, don't hesitate to submit your pull request and ask the maintainers for assistance. -->
+<!-- Thank you for your contribution! We appreciate it. The following guidelines will help improve your pull request and facilitate feedback. If anything is unclear, don't hesitate to submit your pull request and ask the maintainers for assistance. Fill in `Motivation` and `Modifications` before you mark the pull request Ready for review: a PR description check reports either section while it is missing or still holds only template text. -->
 
 ## Motivation
 

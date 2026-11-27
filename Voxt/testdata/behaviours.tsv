@@ -99,3 +99,4 @@ The insights cards to share	L	TestInsightsFaces	How the cards look and move is c
 Home Looking back folds to its title row and stays folded	L	TestLookingBackFolds	none
 Session list: switch sessions on the card, each keeping its card and conversation	L	TestSessionSlotSwitchKeepsConversations	A real-app pass over the session row and the parked cards is checked by hand only
 Sessions come back after a restart while history is kept	L	TestSessionsSurviveRestart	none
+Sidebar update control (bar and icon-rail button) and menu bar tray update action	L	TestSidebarUpdateControlAndTray	none
