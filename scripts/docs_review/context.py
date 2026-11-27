@@ -22,6 +22,7 @@ GIT_COMMAND_PREFIX = [
     "core.quotePath=true",
 ]
 
+GIT_TOOL_TIMEOUT_SECONDS = 15
 MAX_FULL_CODE_FILE_BYTES = 16_000
 MAX_AUTO_CONTEXT_FILES = 8
 MAX_AUTO_CONTEXT_FILE_BYTES = 12_000
@@ -94,6 +95,22 @@ def git_show(repository: Path, commit_sha: str, file_path: str) -> str | None:
         return completed.stdout
 
 
+def resolve_commit(repository: Path, revision: str) -> str:
+    if re.fullmatch(r"[0-9a-f]{40}", revision):
+        return revision
+    else:
+        completed = run_git(
+            repository,
+            ["rev-parse", "--verify", "--end-of-options", f"{revision}^{{commit}}"],
+            timeout_seconds=GIT_TOOL_TIMEOUT_SECONDS,
+        )
+        commit_sha = completed.stdout.strip()
+        if completed.returncode or not re.fullmatch(r"[0-9a-f]{40}", commit_sha):
+            raise ValueError("Invalid head commit.")
+        else:
+            return commit_sha
+
+
 def require_git(repository: Path, arguments: list[str]) -> str:
     completed = run_git(repository, arguments)
     if completed.returncode != 0:
@@ -103,7 +120,9 @@ def require_git(repository: Path, arguments: list[str]) -> str:
         return completed.stdout
 
 
-def run_git(repository: Path, arguments: list[str]) -> subprocess.CompletedProcess[str]:
+def run_git(
+    repository: Path, arguments: list[str], *, timeout_seconds: int | None = None
+) -> subprocess.CompletedProcess[str]:
     if arguments and arguments[0] == "diff":
         git_arguments = ["diff", "--no-ext-diff", "--no-textconv", *arguments[1:]]
     else:
@@ -113,6 +132,7 @@ def run_git(repository: Path, arguments: list[str]) -> subprocess.CompletedProce
         check=False,
         capture_output=True,
         text=True,
+        timeout=timeout_seconds,
     )
 
 

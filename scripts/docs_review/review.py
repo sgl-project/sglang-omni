@@ -36,9 +36,11 @@ from scripts.docs_review.models import (
 from scripts.docs_review.policy import (
     CONTRIBUTOR_CHECKLIST,
     KNOWN_RULE_IDS,
+    TOOL_USE_INSTRUCTIONS,
     read_prompt,
 )
 from scripts.docs_review.reporting import render_bundle
+from scripts.docs_review.tools import GitReadOnlyToolbox
 from scripts.docs_review.transport import (
     OpenAICompatibleReviewer,
     ReviewerConfigurationError,
@@ -71,6 +73,10 @@ class PreparedReview:
 def prepare_review(request: ReviewRequest) -> PreparedReview:
     bundle = collect_review_bundle(request)
     prompt_text = read_prompt()
+    if request.model_settings is not None and request.model_settings.max_tool_rounds:
+        prompt_text += "\n" + TOOL_USE_INSTRUCTIONS
+    else:
+        pass
     prompt_version = hashlib.sha256(prompt_text.encode()).hexdigest()
     return PreparedReview(
         bundle=bundle,
@@ -136,6 +142,7 @@ def review_uncached(
 ) -> Report:
     budget = request.budget
     findings: list[Finding] = []
+    toolbox: GitReadOnlyToolbox | None = None
     attempts = 0
     reservation_id = uuid4().hex
     call_cost_cents = budget.call_cost_cents if budget is not None else None
@@ -147,7 +154,15 @@ def review_uncached(
         try:
             if reviewer is None:
                 assert request.model_settings is not None
-                reviewer = OpenAICompatibleReviewer(request.model_settings, prompt_text)
+                if request.model_settings.max_tool_rounds:
+                    toolbox = GitReadOnlyToolbox(
+                        request.repository.resolve(), bundle.head_commit_sha, bundle
+                    )
+                else:
+                    pass
+                reviewer = OpenAICompatibleReviewer(
+                    request.model_settings, prompt_text, toolbox=toolbox
+                )
             else:
                 pass
         except ReviewerConfigurationError as error:
@@ -168,6 +183,8 @@ def review_uncached(
         incomplete_reason,
         attempts * (call_cost_cents or 0),
         call_cost_cents,
+        toolbox.calls_used() if toolbox is not None else 0,
+        toolbox.files_read() if toolbox is not None else [],
     )
     if attempts:
         ledger.store(reservation_id, report)
@@ -221,6 +238,8 @@ def assemble_report(
     incomplete_reason: str,
     usage_cost_cents: int,
     call_cost_cents: int | None,
+    tool_calls_used: int,
+    tool_files_read: list[str],
 ) -> Report:
     combined = audit_bundle(bundle) + [
         finding
@@ -254,6 +273,8 @@ def assemble_report(
         outcome = "no_findings"
     return Report(
         advisory=True,
+        tool_calls_used=tool_calls_used,
+        tool_files_read=tool_files_read,
         model_configuration=payload.model_configuration,
         estimated_call_cost_cents=call_cost_cents,
         execution=execution,

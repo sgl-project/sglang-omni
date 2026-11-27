@@ -18,6 +18,7 @@ from scripts.docs_review.context import (
     is_code_or_config,
     is_documentation,
     require_git,
+    resolve_commit,
     run_git,
 )
 from scripts.docs_review.models import (
@@ -40,6 +41,12 @@ MAX_COLLECTED_BYTES = 200_000
 
 def collect_review_bundle(request: ReviewRequest) -> ReviewBundle:
     repository = request.repository.resolve()
+    if request.model_settings is not None and request.model_settings.max_tool_rounds:
+        request = replace(
+            request, head_commit_sha=resolve_commit(repository, request.head_commit_sha)
+        )
+    else:
+        pass
     merge_base = require_git(
         repository, ["merge-base", request.base_commit_sha, request.head_commit_sha]
     ).strip()
@@ -255,9 +262,12 @@ def collect_review_bundle(request: ReviewRequest) -> ReviewBundle:
 def review_input_sha256(
     bundle: ReviewBundle, model_settings: ModelSettings | None, prompt_version: str
 ) -> str:
-    model_configuration = (
-        model_settings.model_dump() if model_settings is not None else None
-    )
+    if model_settings is None:
+        model_configuration = None
+    elif model_settings.max_tool_rounds:
+        model_configuration = model_settings.model_dump()
+    else:
+        model_configuration = model_settings.model_dump(exclude={"max_tool_rounds"})
     parts = [
         bundle.repository_identity,
         bundle.policy_version,
@@ -274,6 +284,10 @@ def review_input_sha256(
         bundle.added_documentation_text,
         bundle.style_guide_limitation,
     ]
+    if model_settings is not None and model_settings.max_tool_rounds:
+        parts.append(bundle.head_commit_sha)
+    else:
+        pass
     return hashlib.sha256("\n".join(parts).encode()).hexdigest()
 
 

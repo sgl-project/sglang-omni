@@ -12,8 +12,10 @@ Set repository variable `ADVISORY_REVIEW_ENABLED=true` to turn automatic reviews
 
 Automatic and model-backed manual runs need repository secret `DOCS_REVIEW_API_KEY` and these repository variables:
 
-- `DOCS_REVIEW_MODEL` is JSON with `model_name`, `endpoint_url`, `max_output_tokens`, and `api_key_environment_variable` (use `DOCS_REVIEW_API_KEY`). Set `reasoning_effort` when the model supports it.
-- `DOCS_REVIEW_BUDGET` holds `call_cost_cents`, `max_cost_cents_per_call`, `max_cost_cents_per_pull_request`, and `max_cost_cents_per_day`. The workflow reserves the estimated cost before each call.
+- `DOCS_REVIEW_MODEL` is JSON with `model_name`, `endpoint_url`, `max_output_tokens`, and `api_key_environment_variable` (use `DOCS_REVIEW_API_KEY`). Set `reasoning_effort` when the model supports it. Set `max_tool_rounds` to 1–4 to let the model look up evidence in the pinned head commit. The default of 0 keeps the single-request review.
+- `DOCS_REVIEW_BUDGET` holds `call_cost_cents`, `max_cost_cents_per_call`, `max_cost_cents_per_pull_request`, and `max_cost_cents_per_day`. The workflow reserves the estimated cost before each review attempt. For tool-assisted reviews, size `call_cost_cents` for up to `1 + max_tool_rounds` model requests per attempt, including tool results in later requests.
+
+Each tool-assisted review can run up to eight Git lookups. The reviewer returns at most 12,000 bytes per lookup and 40,000 bytes in total. A lookup stops if its Git output exceeds 8 MiB. The report records the call count and the paths whose lines were read.
 
 Create a `docs-review-ledger` branch with root-level `docs-review-ledger.json` containing `{"version":1,"reservations":[]}` before the first live review.
 

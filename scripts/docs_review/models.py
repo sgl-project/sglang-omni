@@ -85,6 +85,7 @@ class ModelSettings(BaseModel):
     endpoint_url: str
     max_output_tokens: int = Field(gt=0)
     api_key_environment_variable: str
+    max_tool_rounds: int = Field(default=0, ge=0, le=4)
     reasoning_effort: ReasoningEffort | None = None
 
     @model_validator(mode="after")
@@ -102,6 +103,7 @@ class ModelSnapshot(BaseModel):
     max_output_tokens: int
     reasoning_effort: ReasoningEffort | None
     temperature: Literal[0] | None
+    max_tool_rounds: int = 0
 
     @classmethod
     def from_settings(cls, settings: ModelSettings) -> ModelSnapshot:
@@ -112,6 +114,7 @@ class ModelSnapshot(BaseModel):
                 netloc=endpoint.netloc.rsplit("@", 1)[-1], query="", fragment=""
             ).geturl(),
             max_output_tokens=settings.max_output_tokens,
+            max_tool_rounds=settings.max_tool_rounds,
             reasoning_effort=settings.reasoning_effort,
             temperature=0 if settings.reasoning_effort is None else None,
         )
@@ -148,6 +151,8 @@ class CheckView(BaseModel):
 
 class Report(BaseModel):
     model_configuration: ModelSnapshot | None = None
+    tool_calls_used: int = Field(default=0, ge=0)
+    tool_files_read: list[str] = Field(default_factory=list)
     estimated_call_cost_cents: int | None = Field(default=None, ge=0)
     advisory: Literal[True]
     execution: Literal["complete", "incomplete"]

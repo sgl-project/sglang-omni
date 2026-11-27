@@ -77,6 +77,12 @@ def render_markdown(report: Report, *, number_findings: bool = False) -> str:
         f"Head: `{report.head_commit_sha}`",
         f"Author confirmation: {report.author_confirmation}",
     ]
+    if report.tool_calls_used:
+        lines.append(
+            f"Tool calls: {report.tool_calls_used}. Files inspected: {len(report.tool_files_read)}."
+        )
+    else:
+        pass
     if report.estimated_call_cost_cents is not None:
         lines.append(
             f"Estimated cost: {report.usage_cost_cents} cents at {report.estimated_call_cost_cents} cents per call."

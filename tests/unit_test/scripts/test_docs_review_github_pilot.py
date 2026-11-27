@@ -67,6 +67,7 @@ class FakeGitHub:
         capture_output: bool = False,
         text: bool = False,
         check: bool = False,
+        timeout: int | None = None,
     ) -> subprocess.CompletedProcess[str]:
         if arguments[0] != "gh":
             return REAL_SUBPROCESS_RUN(
@@ -75,6 +76,7 @@ class FakeGitHub:
                 capture_output=capture_output,
                 text=text,
                 check=check,
+                timeout=timeout,
             )
         else:
             assert arguments[1:3] == ["api", "--method"]
@@ -456,6 +458,7 @@ def test_github_artifact_uses_sanitized_model_snapshot(
         "endpoint_url": "https://example.invalid/chat",
         "max_output_tokens": 512,
         "reasoning_effort": None,
+        "max_tool_rounds": 0,
         "temperature": 0,
     }
     for path in artifact.iterdir():

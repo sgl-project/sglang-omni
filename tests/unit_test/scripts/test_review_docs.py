@@ -54,6 +54,13 @@ from scripts.docs_review.transport import (
     build_chat_request,
     parse_chat_content,
 )
+from tests.unit_test.fixtures.docs_review import (
+    commit_all,
+    git_command,
+    sample_budget,
+    start_repository,
+    write_file,
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 
@@ -80,44 +87,6 @@ class FixedClock:
 
     def now(self) -> datetime:
         return self.moment
-
-
-def git_command(repository: Path, *arguments: str) -> str:
-    completed = subprocess.run(
-        ["git", "-C", str(repository), *arguments],
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-    if completed.returncode != 0:
-        raise RuntimeError(completed.stderr)
-    else:
-        return completed.stdout
-
-
-def start_repository(root: Path) -> str:
-    root.mkdir()
-    hooks = root.parent / f"{root.name}-hooks"
-    hooks.mkdir()
-    git_command(root, "init")
-    git_command(root, "config", "user.email", "docs-review@example.com")
-    git_command(root, "config", "user.name", "Docs Review Test")
-    git_command(root, "config", "commit.gpgsign", "false")
-    git_command(root, "config", "core.hooksPath", str(hooks))
-    (root / "README.md").write_text("Repository.\n", encoding="utf-8")
-    return commit_all(root, "base")
-
-
-def commit_all(repository: Path, message: str) -> str:
-    git_command(repository, "add", ".")
-    git_command(repository, "commit", "-m", message)
-    return git_command(repository, "rev-parse", "HEAD").strip()
-
-
-def write_file(repository: Path, relative: str, content: str) -> None:
-    path = repository / relative
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(content, encoding="utf-8")
 
 
 def checklist(purpose: str, extra: str = "- Performance: not applicable") -> str:
@@ -150,15 +119,6 @@ def measured_lines(dataset: str, comparable: str) -> str:
         "- Raw results: before 10 11 9 after 8 8 7\n"
         "- Quality: WER unchanged\n"
         f"- Conditions comparable: {comparable}\n"
-    )
-
-
-def sample_budget() -> BudgetConfig:
-    return BudgetConfig(
-        max_cost_cents_per_call=10,
-        max_cost_cents_per_pull_request=50,
-        max_cost_cents_per_day=50,
-        call_cost_cents=10,
     )
 
 
@@ -798,6 +758,8 @@ def test_model_request_treats_the_bundle_as_data() -> None:
     assert request.messages[1].content == bundle_text
     assert "DOCS_REVIEW_TEST_KEY" not in request.to_json()
     payload = json.loads(request.to_json())
+    assert "tools" not in payload
+    assert "tool_choice" not in payload
     assert payload["max_tokens"] == 200
     assert payload["temperature"] == 0
     assert "max_completion_tokens" not in payload
@@ -1056,9 +1018,7 @@ def test_collector_disables_textconv_scripts(tmp_path: Path) -> None:
     write_file(repository, "docs/guide.md", "# Guide\n\nInstall the package.\n")
     git_command(
         repository,
-        "config",
-        "diff.review_probe.textconv",
-        f"{sys.executable} convert.py",
+        ["config", "diff.review_probe.textconv", f"{sys.executable} convert.py"],
     )
     head_commit_sha = commit_all(repository, "textconv probe")
     result = review_change(
@@ -1200,6 +1160,7 @@ def test_model_configuration_change_invalidates_cached_report(
             "endpoint_url": "https://example.invalid/one",
             "temperature": 0,
             "max_output_tokens": 512,
+            "max_tool_rounds": 0,
             "reasoning_effort": None,
         }
         assert "redaction-probe" not in artifact.model_dump_json()
