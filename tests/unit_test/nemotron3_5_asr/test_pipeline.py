@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import threading
+from pathlib import Path
 from unittest.mock import Mock
 
 import numpy as np
 import pytest
 
+from sglang_omni.config.manager import ConfigManager
 from sglang_omni.config.runtime import resolve_stage_factory_args
 from sglang_omni.models.nemotron3_5_asr import request_builders, stages
 from sglang_omni.models.nemotron3_5_asr.config import Nemotron3_5ASRPipelineConfig
@@ -32,6 +34,20 @@ def test_config_leaves_defaults_to_factory() -> None:
     resolved_factory = resolve_stage_factory_args(config.stages[0], config)
     assert resolved_factory["enable_encoder_cuda_graph"] is False
     assert resolved_factory["encoder_graph_max_batch_size"] == 4
+
+
+def test_npu_example_config_runs_eager_bf16() -> None:
+    config_path = (
+        Path(__file__).parents[3] / "examples/configs/nemotron3_5_asr_npu.yaml"
+    )
+    config = ConfigManager.from_file(str(config_path)).config
+    stage = config.stages[0]
+
+    assert isinstance(config, Nemotron3_5ASRPipelineConfig)
+    assert stage.gpu == 0
+    assert stage.factory.dtype == "bfloat16"
+    assert stage.factory.enable_encoder_cuda_graph is False
+    assert stage.factory.num_lookahead_tokens == 3
 
 
 @pytest.mark.parametrize("model_error", [False, True])

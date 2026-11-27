@@ -9,7 +9,7 @@ from dataclasses import dataclass
 import torch
 from torch.nn import functional as F
 
-from sglang_omni.utils.device import supports_device_streams
+from sglang_omni.utils.device import has_device_streams
 from sglang_omni.vendor.nemotron3_5_asr.modeling_nemotron3_5_asr import (
     Nemotron3_5AsrForRNNT,
 )
@@ -147,7 +147,7 @@ class NemotronEncoderStatePool:
         return slot
 
     def close(self) -> None:
-        if supports_device_streams(self.layout.device):
+        if has_device_streams(self.layout.device):
             torch.get_device_module(self.layout.device).synchronize(self.layout.device)
         else:
             pass

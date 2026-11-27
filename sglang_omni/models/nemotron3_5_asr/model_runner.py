@@ -43,7 +43,7 @@ from sglang_omni.platforms import current_platform
 from sglang_omni.platforms.device_graph import DeviceGraphBackend
 from sglang_omni.proto.request import StagePayload
 from sglang_omni.utils.checkpoint import resolve_checkpoint
-from sglang_omni.utils.device import supports_device_streams
+from sglang_omni.utils.device import has_device_streams
 from sglang_omni.vendor.nemotron3_5_asr.configuration_nemotron3_5_asr import (
     Nemotron3_5AsrConfig,
 )
@@ -246,7 +246,7 @@ class Nemotron3_5ASRModelRunner:
         )
 
         with self.model_lock, torch.inference_mode():
-            if supports_device_streams(self.device):
+            if has_device_streams(self.device):
                 self.device_module.synchronize(self.device)
             else:
                 pass
@@ -262,7 +262,7 @@ class Nemotron3_5ASRModelRunner:
                 graph_runner=self.encoder_graph_runner,
             )
             decode_streaming_batch(self.model, states, encoded_frames, token_limits)
-            if supports_device_streams(self.device):
+            if has_device_streams(self.device):
                 self.device_module.synchronize(self.device)
             else:
                 pass

@@ -6,9 +6,16 @@ from __future__ import annotations
 from collections.abc import Iterable
 
 from sglang_omni.client.client import Client
+from sglang_omni.config.session_audio import (
+    MAX_PENDING_OUTPUT_BYTES,
+    MAX_PENDING_OUTPUT_CHUNKS,
+    REALTIME_IDLE_TIMEOUT_S,
+    REALTIME_MAX_PENDING_CHUNKS,
+    REALTIME_OPERATION_TIMEOUT_S,
+)
 from sglang_omni.models.nemotron3_5_asr.config import Nemotron3_5ASRPipelineConfig
 from sglang_omni.proto.request import OmniRequest
-from sglang_omni.proto.session import OutputChunk
+from sglang_omni.proto.session import OutputChunk, SessionLimits
 from sglang_omni.serve.realtime.adapters import CoordinatorAdapter
 from sglang_omni.serve.realtime.manager import (
     RealtimeDeployment,
@@ -78,6 +85,14 @@ def create_realtime_deployment(
     *,
     native_unit_ms: int = 20,
 ) -> RealtimeDeployment:
+    session_limits = SessionLimits(
+        operation_timeout_s=REALTIME_OPERATION_TIMEOUT_S,
+        idle_timeout_s=REALTIME_IDLE_TIMEOUT_S,
+        max_pending_chunks=REALTIME_MAX_PENDING_CHUNKS,
+        max_output_chunks=MAX_PENDING_OUTPUT_CHUNKS,
+        max_output_bytes=MAX_PENDING_OUTPUT_BYTES,
+    )
+
     def create_adapter() -> CoordinatorAdapter:
         return CoordinatorAdapter(
             client,
@@ -85,11 +100,13 @@ def create_realtime_deployment(
             output_converter=convert_session_output,
             input_sample_rate_hz=16000,
             atomic_consumption=True,
+            limits=session_limits,
         )
 
     return RealtimeDeployment(
         capabilities=Capabilities(native_unit_ms=native_unit_ms),
         adapter_factory=create_adapter,
         limits=runtime_limits_for_pipeline(pipeline_config),
+        session_limits=session_limits,
         max_connections=64,
     )
