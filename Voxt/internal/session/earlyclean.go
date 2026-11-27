@@ -385,9 +385,12 @@ func (e *earlyClean) drain(text string) (parts []compose.Part, answers []string,
 	e.mu.Unlock()
 	e.cond.Broadcast()
 	if cancelWorker {
+		// Finalized workers cannot publish further results. Cancellation
+		// must not delay cleanup of the remaining authoritative text.
 		e.cancel()
+	} else {
+		<-e.workerDone
 	}
-	<-e.workerDone
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.finalized = true
