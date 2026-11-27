@@ -11,6 +11,7 @@ whose pid is gone.
 from __future__ import annotations
 
 import atexit
+import logging
 import os
 import socket
 import tempfile
@@ -20,14 +21,23 @@ NCCL_PORT_BASE = 29500
 NCCL_PORT_SPAN = 400
 CLAIM_DIR_ENV = "SGLANG_OMNI_PORT_CLAIM_DIR"
 _CLAIM_DIR_NAME = "sglang-omni-port-claims"
+KERNEL_PORT_ATTEMPTS = 16
 _HELD_CLAIM_FDS: list[int] = []
+
+logger = logging.getLogger(__name__)
 
 
 def claim_tcp_port(
     base_port: int = NCCL_PORT_BASE,
     span: int = NCCL_PORT_SPAN,
+    *,
+    allow_kernel_port: bool = False,
 ) -> int:
-    """Return a port in ``[base_port, base_port + span)`` that this process owns."""
+    """Return a port in ``[base_port, base_port + span)`` that this process owns.
+
+    With allow_kernel_port, a range with no free port falls back to a claimed
+    port the kernel picks, outside the range.
+    """
     if span <= 0:
         raise ValueError(f"span must be positive, got {span}")
     else:
@@ -39,7 +49,26 @@ def claim_tcp_port(
             return port
         else:
             pass
-    raise RuntimeError(f"no free TCP port in [{base_port}, {end_port})")
+    if not allow_kernel_port:
+        raise RuntimeError(f"no free TCP port in [{base_port}, {end_port})")
+    else:
+        pass
+    for _ in range(KERNEL_PORT_ATTEMPTS):
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            sock.bind(("", 0))
+            port = sock.getsockname()[1]
+        if try_claim(directory, port):
+            logger.warning(
+                f"No free TCP port in [{base_port}, {end_port}); "
+                f"using kernel-chosen port {port}"
+            )
+            return port
+        else:
+            pass
+    raise RuntimeError(
+        f"no free TCP port in [{base_port}, {end_port}) and no claimable "
+        f"kernel-chosen port after {KERNEL_PORT_ATTEMPTS} attempts"
+    )
 
 
 def release_tcp_port(port: int) -> None:
@@ -134,9 +163,12 @@ def process_is_alive(pid: int) -> bool:
 
 
 def port_is_bindable(port: int) -> bool:
+    # note (Lushali): bind the wildcard address, as the torch.distributed store
+    # does. A loopback bind succeeds while a socket holds the port on another
+    # interface address, and the store then fails with EADDRINUSE.
     try:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-            sock.bind(("127.0.0.1", port))
+            sock.bind(("", port))
     except PermissionError:
         raise
     except OSError:

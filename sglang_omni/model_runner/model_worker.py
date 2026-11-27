@@ -630,7 +630,7 @@ def resolve_nccl_port() -> int:
     from sglang_omni.utils.port_claim import NCCL_PORT_BASE, claim_tcp_port
 
     try:
-        port = claim_tcp_port()
+        port = claim_tcp_port(allow_kernel_port=True)
     except PermissionError:
         # Some restricted CI / sandbox environments do not allow socket binding
         # during test-time configuration. Fall back to a stable default so
