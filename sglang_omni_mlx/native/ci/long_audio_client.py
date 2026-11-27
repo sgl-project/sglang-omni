@@ -44,6 +44,12 @@ class GenerationMetadata:
     generated_token_count: int
     language: str | None
     finish_reason: str
+    # note (YingjieHe): the server sends the draft statistics only for a decode with a draft, so they are optional.
+    verify_round_count: int | None = None
+    proposed_draft_token_count: int | None = None
+    accepted_draft_token_count: int | None = None
+    # note (YingjieHe): only Whisper sends the text of each window, so it is optional.
+    window_texts: list[str] | None = None
 
 
 @dataclass(frozen=True, kw_only=True)
