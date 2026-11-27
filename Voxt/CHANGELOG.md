@@ -2,6 +2,16 @@
 
 All notable changes to Voxt. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [Semantic Versioning](https://semver.org/). Each version's section is its release notes: English first, then the same in Chinese under `### 中文`, with `####` headings below it (docs/release.md §2.1).
 
+## [Unreleased]
+
+### Added
+- **Anthropic's Messages API** (Language models → Anthropic → Advanced → API format): Chat Completions stays the default. With Messages, Prompt caching can keep Voxt's instructions on Anthropic's side for a few minutes, so the requests after the first cost less; it is off unless you turn it on, and what you dictate is not cached.
+
+### 中文
+
+#### 新增
+- **Anthropic 的 Messages API**（语言模型 → Anthropic → 高级 → API 格式）：默认仍是 Chat Completions。选 Messages 后可以打开“提示词缓存”，Anthropic 会把 Voxt 的指令保留几分钟，之后的请求费用更低；默认关，你说的内容不会被缓存。
+
 ## [2.1.4] - 2026-11-26
 
 ### Added
