@@ -236,34 +236,6 @@ REPLICA_PROFILES: tuple[ReplicaProfile, ...] = (
     ),
     # note (Yuanfan Chen): searched with sglang-omni 8848e500 and measured again on c9e8e34e6, each against the model's own config. Where the B200 caps of 16 running and 16 queued requests lost to it, each replica keeps the engine's own limits and the replicas split the GPU's memory.
     ReplicaProfile(
-        config_cls="Qwen3TTSPipelineConfig",
-        model_path="Qwen/Qwen3-TTS-12Hz-1.7B-Base",
-        gpu=H100,
-        num_replicas=3,
-        replicated_processes=("pipeline", "vocoder"),
-        settings={
-            "stages.tts_engine.gpu_memory_fraction": 0.2421,
-            "stages.tts_engine.engine.mem_fraction_static": 0.8,
-            "stages.tts_engine.engine.max_total_tokens": 52888,
-            "stages.vocoder.gpu_memory_fraction": 0.0646,
-            "stages.vocoder.process": "vocoder",
-        },
-    ),
-    ReplicaProfile(
-        config_cls="Qwen3TTSPipelineConfig",
-        model_path="Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice",
-        gpu=H100,
-        num_replicas=3,
-        replicated_processes=("pipeline", "vocoder"),
-        settings={
-            "stages.tts_engine.gpu_memory_fraction": 0.2421,
-            "stages.tts_engine.engine.mem_fraction_static": 0.8,
-            "stages.tts_engine.engine.max_total_tokens": 52888,
-            "stages.vocoder.gpu_memory_fraction": 0.0646,
-            "stages.vocoder.process": "vocoder",
-        },
-    ),
-    ReplicaProfile(
         config_cls="MossTTSLocalPipelineConfig",
         model_path="OpenMOSS-Team/MOSS-TTS-Local-Transformer-v1.5",
         gpu=H100,
