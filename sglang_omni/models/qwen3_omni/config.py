@@ -47,8 +47,9 @@ _DEEPGEMM_PRECOMPILE_ENV_DEFAULTS = {"SGLANG_JIT_DEEPGEMM_PRECOMPILE": "0"}
 
 # A colocated worker launches six stage processes. Letting every PyTorch
 # process size its OpenMP pool to the full host oversubscribes launch-side CPU
-# work when multiple workers share a node. Preprocessing handles one prompt per
-# scheduler call, so a host-wide tokenizer Rayon pool only adds contention.
+# work when multiple workers share a node. Preprocessing tokenizes each prompt on
+# the thread that runs its request, so a host-wide tokenizer Rayon pool only adds
+# contention.
 _COLOCATED_STAGE_ENV_DEFAULTS = {
     **_DEEPGEMM_PRECOMPILE_ENV_DEFAULTS,
     "OMP_NUM_THREADS": "8",

@@ -1067,7 +1067,7 @@ class PreprocessingScheduler(SimpleScheduler[StagePayload, StagePayload]):
         video_decode_threads: int | None,
     ) -> None:
         super().__init__(preprocessor, shutdown_callback=self.shut_down_video_lane)
-        # note (ratish): the threads share one preprocessor, since the HF processor writes none of its own state while it runs and its tokenizer keeps one padding and truncation setting.
+        # note (ratish): the threads share one preprocessor, since the Transformers 5.19 HF processor writes none of its own state while it runs and its tokenizer keeps one padding and truncation setting.
         self.preprocessor = preprocessor
         # note (ratish): a running video decodes on at least one of the stage's CPUs, so videos past them would only hold their frames while they wait for one.
         video_worker_count = min(video_request_worker_count, stage_cpu_count)
