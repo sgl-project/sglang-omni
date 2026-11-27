@@ -5,12 +5,12 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 ## [Unreleased]
 
 ### Fixed
-- **A streaming answer no longer silently removes Continue in another session**: Continue, Speak and Send stay visible but disabled and explain that they are available when the answer finishes.
+- **A streaming answer no longer silently removes Continue in another session**: Continue, Speak and Send stay visible but disabled and explain that they are available when the answer finishes. A Retry wait also clears when the answer finishes after the display language changes.
 
 ### 中文
 
 #### 修复
-- **另一个会话正在生成回答时，不再直接隐藏“继续”**：继续、Speak 和 Send 保留但置灰，并说明回答完成后即可使用。
+- **另一个会话正在生成回答时，不再直接隐藏“继续”**：继续、Speak 和 Send 保留但置灰，并说明回答完成后即可使用。切换显示语言后，重试等待也会在回答完成时消失。
 
 ## [2.1.4] - 2026-11-26
 

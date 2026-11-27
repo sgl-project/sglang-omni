@@ -65,11 +65,14 @@ func (a *app) backgroundChanged(s session.Snapshot) {
 	a.overlaySync()
 }
 
-// clearRetryWait clears the transient refusal wherever a session switch parked it.
+// clearRetryWait clears the transient refusal in any locale wherever a session switch parked it.
 func (a *app) clearRetryWait() {
-	wait := i18n.T("Try again is available when the streaming answer finishes.")
+	waits := make(map[string]bool)
+	for _, locale := range i18n.Supported() {
+		waits[i18n.NewTranslator(locale).T("Try again is available when the streaming answer finishes.")] = true
+	}
 	clear := func(card *answerCard) {
-		if card.msg == wait {
+		if waits[card.msg] {
 			card.msg = ""
 		}
 	}

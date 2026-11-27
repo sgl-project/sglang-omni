@@ -8,6 +8,7 @@ import (
 
 	"github.com/sgl-project/sglang-omni/Voxt/internal/compose"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/helper/proto"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/overlay/layout"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/session"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
@@ -479,6 +480,7 @@ func TestSessionSlotCloseLeavesOtherSlotStreaming(t *testing.T) {
 // TestSessionSlotContinueWaitsForStreamingAnswer: only one answer streams
 // at a time. While Session 1's answer is still streaming, Session 2's card
 // says why Continue, Speak and Send wait; they work when that answer ends.
+// A locale change before the end must not strand the wait on current or parked cards.
 func TestSessionSlotContinueWaitsForStreamingAnswer(t *testing.T) {
 	full := "先订会议室 then email Ann。"
 	chat := &fakeChat{text: `{"title":"Plan","content":"` + full + `"}`, stall: true, chunkDelay: 50 * time.Millisecond}
@@ -554,11 +556,20 @@ func TestSessionSlotContinueWaitsForStreamingAnswer(t *testing.T) {
 	if a.slot != 2 {
 		t.Fatalf("the failed card did not park in Session 2: slot=%d", a.slot)
 	}
+	a.answer = answerCard{open: true, id: "current-retry", kind: store.KindTranslate, problem: &session.Problem{Code: session.ProblemEmpty}}
+	a.retryAnswer("")
+	if a.answer.msg != retryWait {
+		t.Fatalf("the current card does not have the English retry wait: %q", a.answer.msg)
+	}
+	i18n.SetLocale("zh-Hans")
 	a.mgr.StopLLM(streaming)
 	a.pump("Session 1's answer end", func() bool { return a.bgID == "" })
+	if a.answer.msg != "" {
+		t.Errorf("the retry wait outlived the stream in the current card after a locale change: %q", a.answer.msg)
+	}
 	tap(a, "session-2", textEditApp)
 	if a.answer.msg != "" {
-		t.Fatalf("the retry wait outlived the stream in the parked card: %q", a.answer.msg)
+		t.Errorf("the retry wait outlived the stream in the parked card after a locale change: %q", a.answer.msg)
 	}
 	a.retryAnswer("")
 	a.pump("the retry's start", func() bool { return a.sess.State.Live() })
