@@ -15,6 +15,7 @@ from sglang_omni.models.streaming_cascade.base import (
     ChatMessage,
     ComponentConfig,
     StreamComponent,
+    audio_bytes,
     control_chunk,
     messages_chunk,
 )
@@ -25,6 +26,7 @@ from sglang_omni.proto.streams import (
     IMAGE_FRAME,
     INTERRUPT,
     MAX_HISTORY_CHARS,
+    PCM16,
     REPLY_DELIVERED,
     REPLY_HEARD,
     REPLY_PROGRESS,
@@ -104,16 +106,18 @@ class DialogConfig(ComponentConfig):
     max_text_chars: int = Field(default=16000, gt=0)
     max_history_images: int = Field(default=8, gt=0)
     max_history_image_bytes: int = Field(default=4 * 1024 * 1024, gt=0)
+    max_audio_bytes: int = Field(default=4 * 1024 * 1024, gt=0)
 
 
 @dataclass(kw_only=True)
 class QueuedUtterance:
-    """A recognized question waiting for the preceding reply to finish."""
+    """A question waiting for the preceding reply to finish."""
 
     turn_number: int
     transcript_text: str
     language: str | None
     images: tuple[ChatImage, ...]
+    audio_pcm16_bytes: bytes = b""
 
 
 @dataclass(kw_only=True)
@@ -125,9 +129,9 @@ class ImageUpload:
 
 
 class Dialog(StreamComponent):
-    """Turns final transcripts into prompts and records the replies.
+    """Turns final transcripts or committed audio into prompts and records the replies.
 
-    Each final transcript opens the next turn with turn.queued. An utterance
+    Each final transcript or audio commit opens the next turn with turn.queued. An utterance
     that arrives while a reply is running waits for the turn.done of that
     reply's turn, so history always alternates user and assistant. Speech
     over a reply, or an `interrupt` control, ends the reply: the dialog
@@ -169,6 +173,8 @@ class Dialog(StreamComponent):
         ]
         self.queued_utterances: deque[QueuedUtterance] = deque()
         self.pending_image_uploads: deque[ImageUpload] = deque()
+        self.pending_audio_bytes: bytearray = bytearray()
+        self.has_pcm16_input: bool = False
         self.reply: list[str] | None = None
         self.reply_turn: int = 0
         self.turns: int = 0
@@ -192,6 +198,7 @@ class Dialog(StreamComponent):
 
     def place(self, settings: "ComponentGraphConfig", name: str) -> None:
         self.awaits_delivery = bool(settings.delivery_reporters(name))
+        self.has_pcm16_input = settings.node(name).is_audio_dialog
 
     def adopt(self, previous: StreamComponent) -> None:
         if isinstance(previous, Dialog):
@@ -211,8 +218,18 @@ class Dialog(StreamComponent):
             self.language = previous.language
             self.is_user_speaking = previous.is_user_speaking
             self.pending_image_uploads = previous.pending_image_uploads
+            self.pending_audio_bytes = previous.pending_audio_bytes
         else:
             pass
+
+    def audio_state_bytes(self) -> int:
+        return (
+            len(self.pending_audio_bytes)
+            + sum(
+                len(utterance.audio_pcm16_bytes) for utterance in self.queued_utterances
+            )
+            + sum(len(message.audio) for message in self.messages)
+        )
 
     def state_bytes(self) -> int:
         text_character_count = sum(len(message.content) for message in self.messages)
@@ -233,7 +250,11 @@ class Dialog(StreamComponent):
         image_byte_count += sum(
             len(upload.image.image_bytes) for upload in self.pending_image_uploads
         )
-        return text_character_count * MAX_UTF8_BYTES_PER_CHARACTER + image_byte_count
+        return (
+            text_character_count * MAX_UTF8_BYTES_PER_CHARACTER
+            + image_byte_count
+            + self.audio_state_bytes()
+        )
 
     def is_reply(self, chunk: TimedChunk) -> bool:
         return self.reply is not None and chunk.turn == self.reply_turn
@@ -267,6 +288,7 @@ class Dialog(StreamComponent):
 
     def handle(self, chunk: TimedChunk) -> None:
         assert self.emit is not None
+        event_type = control_type(chunk)
         if chunk.format == IMAGE_FRAME:
             image = ChatImage(
                 media_type=validate_upload_image(chunk.payload),
@@ -287,34 +309,28 @@ class Dialog(StreamComponent):
                 logger.warning(
                     f"dropping the image uploaded at {evicted_upload.timestamp_ms:.0f} ms: pending images exceed the image history budget"
                 )
-        elif chunk.format == TRANSCRIPT_FORMAT and chunk.payload["is_final"]:
-            transcript_text = str(chunk.payload["text"]).strip()
-            images: tuple[ChatImage, ...] = ()
-            if transcript_text:
-                while (
-                    self.pending_image_uploads
-                    and self.pending_image_uploads[0].timestamp_ms <= chunk.t_start_ms
-                ):
-                    images = (*images, self.pending_image_uploads.popleft().image)
+        elif chunk.format == PCM16:
+            audio_pcm16_bytes = audio_bytes(chunk)
+            if (
+                self.audio_state_bytes() + len(audio_pcm16_bytes)
+                > self.config.max_audio_bytes
+            ):
+                raise ValueError("session audio exceeds max_audio_bytes")
             else:
-                pass
-            self.turns += 1
-            self.queued_utterances.append(
-                QueuedUtterance(
-                    turn_number=self.turns,
-                    transcript_text=transcript_text,
-                    language=chunk_language(chunk),
-                    images=images,
-                )
+                self.pending_audio_bytes.extend(audio_pcm16_bytes)
+        elif chunk.format == TRANSCRIPT_FORMAT and chunk.payload["is_final"]:
+            self.queue_utterance(
+                chunk.t_start_ms,
+                transcript_text=str(chunk.payload["text"]).strip(),
+                language=chunk_language(chunk),
             )
-            self.emit(control_chunk(TURN_QUEUED, turn=self.turns))
         elif chunk.format == TEXT_DELTA and self.is_reply(chunk):
             self.reply.append(str(chunk.payload["text"]))
             if sum(len(part) for part in self.reply) > self.config.max_text_chars:
                 raise ValueError("reply exceeds max_text_chars")
             else:
                 pass
-        elif control_type(chunk) == TURN_DONE and self.is_reply(chunk):
+        elif event_type == TURN_DONE and self.is_reply(chunk):
             reply = "".join(self.reply)
             self.messages.append(ChatMessage(role="assistant", content=reply))
             self.truncatable = (self.reply_turn, len(self.messages) - 1)
@@ -324,22 +340,30 @@ class Dialog(StreamComponent):
             self.delivered_ms = math.inf
             self.heard_ms = None
             self.reply = None
-        elif control_type(chunk) == SPEECH_STARTED:
+        elif event_type == SPEECH_STARTED:
             self.is_user_speaking = True
             if self.reply is not None:
                 self.interrupt_reply()
             else:
                 pass
-        elif control_type(chunk) in (SPEECH_STOPPED, COMMIT):
+        elif event_type in (SPEECH_STOPPED, COMMIT):
             self.is_user_speaking = False
+            if self.has_pcm16_input and event_type == COMMIT:
+                audio_pcm16_bytes = bytes(self.pending_audio_bytes)
+                self.pending_audio_bytes.clear()
+                self.queue_utterance(
+                    chunk.t_start_ms, audio_pcm16_bytes=audio_pcm16_bytes
+                )
+            else:
+                pass
         elif (
-            control_type(chunk) == REPLY_DELIVERED
+            event_type == REPLY_DELIVERED
             and self.truncatable is not None
             and chunk.turn == self.truncatable[0]
         ):
             self.delivered_ms = float(chunk.payload["audio_ms"])
             self.truncate()
-        elif control_type(chunk) == TRUNCATE:
+        elif event_type == TRUNCATE:
             # note (luojiaxuan): A truncate without a turn names the latest reply, which may have begun after the one a truncate can still cut.
             turn = self.reply_turn if chunk.turn is None else chunk.turn
             if self.truncatable is not None and turn == self.truncatable[0]:
@@ -374,6 +398,36 @@ class Dialog(StreamComponent):
         self.emit(control_chunk(INTERRUPT, turn=turn))
         self.emit(control_chunk(TURN_INTERRUPTED, turn=turn))
 
+    def queue_utterance(
+        self,
+        timestamp_ms: float,
+        *,
+        transcript_text: str = "",
+        language: str | None = None,
+        audio_pcm16_bytes: bytes = b"",
+    ) -> None:
+        assert self.emit is not None
+        images: list[ChatImage] = []
+        if transcript_text or audio_pcm16_bytes:
+            while (
+                self.pending_image_uploads
+                and self.pending_image_uploads[0].timestamp_ms <= timestamp_ms
+            ):
+                images.append(self.pending_image_uploads.popleft().image)
+        else:
+            pass
+        self.turns += 1
+        self.queued_utterances.append(
+            QueuedUtterance(
+                turn_number=self.turns,
+                transcript_text=transcript_text,
+                language=language,
+                images=tuple(images),
+                audio_pcm16_bytes=audio_pcm16_bytes,
+            )
+        )
+        self.emit(control_chunk(TURN_QUEUED, turn=self.turns))
+
     def respond_to_waiting(self) -> None:
         assert self.emit is not None
         # note (luojiaxuan): The next prompt shows the interrupted reply's cut, which has no bound until the graph reports the audio it delivered or a truncate arrives.
@@ -392,6 +446,7 @@ class Dialog(StreamComponent):
                 utterance.transcript_text,
                 utterance.language,
                 utterance.images,
+                audio_pcm16_bytes=utterance.audio_pcm16_bytes,
             ):
                 self.emit(output)
             if self.reply is not None and self.is_user_speaking:
@@ -446,6 +501,7 @@ class Dialog(StreamComponent):
         self.messages[index - 1] = ChatMessage(
             role="user",
             content=f"{self.messages[index - 1].content} {self.messages[index + 1].content}",
+            audio=self.messages[index - 1].audio + self.messages[index + 1].audio,
             images=(
                 *self.messages[index - 1].images,
                 *(
@@ -472,9 +528,11 @@ class Dialog(StreamComponent):
         text: str,
         language: str | None,
         images: tuple[ChatImage, ...] = (),
+        *,
+        audio_pcm16_bytes: bytes = b"",
     ) -> list[TimedChunk]:
         history_chars = sum(len(message.content) for message in self.messages)
-        if not text:
+        if not text and not audio_pcm16_bytes:
             return [control_chunk(TURN_EMPTY, turn=turn)]
         elif len(text) > self.config.max_text_chars:
             raise ValueError("transcript exceeds max_text_chars")
@@ -486,7 +544,14 @@ class Dialog(StreamComponent):
                 "conversation exceeds max_history_chars; open a new session"
             )
         else:
-            self.messages.append(ChatMessage(role="user", content=text, images=images))
+            self.messages.append(
+                ChatMessage(
+                    role="user",
+                    content=text,
+                    images=images,
+                    audio=audio_pcm16_bytes,
+                )
+            )
             if self.messages[-2].role == "assistant" and not self.messages[-2].content:
                 self.join_around(len(self.messages) - 2)
             else:

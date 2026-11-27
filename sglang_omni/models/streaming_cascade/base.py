@@ -94,6 +94,7 @@ class ChatMessage(BaseModel):
     uncertain: bool = False
     is_cut: bool = False
     images: tuple[ChatImage, ...] = ()
+    audio: bytes = b""
 
 
 def control_chunk(
@@ -162,9 +163,10 @@ def messages_chunk(
 
 
 def message_dict(message: ChatMessage) -> dict[str, object]:
-    excluded_fields: set[str] = (
-        {"uncertain", "is_cut"} if message.images else {"uncertain", "is_cut", "images"}
-    )
+    exclude_if_not = (("images", message.images), ("audio", message.audio))
+    excluded_fields = {"uncertain", "is_cut"} | {
+        entry_name for entry_name, entry in exclude_if_not if not entry
+    }
     return message.model_dump(exclude_none=True, exclude=excluded_fields)
 
 

@@ -1,0 +1,51 @@
+config_cls: StreamingCascadePipelineConfig
+model_path: examples/streaming_cascade/profiles/nemotron-omni-qwen3-tts
+timeout_s: 180
+max_sessions: 2
+
+services:
+  - name: chat
+    command: [python, -m, sglang.launch_server, --model-path, nvidia/Nemotron-3-Nano-Omni-30B-A3B-Reasoning-BF16, --trust-remote-code, --host, "127.0.0.1", --port, "18010", --context-length, "8192"]
+    env: {CUDA_VISIBLE_DEVICES: "0"}
+    port: 18010
+  - name: tts
+    command: [sgl-omni, serve, --model-path, Qwen/Qwen3-TTS-12Hz-1.7B-Base, --config, examples/configs/qwen3_tts_1_7b.yaml, --host, "127.0.0.1", --port, "18015", --tts_engine.engine.mem_fraction_static, "0.12", --tts_engine.engine.disable_cuda_graph, "true", --vocoder.factory.initial_cuda_graph, "false", --vocoder.factory.followup_cuda_graph, "false", --vocoder.factory.incremental_codec_compile, "false"]
+    env: {CUDA_VISIBLE_DEVICES: "1"}
+    port: 18015
+
+session_nodes:
+  dialog:
+    kind: dialog
+    inputs:
+      - "input:pcm16"
+      - "input:session"
+      - {source: "llm:text_delta", feedback: true, overflow: drop_oldest, capacity: 1024}
+      - {source: "tts:session", feedback: true, overflow: drop_oldest, capacity: 1024}
+      - {kind: control, source: input, event: interrupt}
+      - {kind: control, source: tts, event: reply.progress}
+    system_prompt: Listen to the user's recording and answer the spoken question concisely in the user's language. Use plain speech without markdown or emoji.
+  llm:
+    kind: openai_chat
+    inputs:
+      - dialog
+      - {kind: control, source: dialog, event: interrupt}
+    base_url: "http://127.0.0.1:18010/v1"
+    model: nvidia/Nemotron-3-Nano-Omni-30B-A3B-Reasoning-BF16
+    max_tokens: 256
+    extra_body:
+      chat_template_kwargs: {enable_thinking: false}
+  tts:
+    kind: openai_speech
+    inputs:
+      - llm
+      - {kind: control, source: dialog, event: interrupt}
+    base_url: "http://127.0.0.1:18015/v1"
+    model: Qwen/Qwen3-TTS-12Hz-1.7B-Base
+    language: auto
+    reference_audio_path: examples/streaming_cascade/voices/vivian.wav
+    reference_text: Hi there, it is nice to meet you, and I am happy to help with whatever you need today.
+
+session_publish:
+  dialog: [session]
+  llm: [text_delta]
+  tts: [pcm_f32le, session]

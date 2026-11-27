@@ -9,6 +9,7 @@ import httpx
 from openai.types.chat import ChatCompletionContentPartParam, ChatCompletionMessageParam
 from pydantic import BaseModel, Field, field_validator
 
+from sglang_omni.audio.wav import pcm16_wav
 from sglang_omni.models.streaming_cascade.base import (
     ChatMessage,
     ComponentConfig,
@@ -22,7 +23,12 @@ from sglang_omni.models.streaming_cascade.base import (
     text_chunk,
 )
 from sglang_omni.proto.session import TimedChunk
-from sglang_omni.proto.streams import MESSAGES, TURN_DONE, chunk_language
+from sglang_omni.proto.streams import (
+    MESSAGES,
+    SESSION_INPUT_SAMPLE_RATE_HZ,
+    TURN_DONE,
+    chunk_language,
+)
 from sglang_omni.scheduling.session import ChunkEmitter
 
 # The request fields this kind sets itself; `extra_body` adds others.
@@ -118,12 +124,12 @@ class OpenAIChatGenerator(Replier):
             pass
         completion_messages: list[ChatCompletionMessageParam] = []
         for message in messages:
-            if not message.images:
+            if not message.images and not message.audio:
                 completion_messages.append(
                     {"role": message.role, "content": message.content}
                 )
             elif message.role != "user":
-                raise ValueError("images belong to user messages")
+                raise ValueError("images and audio belong to user messages")
             else:
                 # note (Yuhao Chen): Each image precedes the utterance it was uploaded for; a merged turn with its images after all its text was answered from the first image.
                 content_parts: list[ChatCompletionContentPartParam] = []
@@ -150,6 +156,19 @@ class OpenAIChatGenerator(Replier):
                             },
                         }
                     )
+                if message.audio:
+                    audio_wav_bytes = pcm16_wav(
+                        message.audio, SESSION_INPUT_SAMPLE_RATE_HZ
+                    )
+                    encoded_audio = base64.b64encode(audio_wav_bytes).decode("ascii")
+                    content_parts.append(
+                        {
+                            "type": "input_audio",
+                            "input_audio": {"format": "wav", "data": encoded_audio},
+                        }
+                    )
+                else:
+                    pass
                 if message.content[text_start:].strip():
                     content_parts.append(
                         {"type": "text", "text": message.content[text_start:].strip()}

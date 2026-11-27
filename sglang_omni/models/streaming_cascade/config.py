@@ -50,6 +50,7 @@ from sglang_omni.proto.streams import (
     REPLY_PROGRESS,
     SESSION_CONTROL,
     SESSION_INPUT_SAMPLE_RATE_HZ,
+    TRANSCRIPT_FORMAT,
     TRUNCATE,
     AudioPort,
     ImagePort,
@@ -68,6 +69,17 @@ SAMPLING_FIELDS = {
 }
 # `turn_detection` belongs to the VAD node of the Session; the cascade takes the key and changes nothing.
 UPDATE_KEYS = frozenset({"nodes", "instructions", "sampling", "turn_detection"})
+
+
+def implicit_input_formats(kind: str, source: str) -> frozenset[str]:
+    """Formats included when a component input gives only the source name."""
+    component_kind = COMPONENTS.kind(kind)
+    formats = component_kind.consumes | {SESSION_CONTROL}
+    if component_kind.config_cls is DialogConfig:
+        formats -= {PCM16}
+    else:
+        pass
+    return formats - {IMAGE_FRAME} if source == GRAPH_INPUT else formats
 
 
 class CascadeSessionNodeConfig(SessionNodeConfig):
@@ -163,13 +175,19 @@ class NodeSettings(BaseModel):
         edges: dict[str, frozenset[str]] = {}
         for entry in self.data_inputs:
             source, format = parse_input(entry)
-            formats = self.consumes if format is None else frozenset({format})
-            if source == GRAPH_INPUT and format is None:
-                formats = formats - {IMAGE_FRAME}
-            else:
-                pass
+            formats = (
+                implicit_input_formats(self.component.kind, source)
+                if format is None
+                else frozenset({format})
+            )
             edges[source] = edges.get(source, frozenset()) | (formats & self.consumes)
         return edges
+
+    @property
+    def is_audio_dialog(self) -> bool:
+        return isinstance(self.component, DialogConfig) and any(
+            PCM16 in formats for formats in self.edges().values()
+        )
 
     @property
     def controls(self) -> tuple[ControlEdge, ...]:
@@ -187,7 +205,11 @@ class NodeSettings(BaseModel):
     @property
     def required(self) -> frozenset[str]:
         """Consumed formats one of the inputs must produce."""
-        return COMPONENTS.kind(self.component.kind).required_of(self.component)
+        required = COMPONENTS.kind(self.component.kind).required_of(self.component)
+        if self.is_audio_dialog:
+            return (required - {TRANSCRIPT_FORMAT}) | {PCM16}
+        else:
+            return required
 
     @property
     def produces(self) -> frozenset[str]:
@@ -279,7 +301,9 @@ class ComponentGraphConfig(BaseModel):
                 source, format = parse_input(entry)
                 if source not in names:
                     sources[source] = sources.get(source, frozenset()) | (
-                        node.consumes if format is None else {format}
+                        implicit_input_formats(node.component.kind, source)
+                        if format is None
+                        else {format}
                     )
                 else:
                     pass
@@ -301,6 +325,7 @@ class ComponentGraphConfig(BaseModel):
                 *(formats & produced[name] for name, formats in edges.items())
             )
             missing = node.required - offered - {SESSION_CONTROL}
+            is_audio_dialog = node.is_audio_dialog
             if node.name in node.sources:
                 raise ValueError(f"node {node.name!r} reads itself")
             elif unusable:
@@ -308,6 +333,14 @@ class ComponentGraphConfig(BaseModel):
             elif missing:
                 raise ValueError(
                     f"no input of node {node.name!r} produces {sorted(missing)}"
+                )
+            elif is_audio_dialog and TRANSCRIPT_FORMAT in offered:
+                raise ValueError(
+                    f"node {node.name!r} requires exactly one of pcm16 and transcript"
+                )
+            elif is_audio_dialog and SESSION_CONTROL not in edges.get(GRAPH_INPUT, ()):
+                raise ValueError(
+                    f"node {node.name!r} requires input:session for commit"
                 )
             else:
                 pass
@@ -373,11 +406,16 @@ class ComponentGraphConfig(BaseModel):
             reporters = sorted(
                 {edge.source for edge in node.controls if edge.event == REPLY_PROGRESS}
             )
+            reads_events = COMPONENTS.kind(node.component.kind).reads_events
+            if node.is_audio_dialog:
+                reads_events |= {COMMIT}
+            else:
+                pass
             lost = sorted(
                 f"{source}:{event}"
                 for source, formats in node.edges().items()
                 if SESSION_CONTROL in formats
-                for event in COMPONENTS.kind(node.component.kind).reads_events
+                for event in reads_events
                 if (source, event) in diverted
             )
             if len(reporters) > 1:
@@ -661,11 +699,6 @@ class StreamingCascadePipelineConfig(AudioSessionPipelineConfig):
         nodes = {}
         for name, node in self.session_nodes.items():
             inputs = []
-            consumes = (
-                COMPONENTS.kind(node.kind).consumes | {SESSION_CONTROL}
-                if node.kind
-                else None
-            )
             for entry in node.inputs:
                 if isinstance(entry, SessionControlEdgeConfig):
                     continue
@@ -675,12 +708,12 @@ class StreamingCascadePipelineConfig(AudioSessionPipelineConfig):
                     )
                 if format is not None:
                     accepted_formats = (format,)
-                elif consumes is None:
+                elif node.kind is None:
                     accepted_formats = (None,)
-                elif source == GRAPH_INPUT:
-                    accepted_formats = tuple(sorted(consumes - {IMAGE_FRAME}))
                 else:
-                    accepted_formats = tuple(sorted(consumes))
+                    accepted_formats = tuple(
+                        sorted(implicit_input_formats(node.kind, source))
+                    )
                 for accepted_format in accepted_formats:
                     selected = (
                         source

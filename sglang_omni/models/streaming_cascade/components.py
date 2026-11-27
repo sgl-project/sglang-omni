@@ -183,10 +183,12 @@ COMPONENTS.register(
 COMPONENTS.register(
     DialogConfig,
     Dialog,
-    consumes=frozenset({TRANSCRIPT_FORMAT, TEXT_DELTA, SESSION_CONTROL, IMAGE_FRAME}),
+    consumes=frozenset(
+        {TRANSCRIPT_FORMAT, TEXT_DELTA, SESSION_CONTROL, IMAGE_FRAME, PCM16}
+    ),
     produces=frozenset({MESSAGES, SESSION_CONTROL}),
     opens_turns=True,
-    optional=frozenset({IMAGE_FRAME}),
+    optional=frozenset({IMAGE_FRAME, PCM16}),
 )
 COMPONENTS.register(
     OpenAIChatGeneratorConfig,

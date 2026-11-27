@@ -1,14 +1,18 @@
 # SPDX-License-Identifier: Apache-2.0
 import asyncio
+import base64
 import wave
 from contextlib import asynccontextmanager
 from dataclasses import replace
+from io import BytesIO
+from pathlib import Path
 
 import pytest
 import yaml
 
 from examples.streaming_cascade.run import run
 from sglang_omni.models.streaming_cascade.base import control_chunk
+from sglang_omni.models.streaming_cascade.config import StreamingCascadePipelineConfig
 from sglang_omni.pipeline.mp_runner import MultiProcessPipelineRunner
 from sglang_omni.proto import OmniRequest
 from sglang_omni.proto.session import SessionLimits, TimedChunk
@@ -30,6 +34,10 @@ from sglang_omni.proto.streams import (
     TURN_QUEUED,
     TURN_STARTED,
     control_type,
+)
+
+AUDIO_PROFILE = Path(
+    "examples/streaming_cascade/profiles/nemotron-omni-qwen3-tts/launch.yaml"
 )
 
 
@@ -157,6 +165,95 @@ async def conversation(config):
         else:
             pass
         await runner.stop()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("backends", ["english_tts"], indirect=True)
+async def test_audio_commit_sends_a_wav_to_chat_and_plays_its_reply(
+    backends: tuple[
+        StreamingCascadePipelineConfig,
+        list[bytes],
+        list[str],
+        list[list[dict[str, object]]],
+    ],
+) -> None:
+    backend_config, transcriptions, spoken_words, requests = backends
+    declaration = yaml.safe_load(AUDIO_PROFILE.read_text())
+    declaration.pop("services")
+    for node_name in ("llm", "tts"):
+        declaration["session_nodes"][node_name].update(
+            backend_config.session_nodes[node_name].options
+        )
+    config = StreamingCascadePipelineConfig.model_validate(declaration)
+    first_pcm_bytes = b"\x01\x00" * 320
+    second_pcm_bytes = b"\x02\x00" * 320
+    next_pcm_bytes = b"\x03\x00" * 320
+
+    async with conversation(config) as session:
+        await session.command(COMMIT)
+        await session.until(
+            lambda: any(
+                control_type(output) == TURN_EMPTY for output in session.outputs
+            )
+        )
+        await session.append(TimedChunk(AUDIO, 0, 20, 0, first_pcm_bytes, format=PCM16))
+        assert requests == []
+        for turn_number, start_ms, pcm16_bytes in (
+            (2, 20, second_pcm_bytes),
+            (3, 40, next_pcm_bytes),
+        ):
+            await session.append(
+                TimedChunk(AUDIO, start_ms, 20, 0, pcm16_bytes, format=PCM16),
+                control_chunk(COMMIT, start_ms + 20),
+            )
+            await session.until(
+                lambda: any(
+                    control_type(output) == TURN_DONE and output.turn == turn_number
+                    for output in session.outputs
+                )
+            )
+        assert {
+            output.turn for output in session.outputs if output.format == PCM_F32
+        } == {
+            2,
+            3,
+        }
+
+    assert transcriptions == []
+    assert spoken_words == ["Hello", "world."] * 2
+    assert len(requests) == 2
+    for request_messages, expected_clips in zip(
+        requests,
+        (
+            [first_pcm_bytes + second_pcm_bytes],
+            [first_pcm_bytes + second_pcm_bytes, next_pcm_bytes],
+        ),
+        strict=True,
+    ):
+        user_audio_parts = [
+            part["input_audio"]
+            for message in request_messages
+            if message["role"] == "user"
+            for part in message["content"]
+            if part["type"] == "input_audio"
+        ]
+        for audio_part, expected_pcm_bytes in zip(
+            user_audio_parts, expected_clips, strict=True
+        ):
+            assert audio_part["format"] == "wav"
+            with wave.open(
+                BytesIO(base64.b64decode(audio_part["data"])), "rb"
+            ) as audio:
+                assert (
+                    audio.getnchannels(),
+                    audio.getsampwidth(),
+                    audio.getframerate(),
+                ) == (
+                    1,
+                    2,
+                    16000,
+                )
+                assert audio.readframes(audio.getnframes()) == expected_pcm_bytes
 
 
 @pytest.mark.asyncio
