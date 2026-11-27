@@ -60,7 +60,7 @@
     "form": {
       "model": "Fixture service · fixture-model",
       "preset": "转录",
-      "filled": "转录",
+      "filled": "transcribe\u0000",
       "prompt": "Fixture edited prompt",
       "input": "Fixture input",
       "instruction": "Make it shorter"

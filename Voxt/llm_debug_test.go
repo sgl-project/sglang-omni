@@ -46,6 +46,47 @@ func TestLLMDebugRuns(t *testing.T) {
 	}
 }
 
+// TestLLMDebugDraftSurvivesLocaleSwitch: changing the display language
+// must not replace an edited prompt with the saved one or send that saved one.
+func TestLLMDebugDraftSurvivesLocaleSwitch(t *testing.T) {
+	srv, requests := mockOpenAI(t, "Hello there.")
+	useKeys(t, &memKeys{m: map[string]string{"llm." + llm.Custom: "sk-mock-123"}})
+	a, _, tt := newTestApp(t)
+	tt.SetSize(windowWidth, 2400)
+	a.updateSettings(func(s *settings.Settings) {
+		s.General.Language = "en"
+		s.Providers.LLM = []settings.Provider{{ID: llm.Custom, Endpoint: srv.URL + "/v1", Model: "mock-model"}}
+		s.Features.Transcribe.Prompt = "SAVED-LOCALE-PROMPT"
+	})
+	defer func() {
+		a.updateSettings(func(s *settings.Settings) { s.General.Language = "en" })
+		frames(tt)
+	}()
+	a.readUnreadKeys()
+	a.navigate(llmDebugPath)
+	frames(tt)
+	a.llmDbg.prompt = "EDITED-LOCALE-DRAFT"
+	a.llmDbg.input = "um hello there"
+	frames(tt)
+
+	a.updateSettings(func(s *settings.Settings) { s.General.Language = "zh-Hans" })
+	frames(tt)
+	if model := a.llmDebugModel(); a.llmDbg.preset != "转录" || model.Form.Prompt != "EDITED-LOCALE-DRAFT" || !model.Edited {
+		t.Fatalf("Chinese replaced the edited draft: preset %q, state %+v", a.llmDbg.preset, model)
+	}
+	a.updateSettings(func(s *settings.Settings) { s.General.Language = "en" })
+	frames(tt)
+	if model := a.llmDebugModel(); model.Form.Prompt != "EDITED-LOCALE-DRAFT" || !model.Edited {
+		t.Fatalf("English did not restore the same edited draft: %+v", model)
+	}
+	click(t, tt, "Run")
+	frames(tt)
+	got := requests()
+	if len(got) != 1 || !strings.Contains(got[0], "EDITED-LOCALE-DRAFT") || strings.Contains(got[0], "SAVED-LOCALE-PROMPT") {
+		t.Fatalf("Run did not send the edited draft: requests %q, result %+v", got, a.llmDbg.res)
+	}
+}
+
 // TestLLMDebugPromptGrows: the debug page's prompt field is as high as
 // its text, however long, under the page's one scroll bar, as Your rules
 // on a feature's page; it was 160 high with a scroll bar of its own

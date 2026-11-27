@@ -28,14 +28,14 @@ const llmDebugTimeout = 2 * time.Minute
 // llmDebugUI is the page's editable widget state.
 type llmDebugUI struct {
 	model, preset      string // the menus' choices, by title
-	filled             string // the preset the prompt was filled from
+	filled             string // the stable key of the preset the prompt was filled from
 	saved              string // the saved prompt for filled
 	prompt             string // as edited here
 	input, instruction string
 	drafts             map[string]string
 }
 
-func (u *llmDebugUI) fillPreset(preset, saved string) {
+func (u *llmDebugUI) fillPreset(presetKey, saved string) {
 	if u.drafts == nil {
 		u.drafts = map[string]string{}
 	}
@@ -47,10 +47,10 @@ func (u *llmDebugUI) fillPreset(preset, saved string) {
 		}
 	}
 	u.prompt = saved
-	if draft, ok := u.drafts[preset]; ok {
+	if draft, ok := u.drafts[presetKey]; ok {
 		u.prompt = draft
 	}
-	u.filled, u.saved = preset, saved
+	u.filled, u.saved = presetKey, saved
 }
 
 // llmDebugState adds the controller's in-flight and completed run state.
@@ -202,8 +202,9 @@ func (a *app) prepareLLMDebug() {
 	}
 	p := presets[slices.Index(titles, u.preset)]
 	saved := a.savedPrompt(p)
-	if u.filled != u.preset || u.saved != saved {
-		u.fillPreset(u.preset, saved)
+	presetKey := llmDebugPresetKey(p)
+	if u.filled != presetKey || u.saved != saved {
+		u.fillPreset(presetKey, saved)
 		u.res = nil
 	}
 }

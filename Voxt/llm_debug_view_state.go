@@ -121,7 +121,7 @@ func llmDebugLocalState(state llmDebugViewState) llmDebugUI {
 	local := llmDebugUI{model: state.Form.Model, preset: state.Form.Preset, filled: state.Form.Filled,
 		prompt: state.Form.Prompt, input: state.Form.Input, instruction: state.Form.Instruction}
 	for _, preset := range state.PresetStates {
-		if preset.Title == local.filled {
+		if llmDebugPresetKey(llmDebugPreset{feature: preset.Feature, group: preset.Group}) == local.filled {
 			local.saved = preset.SavedPrompt
 			break
 		}
@@ -136,8 +136,9 @@ func llmDebugStateForLocal(state llmDebugViewState, local *llmDebugUI) llmDebugV
 		if preset.Title != local.preset {
 			continue
 		}
-		if local.filled != local.preset || local.saved != preset.SavedPrompt {
-			local.fillPreset(local.preset, preset.SavedPrompt)
+		presetKey := llmDebugPresetKey(llmDebugPreset{feature: preset.Feature, group: preset.Group})
+		if local.filled != presetKey || local.saved != preset.SavedPrompt {
+			local.fillPreset(presetKey, preset.SavedPrompt)
 			state.Result = nil
 		}
 		state.SavedPrompt = preset.SavedPrompt

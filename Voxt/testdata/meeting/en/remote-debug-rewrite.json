@@ -61,7 +61,7 @@
     "form": {
       "model": "Fixture service · fixture-model",
       "preset": "Rewrite",
-      "filled": "Rewrite",
+      "filled": "rewrite\u0000",
       "prompt": "Fixture edited prompt",
       "input": "Fixture input",
       "instruction": "Make it shorter"

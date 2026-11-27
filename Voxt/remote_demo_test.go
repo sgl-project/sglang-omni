@@ -98,13 +98,14 @@ func TestRemoteDemoActionControls(t *testing.T) {
 		{name: "debug close", fixture: "en/remote-debug-empty", steps: remoteSteps(remoteDemoStep{label: "Close"}), want: []string{"openRemoteLanguageModels"}},
 		{name: "debug open models", fixture: "en/remote-debug-empty", steps: remoteSteps(remoteDemoStep{label: "Open Language models"}), want: []string{"openRemoteLanguageModels"}},
 		{name: "debug preset", fixture: "en/remote-debug-transcribe", steps: remoteSteps(remoteDemoStep{label: "Request", click: true}, remoteDemoStep{label: "Rewrite", click: true}), check: func(t *testing.T, host *meetingDemoHost, tester *ui.Tester) {
-			saved := ""
+			saved, filled := "", ""
 			for _, preset := range host.current().state.RemoteDebug.PresetStates {
 				if preset.Title == "Rewrite" {
 					saved = preset.SavedPrompt
+					filled = llmDebugPresetKey(llmDebugPreset{feature: preset.Feature, group: preset.Group})
 				}
 			}
-			if host.remoteDebugUI.filled != "Rewrite" || saved == "" || host.remoteDebugUI.prompt != saved || !tester.HasText("Spoken instruction") {
+			if host.remoteDebugUI.filled != filled || saved == "" || host.remoteDebugUI.prompt != saved || !tester.HasText("Spoken instruction") {
 				t.Fatalf("preset did not rebuild the debug state: %+v", host.remoteDebugUI)
 			}
 		}},
@@ -195,6 +196,44 @@ func TestRemoteDemoFixturePreservesEditedPresetDrafts(t *testing.T) {
 	}
 	if len(host.calls) != 0 {
 		t.Fatalf("switching presets triggered actions: %q", host.calls)
+	}
+}
+
+// TestRemoteDemoFixturePreservesDraftAcrossLocaleSwitch drives the fixture
+// state path through English, Simplified Chinese and English display titles.
+func TestRemoteDemoFixturePreservesDraftAcrossLocaleSwitch(t *testing.T) {
+	host, err := loadMeetingDemoHost("testdata/meeting")
+	if err != nil {
+		t.Fatal(err)
+	}
+	selectMeetingDemoFixture(t, host, "en/remote-debug-transcribe")
+	local := &host.remoteDebugUI
+	local.prompt = "EDITED-FIXTURE-LOCALE-DRAFT"
+	localize := func(titles map[string]string) {
+		t.Helper()
+		state := host.current().state.RemoteDebug
+		for index, preset := range state.PresetStates {
+			if title, ok := titles[preset.Title]; ok {
+				state.PresetStates[index].Title = title
+			}
+		}
+		for index, title := range state.Presets {
+			if localized, ok := titles[title]; ok {
+				state.Presets[index] = localized
+			}
+		}
+		local.preset = titles[local.preset]
+	}
+
+	localize(map[string]string{"Transcribe": "转录", "Translate": "翻译", "Rewrite": "改写"})
+	state := host.remoteDebugState()
+	if local.prompt != "EDITED-FIXTURE-LOCALE-DRAFT" || state.Form.Prompt != local.prompt || !state.Edited {
+		t.Fatalf("Chinese fixture state replaced the edited draft: %+v", local)
+	}
+	localize(map[string]string{"转录": "Transcribe", "翻译": "Translate", "改写": "Rewrite"})
+	state = host.remoteDebugState()
+	if local.prompt != "EDITED-FIXTURE-LOCALE-DRAFT" || state.Form.Prompt != local.prompt || !state.Edited {
+		t.Fatalf("English fixture state did not restore the same draft: %+v", local)
 	}
 }
 
