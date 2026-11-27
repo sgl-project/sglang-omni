@@ -565,7 +565,7 @@ def test_runtime_configuration_accepts_fa3_on_ada(
 def test_runtime_configuration_accepts_fa4_on_hopper_and_blackwell(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    for sm_version in (90, 103, 110, 120):
+    for sm_version in (90, 100, 103, 110, 120):
         monkeypatch.setattr(
             bootstrap,
             "get_visible_gpu_sm_version",
