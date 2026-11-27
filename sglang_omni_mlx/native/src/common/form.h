@@ -20,7 +20,10 @@ struct FormField {
 std::optional<std::map<std::string, FormField>>
 ParseMultipartForm(const std::string &content_type, const std::string &body);
 
-// "1", "true", "yes" or "on", ignoring case and surrounding whitespace.
+std::string NormalizeFormToken(const std::string &value);
+// An omitted flag is false. An unrecognized value is nullopt.
+std::optional<bool> ParseFormFlag(const std::optional<std::string> &value);
+// An omitted or unrecognized flag is false.
 bool FormFlag(const std::optional<std::string> &value);
 
 } // namespace omni_common

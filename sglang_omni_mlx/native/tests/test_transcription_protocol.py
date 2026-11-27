@@ -20,13 +20,31 @@ def test_a_request_returns_the_transcript_as_json(asr_server: SupervisedServer) 
     assert response.json() == {"text": str(FRAME_COUNT)}
 
 
-def test_a_streamed_request_ends_with_its_metadata_and_done(
+def test_a_text_request_returns_plain_utf8_without_speaker_metadata(
     asr_server: SupervisedServer,
 ) -> None:
     response = asr_server.post_form(
         {
-            "stream": "true",
-            "include_generation_metadata": "true",
+            "response_format": " TEXT\t",
+            "stream": " OFF ",
+            "outcome": "segments",
+        },
+        silent_wav(FRAME_COUNT),
+    )
+    assert response.status == 200
+    assert response.headers["Content-Type"] == "text/plain; charset=utf-8"
+    assert response.body.decode("utf-8") == str(FRAME_COUNT)
+
+
+@pytest.mark.parametrize("response_format", ["json", "text"])
+def test_a_streamed_request_ends_with_its_metadata_and_done(
+    asr_server: SupervisedServer, response_format: str
+) -> None:
+    response = asr_server.post_form(
+        {
+            "response_format": response_format,
+            "stream": " YeS ",
+            "include_generation_metadata": "1",
             "language": "English",
             "max_new_tokens": "7",
         },
@@ -115,6 +133,27 @@ def test_invalid_requests_get_400(
     response = asr_server.post_form(fields, wav)
     assert response.status == 400
     assert detail in response.json()["detail"]
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("response_format", "srt"),
+        ("response_format", "verbose_json"),
+        ("response_format", ""),
+        ("stream", "maybe"),
+        ("include_generation_metadata", "2"),
+        ("preview", "yes please"),
+    ],
+)
+def test_invalid_http_options_get_400_before_transcription(
+    asr_server: SupervisedServer, field: str, value: str
+) -> None:
+    response = asr_server.post_form(
+        {field: value, "outcome": "fail"}, silent_wav(FRAME_COUNT)
+    )
+    assert response.status == 400
+    assert field in response.json()["detail"]
 
 
 @pytest.mark.parametrize("stream", [False, True])

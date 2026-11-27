@@ -28,6 +28,7 @@ from test_server_api import (
     DATA_ROOT,
     RUNTIME_BIN,
     Server,
+    assert_transcription_response_formats,
     clip,
     long_wav,
     pcm16,
@@ -139,6 +140,10 @@ def test_whisper_plain_request_returns_json_text(whisper_server: ModelServer) ->
         200,
         {"text": "互联网结合了大众传播和人际传播的要素"},
     )
+
+
+def test_whisper_transcription_response_formats(whisper_server: ModelServer) -> None:
+    assert_transcription_response_formats(whisper_server)
 
 
 @pytest.mark.parametrize("repo", [WHISPER_LARGE_V3_REPO, WHISPER_SMALL_REPO])
@@ -943,6 +948,10 @@ def test_funasr_plain_request_returns_json_text(
     status, body = funasr_server.post_form(fields, clip("0000_en_short"))
     assert status == 200
     assert "Socrates" in json.loads(body)["text"]
+
+
+def test_funasr_transcription_response_formats(funasr_server: ModelServer) -> None:
+    assert_transcription_response_formats(funasr_server)
 
 
 def test_funasr_decodes_long_audio_one_window_at_a_time(

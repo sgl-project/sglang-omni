@@ -30,6 +30,7 @@ using omni_server::Json;
 using omni_server::ReadBody;
 using omni_server::TranscriptionWorker;
 using omni_server::WriteJson;
+using omni_server::WriteResponse;
 
 constexpr auto kHeartbeatInterval = std::chrono::milliseconds(250);
 constexpr auto kPreviewHeartbeatInterval = std::chrono::milliseconds(50);
@@ -113,22 +114,40 @@ int HandleTranscriptions(mg_connection *connection, void *data) {
     return BadRequest(connection, "file is required");
   } else {
   }
+  const std::string response_format = omni_common::NormalizeFormToken(
+      TextField(*form, "response_format").value_or("json"));
+  if (response_format != "json" && response_format != "text") {
+    return BadRequest(connection, "response_format must be json or text");
+  } else {
+  }
+
+  const auto read_flag = [&form](const std::string &field_name) {
+    const auto flag = omni_common::ParseFormFlag(TextField(*form, field_name));
+    if (!flag.has_value()) {
+      throw std::invalid_argument(field_name + " must be a boolean");
+    } else {
+      return *flag;
+    }
+  };
+  bool stream;
+  bool include_generation_metadata;
+  bool preview;
   Transcription transcription;
   try {
+    stream = read_flag("stream");
+    include_generation_metadata = read_flag("include_generation_metadata");
+    preview = read_flag("preview");
+    if (include_generation_metadata && !stream) {
+      return BadRequest(connection,
+                        "include_generation_metadata requires stream=true");
+    } else {
+    }
     transcription = state->model->Prepare(
         omni_common::DecodeWav(form->at("file").value), *form);
   } catch (const std::invalid_argument &error) {
     return BadRequest(connection, error.what());
   } catch (const std::out_of_range &) {
     return BadRequest(connection, "a numeric field is out of range");
-  }
-  const bool stream = omni_common::FormFlag(TextField(*form, "stream"));
-  const bool include_generation_metadata =
-      omni_common::FormFlag(TextField(*form, "include_generation_metadata"));
-  if (include_generation_metadata && !stream) {
-    return BadRequest(connection,
-                      "include_generation_metadata requires stream=true");
-  } else {
   }
   const CancelFlag cancel = omni_server::NewCancelFlag();
   auto promise = std::make_shared<std::promise<TranscriptionResult>>();
@@ -145,6 +164,12 @@ int HandleTranscriptions(mg_connection *connection, void *data) {
   if (!stream) {
     try {
       const TranscriptionResult result = future.get();
+      if (response_format == "text") {
+        WriteResponse(connection, 200, "OK", "text/plain; charset=utf-8",
+                      result.text);
+        return 200;
+      } else {
+      }
       Json body = {{"text", result.text}};
       AddSegments(body, result);
       return WriteJson(connection, 200, body);
@@ -159,9 +184,7 @@ int HandleTranscriptions(mg_connection *connection, void *data) {
   // Note (Jiaxin Deng): SSE comment heartbeats fail to write once the peer is
   // gone, which cancels the decode it was waiting for.
   const auto heartbeat_interval =
-      omni_common::FormFlag(TextField(*form, "preview"))
-          ? kPreviewHeartbeatInterval
-          : kHeartbeatInterval;
+      preview ? kPreviewHeartbeatInterval : kHeartbeatInterval;
   while (future.wait_for(heartbeat_interval) != std::future_status::ready) {
     if (mg_write(connection, ":\n\n", 3) <= 0) {
       cancel->store(true);

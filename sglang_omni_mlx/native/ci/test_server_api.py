@@ -361,6 +361,27 @@ def test_backoff_preserves_recording_quality(tmp_path: Path) -> None:
     )
 
 
+def assert_transcription_response_formats(server: Server) -> None:
+    audio = clip("0006_en_short")
+    fields = {"language": "en"}
+    json_status, json_body = server.post_form(fields, audio)
+    text_status, text_body = server.post_form(
+        fields | {"response_format": "text"}, audio
+    )
+    unsupported_status, unsupported_body = server.post_form(
+        fields | {"response_format": "srt"}, audio
+    )
+
+    assert json_status == text_status == 200
+    assert text_body and text_body.decode("utf-8") == json.loads(json_body)["text"]
+    assert unsupported_status == 400
+    assert "response_format" in json.loads(unsupported_body)["detail"]
+
+
+def test_qwen3_asr_transcription_response_formats(server: Server) -> None:
+    assert_transcription_response_formats(server)
+
+
 def test_plain_request_returns_json_text(server: Server) -> None:
     status, body = server.post_form({"language": "en"}, clip("0006_en_short"))
     assert (status, json.loads(body)) == (

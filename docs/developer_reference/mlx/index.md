@@ -46,6 +46,19 @@ The legacy MLX code in `sglang_omni` (`mlx_model_worker.py`,
 back. If a change really needs a cross-path abstraction, open an issue and
 agree on it with a maintainer first.
 
+## Native ASR HTTP responses
+
+On the native MLX `/v1/audio/transcriptions` endpoint, `response_format=json` returns a JSON object with `text` and any available speaker segments.
+It is the default.
+Set `response_format=text` to receive just the UTF-8 transcript as `text/plain` when streaming is off.
+With `stream=true`, either format returns the same event stream ending in `transcript.text.done` and `[DONE]`.
+Other formats return HTTP 400.
+
+The shared form flags `stream`, `include_generation_metadata`, and `preview` accept `true`, `1`, `yes`, and `on` for true, or `false`, `0`, `no`, and `off` for false, ignoring case and surrounding whitespace.
+An omitted flag defaults to false.
+An unrecognized value returns HTTP 400.
+`include_generation_metadata=true` requires streaming.
+
 ## Speculative decoding
 
 `qwen3_asr_server` and `qwen3_asr_transcribe` take `--draft-model-path DIR` (and `--draft-bits 4|6|8` to quantize the draft at load). The Qwen3-ASR target then verifies a DFlash draft's block of proposals each step and keeps its own greedy transcript; the parity tool reports `verify_rounds` per clip. The draft is a Speculators-layout DFlash checkpoint (`aux_hidden_state_layer_ids`, `block_size`, `mask_token_id`, `transformer_layer_config`; weights `fc`, `hidden_norm`, `layers.*`, `norm`, `lm_head`, `d2t`) checked against the target at load: hidden size, the layers it reads (in order), the `fc`, `lm_head` and `d2t` shapes, `d2t` landing inside the target's vocabulary, and a causal block; one that does not fit is refused at load. A request that sets `repetition_penalty` decodes without the draft.

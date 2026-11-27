@@ -120,14 +120,29 @@ ParseMultipartForm(const std::string &content_type, const std::string &body) {
   return fields;
 }
 
-bool FormFlag(const std::optional<std::string> &value) {
+std::string NormalizeFormToken(const std::string &value) {
+  return AsciiLowercase(Trim(value));
+}
+
+std::optional<bool> ParseFormFlag(const std::optional<std::string> &value) {
   if (!value.has_value()) {
     return false;
   } else {
   }
-  const std::string normalized = omni_common::AsciiLowercase(Trim(*value));
-  return normalized == "1" || normalized == "true" || normalized == "yes" ||
-         normalized == "on";
+  const std::string normalized = NormalizeFormToken(*value);
+  if (normalized == "1" || normalized == "true" || normalized == "yes" ||
+      normalized == "on") {
+    return true;
+  } else if (normalized == "0" || normalized == "false" || normalized == "no" ||
+             normalized == "off") {
+    return false;
+  } else {
+    return std::nullopt;
+  }
+}
+
+bool FormFlag(const std::optional<std::string> &value) {
+  return ParseFormFlag(value).value_or(false);
 }
 
 } // namespace omni_common
