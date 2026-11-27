@@ -94,11 +94,18 @@ public:
         !omni_common::FormFlag(asr_service::TextField(form, "preview"));
     // note (XXXXRT666): a session holds one prompt's windows, and longer audio
     // is decoded in chunks.
+    // A piece of a live session's recording, from the Final's start to this
+    // sample: the session's Final then starts there.
+    const std::optional<int> piece_end_sample =
+        asr_service::IntegerField(form, "realtime_piece_end");
     const qwen3_asr::FinalReuse final_reuse =
         samples.size() <= qwen3_asr::kMaxChunkSamples
             ? TakeFinalReuse(
                   asr_service::TextField(form, "realtime_session").value_or(""),
-                  options.context, guess_auto_language)
+                  options.context, guess_auto_language,
+                  piece_end_sample.has_value()
+                      ? std::optional<long>(*piece_end_sample)
+                      : std::nullopt)
             : qwen3_asr::FinalReuse();
     if (final_reuse.reuse != nullptr) {
       // note (chenye): auto-language decoding generates a language header
@@ -172,16 +179,16 @@ private:
 
   // What the live session of this id holds for a Final with this prompt, null
   // when it is not open.
-  qwen3_asr::FinalReuse
-  TakeFinalReuse(const std::string &session_id,
-                 const std::optional<std::string> &context,
-                 bool guess_auto_language) const {
+  qwen3_asr::FinalReuse TakeFinalReuse(
+      const std::string &session_id, const std::optional<std::string> &context,
+      bool guess_auto_language, std::optional<long> piece_end_sample) const {
     std::lock_guard<std::mutex> lock(live_sessions_mutex_);
     const auto entry = live_sessions_.find(session_id);
     const std::shared_ptr<qwen3_asr::RealtimeSession> session =
         entry != live_sessions_.end() ? entry->second.lock() : nullptr;
     return session != nullptr
-               ? session->TakeFinalReuse(context, guess_auto_language)
+               ? session->TakeFinalReuse(context, guess_auto_language,
+                                         piece_end_sample)
                : qwen3_asr::FinalReuse();
   }
 

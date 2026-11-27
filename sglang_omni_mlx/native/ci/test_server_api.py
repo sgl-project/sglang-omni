@@ -1024,6 +1024,59 @@ def test_a_final_of_the_recordings_rest_reuses_its_windows(server: Server) -> No
     assert reused["text"] == final({})["text"]
 
 
+def test_a_piece_of_a_live_recording_reuses_its_windows(server: Server) -> None:
+    """A piece of a live recording, sent with its session and where it ends, has the windows the session prefilled that end inside it, with the text of the same request without a session; the session's Final then starts at the piece's end, so the Final of the rest has the windows from there."""
+    recording = (pcm16("0098_en_mid") + pcm16("0117_en_mid"))[: 37 * 32000]
+    piece_end = 25 * 16000
+    piece, rest = recording[: piece_end * 2], recording[piece_end * 2 :]
+    fields = {
+        "stream": "true",
+        "language": "en",
+        "include_generation_metadata": "true",
+        "audio_layout": "voxt_swift",
+    }
+
+    def final(extra: dict[str, str], audio: bytes) -> dict:
+        status, body = server.post_form(fields | extra, wav_bytes(audio))
+        assert status == 200
+        return sse_events(body)[0]
+
+    with connect(f"ws://127.0.0.1:{server.port}/v1/realtime") as socket:
+        socket.send(
+            json.dumps(
+                {
+                    "type": "session.update",
+                    "session": {
+                        "turn_detection": None,
+                        "language": "en",
+                        "final_prompt": "",
+                    },
+                }
+            )
+        )
+        session_id = json.loads(socket.recv())["session_id"]
+        socket.send(
+            json.dumps(
+                {
+                    "type": "input_audio_buffer.append",
+                    "audio": base64.b64encode(recording).decode(),
+                }
+            )
+        )
+        for _ in range(2):
+            assert json.loads(socket.recv())["type"] == "transcription.segment"
+        wait_for(lambda: request_states(server) == {}, 30, "the prefill did not finish")
+        session = {"realtime_session": session_id}
+        reused_piece = final(session | {"realtime_piece_end": str(piece_end)}, piece)
+        wait_for(lambda: request_states(server) == {}, 30, "the prefill did not finish")
+        reused_rest = final(session, rest)
+    # note (XXXXRT666): the prefill held four 8 s windows of 104 audio tokens; three end inside the 25 s piece, and one inside the 12 s rest.
+    assert reused_piece["generation_metadata"]["reused_audio_token_count"] == 312
+    assert reused_piece["text"] == final({}, piece)["text"]
+    assert reused_rest["generation_metadata"]["reused_audio_token_count"] == 104
+    assert reused_rest["text"] == final({}, rest)["text"]
+
+
 def test_a_final_of_other_audio_reuses_the_dictionary_alone(server: Server) -> None:
     """A recording over 60 s is recognised in pieces, and its last Final computed the dictionary again: the audio is not the session's recording, so only the prompt the session prefilled is reused, and the text is the one without a session."""
     clip_id = "0108_en_mid"

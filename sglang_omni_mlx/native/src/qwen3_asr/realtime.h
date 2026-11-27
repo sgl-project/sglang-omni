@@ -77,11 +77,14 @@ public:
   bool Handle(const nlohmann::json &message) override;
   // What the session holds for a Final of its recording's start with this
   // prompt: the one prefilled for it, else what its refreshes keep; none is
-  // null.
+  // null. With piece_end_sample, for a piece of the recording from the Final's
+  // start to that sample: the prefill goes on, and the Final then starts there.
   //
   // note (chenye): only snapshot a preview guess when the caller opts in.
-  FinalReuse TakeFinalReuse(const std::optional<std::string> &context,
-                            bool guess_auto_language);
+  FinalReuse
+  TakeFinalReuse(const std::optional<std::string> &context,
+                 bool guess_auto_language,
+                 std::optional<long> piece_end_sample = std::nullopt);
   // Stops a running shadow Final (MaybeStartShadowFinal).
   void CancelShadowFinal();
 
@@ -107,6 +110,8 @@ private:
   // The Final starts at this sample of the session's audio, not at the first:
   // the windows prefilled for it are dropped, its prompt's head kept.
   void StartFinalAt(const nlohmann::json &start_sample);
+  // Moves the Final's start to sample (mutex_ held).
+  void MoveFinalStart(long sample);
   void StartSegment(long start_sample);
   long EndSample() const {
     return buffer_start_sample_ + static_cast<long>(samples_.size());
@@ -161,6 +166,9 @@ private:
   // samples_ drops what is committed.
   std::vector<float> recording_samples_;
   long final_start_sample_ = 0;
+  // Where the Final starts once the audio reaches it: a piece taken before
+  // the session had all of its audio.
+  std::optional<long> pending_final_start_sample_;
   // The audio was longer than is kept, so none is prefilled from here on.
   bool is_recording_cut_off_ = false;
   std::optional<Segment> segment_;

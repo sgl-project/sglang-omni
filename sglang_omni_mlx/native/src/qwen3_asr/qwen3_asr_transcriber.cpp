@@ -249,6 +249,21 @@ Qwen3ASRTranscriber::RefreshPrompt Qwen3ASRTranscriber::BuildRefreshPrompt(
                                   prompt_ids.begin() + audio_start);
   int held_frames = held.mel.has_value() ? held.mel->shape(1) : 0;
   int held_rows = held.audio_rows.has_value() ? held.audio_rows->shape(0) : 0;
+  // A piece of a recording can end inside the windows held: the whole ones
+  // before its end are kept.
+  const int window_frame_count = model_.WindowFrameCount();
+  const int complete_frames = std::max(0, frame_count - kReflectedTailFrames) /
+                              window_frame_count * window_frame_count;
+  if (held_frames > complete_frames && complete_frames > 0) {
+    const int complete_held_rows = TokenCount(complete_frames, options.layout);
+    held.mel = mx::slice(*held.mel, {0, 0}, {mel_bins, complete_frames});
+    held.audio_rows =
+        mx::slice(*held.audio_rows, {0, 0},
+                  {complete_held_rows, held.audio_rows->shape(1)});
+    held_frames = complete_frames;
+    held_rows = complete_held_rows;
+  } else {
+  }
   const bool has_held_audio =
       held_frames > 0 && held_frames + kReflectedTailFrames <= frame_count &&
       mx::array_equal(mx::slice(mel, {0, 0}, {mel_bins, held_frames}),
@@ -313,9 +328,6 @@ Qwen3ASRTranscriber::RefreshPrompt Qwen3ASRTranscriber::BuildRefreshPrompt(
                       0),
       {0, rows_start, 0}, {1, rows_start + pass_filled, hidden});
 
-  const int window_frame_count = model_.WindowFrameCount();
-  const int complete_frames = std::max(0, frame_count - kReflectedTailFrames) /
-                              window_frame_count * window_frame_count;
   const int complete_rows =
       complete_frames > 0 ? TokenCount(complete_frames, options.layout) : 0;
   if (complete_frames > held_frames && complete_rows <= held_rows + filled) {
