@@ -101,3 +101,14 @@ Home Looking back folds to its title row and stays folded	L	TestLookingBackFolds
 Session list: switch sessions on the card, each keeping its card and conversation	L	TestSessionSlotSwitchKeepsConversations	A real-app pass over the session row and the parked cards is checked by hand only
 Sessions come back after a restart while history is kept	L	TestSessionsSurviveRestart	none
 Sidebar update control (bar and icon-rail button) and menu bar tray update action	L	TestSidebarUpdateControlAndTray	none
+Live meeting speaker labels	L	TestManagerSpeakersWhileRecording	none
+Live meeting speaker labels	E	TestEvalMeetingLiveSpeakers	Short similar female voices can merge; more real meetings needed
+Meeting speaker colors	L	TestMeetingSpeakerIdentitySurvivesNaming	none
+Meeting live previews require speech evidence	L	TestTrackOpensSpeechDetectorAndGuardsPreview	none
+Meeting file utterances require speech evidence	L	TestFileTrackRejectsNoiseBeforeRecognition	none
+Meeting neural speech detector wiring	L	TestMeetingTrackASRPassesVADFactory	none
+Meeting Zoom video tile layout	L	testZoomVideoTileRoleUsesItsCustomDescription	none
+Meeting screen names	M	testLocalScreenReadMatchesNameToSpeakingOutline	Real Zoom participant changes, occlusion and revoked Screen Recording permission need hand checks (docs/manual-test.md)
+Meeting audio speakers bypass blocked ASR	L	TestCaptureFeedsSpeakersWhileASRSendIsBlocked	none
+Meeting speaker queue bounds	L	TestSpeakerQueueIsBoundedWhileModelLoads	none
+Meeting speaker process budgets	L	TestClientFramesAndCancellation	none

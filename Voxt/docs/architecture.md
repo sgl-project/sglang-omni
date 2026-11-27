@@ -6,6 +6,18 @@ VoxtNew is a Go app on MyGo (native UI, no cgo) with one small Swift helper proc
 
 **Names.** The app is Voxt (2.0.0 on): `Voxt.app` (`mygo.json`'s name), its menus, windows and texts, this directory and the Go module. Some names inside stay VoxtNew: the Swift package (`VoxtNewHelper`), the bundle id `dev.hehehai.voxtnew`, the data, logs and cache folders (`main.go` keeps them at `…/VoxtNew`), the process `voxtnew-helper`, the URL scheme `voxtnew://`, the `VOXTNEW_*` variables and the family's app id. `internal/i18n`'s `TestNoOldNames` keeps VoxtNew, ActNow and actnow.dev out of the UI's text.
 
+Live meeting speaker identification has its own `speaker/` executable, built with
+`scripts/build-speaker.sh` and supervised through `internal/speakerrt`, behind
+`local.SpeakerModels`. It consumes system PCM directly from capture, independently
+of the chosen ASR model and its queue. The pinned Nemotron 3 Diarization Core ML
+model runs on CPU with eight persistent voice slots. Screen observations only
+name these acoustic identities; hiding a meeting window does not stop them.
+Pending speaker audio is limited to 30 seconds; requests have a two-second
+budget and the process a measured-memory budget. Late IDs update only SQLite's
+speaker column and do not rewrite words or translations. The microphone remains
+"me". Similar voices and short mixed utterances remain documented quality gaps;
+see `manual-test.md` and `eval.md`. The Swift capture helper has no new dependency.
+
 ## 1. Package map
 
 Smaller interface icons use the star-free microphone in `internal/icons/voxt-microphone.svg`, inheriting the surrounding text color; the menu bar uses its template PNG at the existing 18 pt size and keeps the recording dot. The setup guide's header returns to earlier steps without clearing settings or completed tries, with navigation disabled during a guide try. Notification cards no longer show their creation time on hover, where it covered the sidebar navigation.

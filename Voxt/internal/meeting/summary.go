@@ -132,11 +132,11 @@ func ParseStoredSummary(raw string) (Summary, bool) {
 
 // SpeakerLabel is how a segment speaker appears in transcripts and exports.
 func SpeakerLabel(speaker string, names map[string]string) string {
-	if speaker == "me" {
-		return "Me"
-	}
 	if n := strings.TrimSpace(names[speaker]); n != "" {
 		return n
+	}
+	if speaker == "me" {
+		return "Me"
 	}
 	switch speaker {
 	case "":
@@ -159,7 +159,11 @@ func TranscriptRecord(segs []Segment, names map[string]string) string {
 		if text == "" {
 			continue
 		}
-		lines = append(lines, fmt.Sprintf("%s：%s", SpeakerLabel(seg.Speaker, names), text))
+		label := SpeakerLabel(seg.Speaker, names)
+		if seg.Speaker == "me" && label != "Me" {
+			label = "Me (" + label + ")"
+		}
+		lines = append(lines, fmt.Sprintf("%s：%s", label, text))
 	}
 	return strings.TrimSpace(strings.Join(lines, "\n"))
 }

@@ -222,6 +222,9 @@ func (l *Live) emit(seg Segment) {
 }
 
 func (l *Live) LiveText() string {
+	if l.Speech != nil && !l.Speech.SpokeSince(l.committer.phraseStart) {
+		return ""
+	}
 	return l.committer.Live()
 }
 

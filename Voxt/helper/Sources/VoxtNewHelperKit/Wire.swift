@@ -41,6 +41,7 @@ public enum Method {
     public static let appList = "app.list"
     public static let appConfigure = "app.configure"
     public static let appIcons = "app.icons"
+    public static let meetingWindow = "meeting.window"
     public static let browserURL = "browser.url"
     public static let screenWindow = "screen.window"
     public static let clipboardImage = "clipboard.image"
@@ -69,7 +70,7 @@ public enum Method {
         hello, shutdown, jobCancel, permissionsStatus, permissionsRequest,
         captureDevices, captureStart, captureStop, captureSystem, hotkeyConfigure, hotkeyStatus, hotkeyRecord, hotkeyCancelRecord,
         appFrontmost, appList, appConfigure, appIcons, textFocus, textSelection, textPaste, textRead,
-        browserURL, screenWindow, clipboardImage, outputWatch, outputMute, outputRelease, outputRecover, speechRecognize, speechAudio,
+        meetingWindow, browserURL, screenWindow, clipboardImage, outputWatch, outputMute, outputRelease, outputRecover, speechRecognize, speechAudio,
     ]
     public static let notifications = [
         captureStarted, captureLevel, capturePCM, captureRestarted, hotkeyEvent, hotkeyState, appActivated,

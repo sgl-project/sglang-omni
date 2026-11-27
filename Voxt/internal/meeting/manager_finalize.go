@@ -71,7 +71,11 @@ func (m *Manager) runFinalize(ctx context.Context, mt store.Meeting) {
 			m.mu.Unlock()
 		}
 	}
-	err := FinalizePass(ctx, m.cfg, mt, m.finalizeProgress(mt.ID))
+	m.mu.Lock()
+	cfg := m.cfg
+	cfg.preserveLiveSpeakers = len(m.acoustic.slots) > 0
+	m.mu.Unlock()
+	err := FinalizePass(ctx, cfg, mt, m.finalizeProgress(mt.ID))
 	if err != nil {
 		m.dropCorrectOverlap()
 	}

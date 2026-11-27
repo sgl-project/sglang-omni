@@ -15,7 +15,8 @@ type Meeting struct {
 	NoAutoSummary bool `json:"noAutoSummary,omitempty"`
 	// CorrectionStyle replaces the default transcript-correction rules; empty keeps them.
 	CorrectionStyle string `json:"correctionStyle,omitempty"`
-	// Speakers turns on speaker diarisation on the system track (C1-3b).
+	// Speakers identifies system-audio voices with an independent local model.
+	// Window screenshots and OCR stay local and only run while recording.
 	Speakers bool `json:"speakers,omitempty"`
 	// TranslateTarget is the language code for live translation ("" = en).
 	TranslateTarget string `json:"translateTarget,omitempty"`

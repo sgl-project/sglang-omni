@@ -24,6 +24,9 @@ type Manager struct {
 	// there).
 	modeStarted func()
 
+	voice         *voiceRun
+	acoustic      acousticSpeakers
+	speakers      speakerTracker
 	mu            sync.Mutex
 	id            string
 	seq           int64
@@ -103,6 +106,9 @@ func (m *Manager) Start(ctx context.Context, req StartRequest) (string, error) {
 		Live:   map[Source]string{},
 	}
 	m.segIdx = 0
+	m.speakers = speakerTracker{}
+	m.voice = nil
+	m.acoustic = acousticSpeakers{}
 	m.initTranslator()
 	// Made here so Finish can cancel a start that hangs.
 	runCtx, cancel := context.WithCancel(context.Background())
@@ -116,6 +122,9 @@ func (m *Manager) Start(ctx context.Context, req StartRequest) (string, error) {
 	created := false
 	fail := func(err error) (string, error) {
 		cancel()
+		m.mu.Lock()
+		m.stopVoiceLocked()
+		m.mu.Unlock()
 		if created {
 			_ = m.cfg.Store.DeleteMeeting(ctx, id)
 		}
@@ -197,6 +206,8 @@ func (m *Manager) Pause(_ context.Context, id string) error {
 	}
 	m.stopAllTracksLocked()
 	m.timeline.NotePause()
+	m.speakers.seen = append(m.speakers.seen, speakerSeen{at: m.timeline.Elapsed()})
+	m.snap.LiveSpeakers = nil
 	// A pause is not evidence that the system track stayed silent.
 	m.problems.systemQuietSince = time.Time{}
 	m.state = StatePaused
@@ -254,6 +265,7 @@ func (m *Manager) Finish(ctx context.Context, id string) error {
 	}
 	keep := m.cfg.Privacy().KeepHistory
 	m.stopAllTracksLocked()
+	m.stopVoiceLocked()
 	if m.archive != nil {
 		_ = m.archive.Close()
 	}
@@ -265,7 +277,7 @@ func (m *Manager) Finish(ctx context.Context, id string) error {
 	mt := store.Meeting{
 		Seq: m.seq, ID: m.id, CreatedAt: m.snap.Started, EndedAt: ended,
 		Status: store.MeetingDone, Mode: toStoreMode(m.mode),
-		DurationMS: elapsed.Milliseconds(), Audio: m.id,
+		DurationMS: elapsed.Milliseconds(), Audio: m.id, Speakers: speakerNamesJSON(m.snap.Speakers),
 	}
 	if !keep {
 		m.state = StateAsking
@@ -325,7 +337,7 @@ func (m *Manager) Save(ctx context.Context, id string) error {
 	mt := store.Meeting{
 		Seq: m.seq, ID: m.id, CreatedAt: m.snap.Started, EndedAt: m.cfg.Now(),
 		Status: store.MeetingDone, Mode: toStoreMode(m.mode),
-		DurationMS: m.timeline.Elapsed().Milliseconds(), Audio: m.id,
+		DurationMS: m.timeline.Elapsed().Milliseconds(), Audio: m.id, Speakers: speakerNamesJSON(m.snap.Speakers),
 	}
 	if err := m.cfg.Store.UpdateMeeting(ctx, mt); err != nil {
 		return err
@@ -386,6 +398,7 @@ func (m *Manager) Discard(ctx context.Context, id string) error {
 		m.cancel()
 	}
 	folder := filepath.Join(m.cfg.Dir, m.id)
+	m.stopVoiceLocked()
 	_ = m.cfg.Store.DeleteMeeting(ctx, m.id) // the meeting goes from memory either way: nothing could retry
 	_ = os.RemoveAll(folder)                 // the same
 	m.resetIdle()
@@ -486,6 +499,9 @@ func (m *Manager) resetIdle() {
 		State:  StateIdle,
 		Levels: map[Source][]float64{}, Live: map[Source]string{},
 	}
+	m.speakers = speakerTracker{}
+	m.voice = nil
+	m.acoustic = acousticSpeakers{}
 	m.timeline = nil
 	m.archive = nil
 	m.tracks = map[Source]*track{}
@@ -530,6 +546,14 @@ func (m *Manager) stopTracksLocked(sources []Source) {
 	m.mu.Unlock()
 	for _, tr := range pending {
 		tr.stop()
+	}
+	m.mu.Lock()
+	voice := m.voice
+	m.mu.Unlock()
+	if voice != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		voice.drain(ctx)
+		cancel()
 	}
 	m.segWrites.Wait() // the last words are in the store before the meeting ends
 	m.mu.Lock()

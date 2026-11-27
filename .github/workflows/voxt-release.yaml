@@ -96,6 +96,7 @@ jobs:
           # -timeout: the app's package takes 400 to 600 s on this runner, at go test's 10-minute default.
           CGO_ENABLED=0 go test -count=1 -timeout 30m ./...
           swift test --package-path helper
+          SWIFT_BUILD_JOBS=2 scripts/build-speaker.sh
 
       - name: Resolve the version
         id: resolve

@@ -200,3 +200,21 @@ Go modules compiled into VoxtNew
 
 The Swift helper (helper/) has no third-party dependencies: it uses
 Apple's system frameworks only.
+
+The independent speaker process (speaker/) uses FluidAudio at commit
+e2ea498dafd6db9b3f18f0f644bc35312b3a7679, Copyright Fluid Inference,
+Apache-2.0 (LICENSES/speaker/FluidAudio-LICENSE.txt).
+Its compiled diarization library also contains fastcluster, Copyright
+2011 Daniel Müllner and Google Inc., BSD-2-Clause, and VBx code,
+Copyright 2021-2024 BUT Speech@FIT, Apache-2.0. Their notices and licence
+texts are in LICENSES/speaker/fastcluster-LICENSE.txt and
+LICENSES/speaker/vbx-LICENSE.txt. The capture helper remains independent.
+
+Optional speaker model: NVIDIA Nemotron 3 Diarization, converted to Core ML
+by Fluid Inference, from https://huggingface.co/nvidia/Nemotron-3-Diarization.
+Voxt downloads the unmodified fast streaming conversion from
+https://huggingface.co/FluidInference/nemotron-3-diarization-coreml at commit
+25a90f97f254428d4b30374b76af9c74fdee8327. The model and conversion are
+licensed under the OpenMDW License Agreement, version 1.1
+(LICENSES/speaker/OpenMDW-1.1.txt; https://openmdw.ai/license/1-1/).
+The weights are downloaded separately, not included in the app bundle.

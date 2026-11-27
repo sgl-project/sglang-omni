@@ -6,6 +6,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/sgl-project/sglang-omni/Voxt/internal/asr"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/helper/proto"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/session"
 )
@@ -76,6 +77,8 @@ func (m *Manager) runTrack(ctx context.Context, src Source, audio session.Audio)
 		}
 	}()
 	go func() {
+		var voiceMu sync.Mutex
+		var voiceBytes int64
 		_, err := audio.Record(ctx, job, proto.CaptureParams{}, func(ev session.AudioEvent) {
 			if ev.Started != nil {
 				select {
@@ -86,6 +89,14 @@ func (m *Manager) runTrack(ctx context.Context, src Source, audio session.Audio)
 			if ev.PCM != nil {
 				if !m.timeline.acceptJob(src, ev.PCM.Job) {
 					return
+				}
+				// Speaker input bypasses the ASR pump. Even a blocked Send
+				// cannot stop independent acoustic identity updates.
+				if tx != nil && tx.voice != nil {
+					voiceMu.Lock()
+					tx.voice.offer(tx.timeBase+time.Duration(voiceBytes)*time.Second/asr.BytesPerSecond, ev.PCM.Data)
+					voiceBytes += int64(len(ev.PCM.Data))
+					voiceMu.Unlock()
 				}
 				pcm.push(ev.PCM.Data)
 			}

@@ -47,6 +47,11 @@ func TestCatalog(t *testing.T) {
 				t.Errorf("%s: %s (the vision tower and MTP head are not used)", m.ID, f.Path)
 			}
 		}
+		if m.Runtime == CoreML {
+			weights = slices.ContainsFunc(m.Files, func(f File) bool {
+				return f.LFS && strings.Contains(f.Path, "/weights/") && strings.HasSuffix(f.Path, ".bin")
+			})
+		}
 		if !m.Borrowed && m.Kind != Aux && !weights {
 			t.Errorf("%s: no weights file in LFS", m.ID)
 		}
@@ -110,7 +115,8 @@ func TestCatalog(t *testing.T) {
 func TestFamilyPins(t *testing.T) {
 	// The drafts are proposed to the family pins table too; until an
 	// actnowkit release lists them, TestOmniPins alone checks their pins.
-	unpinned := []string{ASRQwen6bit, ASRWhisperLarge, ASRWhisperSmall, ASRParakeet, ASRSenseVoice, ASRCohere, ASRNemotron, ASRMoss, AuxWhisperLarge, AuxWhisperSmall,
+	// The independent Core ML runtime pins Nemotron 3 Diarization in speaker.go.
+	unpinned := []string{SpeakerDiarization, ASRQwen6bit, ASRWhisperLarge, ASRWhisperSmall, ASRParakeet, ASRSenseVoice, ASRCohere, ASRNemotron, ASRMoss, AuxWhisperLarge, AuxWhisperSmall,
 		ASRAccurateDraft, ASRFastDraft, ASRMossDraft, ASRWhisperLargeDraft}
 	mine := map[string]fammodels.Pin{}
 	for _, p := range fammodels.PinsOfApp("voxtnew") {

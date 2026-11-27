@@ -10,6 +10,11 @@ import (
 )
 
 type settingsMeetingViewState struct {
+	LiveSpeakers                 bool                        `json:"live_speakers"`
+	SpeakerReady                 bool                        `json:"speaker_ready"`
+	SpeakerDownloading           bool                        `json:"speaker_downloading"`
+	SpeakerProgress              int                         `json:"speaker_progress"`
+	SpeakerFailed                bool                        `json:"speaker_failed"`
 	CaptureModeOptions           []settingsLanguageViewState `json:"capture_mode_options"`
 	CaptureModeSelected          string                      `json:"capture_mode_selected"`
 	HideFromSharing              bool                        `json:"hide_from_sharing"`
@@ -26,9 +31,11 @@ type settingsMeetingViewState struct {
 }
 
 type settingsMeetingStateInput struct {
-	Meeting  settings.Meeting
-	ReadyASR []local.Model
-	ShownASR []local.Model
+	SpeakerReady, SpeakerDownloading, SpeakerFailed bool
+	SpeakerProgress                                 int
+	Meeting                                         settings.Meeting
+	ReadyASR                                        []local.Model
+	ShownASR                                        []local.Model
 	// AutomaticASR is the speech model a meeting on Automatic opens: the
 	// language gate's first for the meeting's language (meetingTrackASR's
 	// rule), so "now:" never names a model the gate would skip (#4067).
@@ -39,6 +46,8 @@ type settingsMeetingStateInput struct {
 
 func buildSettingsMeetingViewState(translator *i18n.Translator, input settingsMeetingStateInput) settingsMeetingViewState {
 	state := settingsMeetingViewState{
+		LiveSpeakers: input.Meeting.Speakers,
+		SpeakerReady: input.SpeakerReady, SpeakerDownloading: input.SpeakerDownloading, SpeakerProgress: input.SpeakerProgress, SpeakerFailed: input.SpeakerFailed,
 		CaptureModeOptions: []settingsLanguageViewState{
 			{Label: translator.T("Full meeting (microphone and system audio)")},
 			{Code: "subtitles", Label: translator.T("Subtitles (system audio only)")},

@@ -46,6 +46,7 @@ type meetingSegmentViewState struct {
 	StartMS     int64  `json:"start_ms"`
 	TimeText    string `json:"time_text"`
 	Speaker     string `json:"speaker"`
+	SpeakerID   string `json:"speaker_id"`
 	Me          bool   `json:"me"`
 	Text        string `json:"text"`
 	Translation string `json:"translation"`
@@ -216,7 +217,7 @@ func meetingSegmentViewStateFromStore(translator *i18n.Translator, segment store
 	start := time.Duration(segment.StartMS) * time.Millisecond
 	return meetingSegmentViewState{
 		Key: "seg/" + itoa(segment.Idx), Index: segment.Idx, StartMS: segment.StartMS,
-		TimeText: meeting.FormatPlaybackTime(start), Speaker: meetingViewSpeakerText(translator, segment.Speaker, names),
+		TimeText: meeting.FormatPlaybackTime(start), Speaker: meetingViewSpeakerText(translator, segment.Speaker, names), SpeakerID: segment.Speaker,
 		Me: segment.Speaker == "me", Text: segment.Text, Translation: segment.Translation, Source: string(segment.Source),
 	}
 }

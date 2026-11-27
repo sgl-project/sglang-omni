@@ -130,6 +130,10 @@ func snapshotsMeetingOverlay(t *testing.T, out string) {
 			suffix = "dark-" + run.lang
 			desk, line = ui.RGB(30, 31, 36), ui.RGB(120, 128, 140)
 		}
+		named := rec
+		named.Speakers = map[string]string{"me": "Alex", "s1": "Alice", "s2": "Bob"}
+		named.Segments = append(append([]meeting.Segment(nil), rec.Segments...), meeting.Segment{ID: "third", Source: meeting.SourceSystem, Speaker: "s2", Text: "I will check the results after the call."})
+		named.Live = nil
 		paused, problem, asking, finishing := rec, rec, rec, rec
 		paused.State = meeting.StatePaused
 		problem.Problem = &meeting.Problem{Key: meeting.ProblemKeyDiskLow}
@@ -143,6 +147,7 @@ func snapshotsMeetingOverlay(t *testing.T, out string) {
 		}{
 			{"meeting-overlay-starting", meeting.Snapshot{ID: "ov", Mode: meeting.ModeMeeting, State: meeting.StateStarting, Started: now}, false, meetingMenuNone},
 			{"meeting-overlay-recording", rec, false, meetingMenuNone},
+			{"meeting-overlay-speakers-named", named, false, meetingMenuNone},
 			{"meeting-overlay-paused", paused, false, meetingMenuNone},
 			{"meeting-overlay-problem", problem, false, meetingMenuNone},
 			{"meeting-overlay-pill", rec, true, meetingMenuNone},

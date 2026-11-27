@@ -1,0 +1,2 @@
+{"to":"helper","msg":{"id":"meeting","method":"meeting.window","params":{"pid":321}}}
+{"to":"app","msg":{"id":"meeting","result":{"nodes":[{"parent":-1,"role":"AXWindow","title":"Zoom Meeting","identifier":"zm.meeting.window.main"},{"parent":0,"role":"AXVideoRender","description":"Alice, Talking"}]}}}

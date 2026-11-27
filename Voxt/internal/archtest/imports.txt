@@ -121,3 +121,8 @@ learn store
 learn compose
 learn llm
 learn local
+dictation speaker
+local speaker
+meeting speaker
+providers speaker
+speakerrt speaker

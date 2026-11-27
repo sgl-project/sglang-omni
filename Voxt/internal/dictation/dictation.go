@@ -26,6 +26,7 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/asr"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/helper/proto"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/local"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/speaker"
 )
 
 // ModelID is System dictation's id among the speech models (settings
@@ -194,6 +195,10 @@ type Services struct {
 	local.Services
 	name   func(id string) string
 	helper atomic.Pointer[Caller]
+}
+
+func (s *Services) Speakers(ctx context.Context) (speaker.Stream, error) {
+	return local.OpenSpeakers(ctx, s.Services)
 }
 
 // NewServices is base and System dictation; name says a model's Name

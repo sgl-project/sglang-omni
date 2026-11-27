@@ -807,6 +807,7 @@ public enum WireTypes {
         case Method.textSelection: SelectionParams.self
         case Method.textPaste: PasteParams.self
         case Method.textRead: ReadParams.self
+        case Method.meetingWindow: MeetingWindowParams.self
         case Method.browserURL: BrowserURLParams.self
         case Method.appList: AppListParams.self
         case Method.appConfigure: AppConfigureParams.self
@@ -853,6 +854,7 @@ public enum WireTypes {
         case Method.textSelection: SelectionResult.self
         case Method.textPaste: PasteResult.self
         case Method.textRead: ReadResult.self
+        case Method.meetingWindow: MeetingWindowResult.self
         case Method.browserURL: BrowserURLResult.self
         case Method.appList: AppListResult.self
         case Method.appIcons: AppIconsResult.self

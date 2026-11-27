@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"encoding/json"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -106,6 +108,10 @@ func (a *app) followMeeting(snapshot, previous meeting.Snapshot) {
 	if snapshot.State != previous.State {
 		a.loadMeetingDetail(snapshot.ID)
 		return
+	}
+	if !maps.Equal(snapshot.Speakers, previous.Speakers) {
+		detail.meeting.Speakers = meetingSpeakerNames(snapshot.Speakers)
+		a.rebuildMeetingDetail()
 	}
 	if slices.Equal(snapshot.Segments, previous.Segments) {
 		return
@@ -294,4 +300,9 @@ func storeSegmentsToExport(rows []store.MeetingSegment) []meeting.ExportSegment 
 		})
 	}
 	return segments
+}
+
+func meetingSpeakerNames(names map[string]string) string {
+	b, _ := json.Marshal(names) // a string-to-string map is always encodable
+	return string(b)
 }

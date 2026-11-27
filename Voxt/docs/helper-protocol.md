@@ -77,6 +77,7 @@ Errors are `{"code": "…", "message": "…", "data"?: {…}}` with a string cod
 | `textio.read` | `{pid, range{location, length}}` → `{text?, range{location, length}, length, element, error?: "not front"\|"no focus"\|"secure"\|"unreadable"}` |
 | `screen.window` | `{pid, maxSide?}` → `{jpeg?}` or `permission_denied {permission:"screenRecording"}` |
 | `clipboard.image` | `{maxSide?}` → `{jpeg?, tooLarge?}` |
+| `meeting.window` | request | Bounded meeting Accessibility text; optional local screen evidence, see below. |
 | `browser.url` | `{bundleId?, pid?}` → `{bundleId, url?, via: "ax-focus"\|"ax-document"\|"ax-weburl"\|"none", ms, error?, retried?}` |
 | `output.watch` | `{on}` → `{device?{id, uid, name?}, muted?, settable}` (the default output now) |
 | `output.mute` | `{device{id, uid, name?}, journal?}` → `{took, state}` |
@@ -171,3 +172,26 @@ Errors are `{"code": "…", "message": "…", "data"?: {…}}` with a string cod
 | — | `app.configure {manualAccessibility}`; `browser.url`'s `retried` | Chromium browsers build a page's tree only when asked (Arc read none); the browser list is the app's (the user adds some) |
 | — | `speech.recognize`, `speech.audio`; `speech.started`, `speech.partial`; `permissions.*`'s `speechRecognition` (11-06) | System dictation, Voxt 1.x's Direct Dictation: the helper runs the recognizer, the app decides the language and sends the audio it recorded |
 | — | `output.watch`, `output.mute`, `output.release`, `output.recover`; `output.changed`, `output.released` (Auralink's, 10-17) | The output muted while recording (Voxt's `SystemAudioMuteController`), with the policy in Go and claims the helper keeps in a journal, so that no crash leaves the output muted |
+
+## meeting.window
+
+Request `{pid, screenshot?}` reads Accessibility text from the specified meeting app. Returns
+`{nodes: [{parent, role, title?, description?, value?, identifier?, url?}]}`.
+Parents are earlier node indexes; window roots use -1. Reads visit at most 600
+nodes across at most four windows and stop after 500 ms; text values are capped at 256 characters. A read
+that exceeds its budget returns no nodes. Minimized/offscreen windows and
+missing Accessibility permission return an empty list, without prompting.
+The app selects a supported foreground meeting window, retains its process for
+the recording, and interprets participant names
+and explicit speaking indicators. It polls only while recording; this method
+never changes focus, opens a participant panel, or sends
+window contents to a remote service. When screenshot is true and Screen Recording
+is already granted, it crops visible video tiles from that window, recognizes
+their name labels with local Vision OCR, and returns `tiles: [{name, speaking}]`.
+Zoom's custom video-render role description is normalized from `AXTabGroup`
+to `AXVideoRender` for supported English and Simplified Chinese layouts.
+The first Vision request may take several seconds; the caller allows six
+seconds and timestamps observations before the read, so a slow read cannot
+attach an old speaking outline to newer audio.
+Zoom speaking evidence requires its green outline on at least three tile edges.
+Images are discarded after the read and never stored or uploaded. Helpers without it keep anonymous labels.

@@ -409,6 +409,9 @@ func TestLiveDropsWordsForSilence(t *testing.T) {
 		if err := live.Push(ctx, tc.audio); err != nil {
 			t.Fatal(err)
 		}
+		if text := live.LiveText(); (text != "") != (tc.want > 0) {
+			t.Errorf("%s: live preview %q, want speech present %v", tc.name, text, tc.want > 0)
+		}
 		if err := live.Finish(ctx); err != nil {
 			t.Fatal(err)
 		}

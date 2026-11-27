@@ -167,6 +167,7 @@ trap restore EXIT
 
 echo "== helper"
 VOXTNEW_SIGN_IDENTITY="${IDENTITY:--}" scripts/build-helper.sh
+VOXTNEW_SIGN_IDENTITY="${IDENTITY:--}" scripts/build-speaker.sh
 # voxtnew-llm, which an older checkout staged here: mygo would ship it.
 rm -rf "${RES:?}/llm"
 if [[ -n "$RUNTIMES" ]]; then
