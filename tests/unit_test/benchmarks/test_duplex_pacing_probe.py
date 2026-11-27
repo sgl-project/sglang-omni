@@ -6,7 +6,9 @@ from __future__ import annotations
 import asyncio
 import json
 from pathlib import Path
+from unittest.mock import patch
 
+import pytest
 import websockets
 
 from benchmarks.duplex.client import PACKET_MS, SEND_RECEIPTS_FILE
@@ -83,10 +85,15 @@ def test_merged_processes_judge_each_session_from_its_own_first_packet(
     assert summary["peak_overlapping_input_streams"] == 1
 
 
-def test_mock_serves_every_packet_of_concurrent_client_sessions(
+@pytest.mark.parametrize(
+    ("system", "ru_maxrss"), [("Darwin", 123_207_680), ("Linux", 120_320)]
+)
+def test_concurrent_probe_reports_all_packets_and_peak_memory(
     tmp_path: Path,
+    system: str,
+    ru_maxrss: int,
 ) -> None:
-    """The mock must keep up with the protocol the client speaks, or no level is valid."""
+    """Each client packet must reach the mock, and peak memory must be reported in MiB on both platforms."""
     concurrency, duration_s = 2, 0.8
     mock = MockServer(reply_audio_bytes=64, replies_per_append=3)
 
@@ -102,7 +109,12 @@ def test_mock_serves_every_packet_of_concurrent_client_sessions(
                 inject_stall_ms=0.0,
             )
 
-    asyncio.run(probe())
+    with (
+        patch("platform.system", return_value=system),
+        patch("resource.getrusage") as getrusage,
+    ):
+        getrusage.return_value.ru_maxrss = ru_maxrss
+        asyncio.run(probe())
 
     summary = json.loads((tmp_path / "run" / SUMMARY_FILE).read_text())
     packets = concurrency * summary["expected_packets_per_session"]
@@ -111,3 +123,4 @@ def test_mock_serves_every_packet_of_concurrent_client_sessions(
     assert mock.connections == concurrency
     assert len(mock.arrival_deviations_s) == packets
     assert summary["peak_overlapping_input_streams"] == concurrency
+    assert summary["peak_rss_megabytes_max"] == 117.5
