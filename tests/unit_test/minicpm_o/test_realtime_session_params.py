@@ -20,10 +20,14 @@ from sglang_omni.models.minicpm_o.native_config import (
     MiniCPMODuplexSampling,
 )
 from sglang_omni.models.minicpm_o.native_stages import PerceptionHooks, SpeechHooks
-from sglang_omni.models.minicpm_o.session_adapters import build_realtime_deployment
+from sglang_omni.models.minicpm_o.session_adapters import (
+    MAX_CALL_OUTPUT_CHARS,
+    build_realtime_deployment,
+)
 from sglang_omni.proto.request import OmniRequest
 from sglang_omni.proto.session import SessionIdentity, TimedChunk
 from sglang_omni.proto.streams import CONTROL, INTERRUPT, SESSION_CONTROL, TRUNCATE
+from sglang_omni.proto.tools import ToolResponse, tool_response_chunk
 from sglang_omni.serve.realtime.negotiation import SessionNegotiation
 from sglang_omni.serve.realtime.output import (
     AudioDelta,
@@ -34,7 +38,7 @@ from sglang_omni.serve.realtime.output import (
     TextFinished,
 )
 from sglang_omni.serve.realtime.schema import JsonObject, SessionConfiguration
-from sglang_omni.serve.realtime.types import InteractionAdapter, Unit
+from sglang_omni.serve.realtime.types import InteractionAdapter, ProtocolError, Unit
 from tests.unit_test.fixtures.session_client import FakeSessionClient
 from tests.unit_test.serve.test_realtime_reference_audio import wav_reference
 
@@ -95,7 +99,9 @@ def truncate_of_turn_1(
     )
 
 
-def voice(pcm: bytes, *, end_of_turn: bool = False) -> dict[str, object]:
+def voice(
+    pcm: bytes, *, end_of_turn: bool = False, delegates: tuple[str, ...] = ()
+) -> dict[str, object]:
     return dict(
         text="",
         pcm=pcm,
@@ -103,7 +109,7 @@ def voice(pcm: bytes, *, end_of_turn: bool = False) -> dict[str, object]:
         is_listen=not pcm or end_of_turn,
         model_end_of_turn=end_of_turn,
         is_speech_cut=False,
-        delegates=[],
+        delegates=list(delegates),
     )
 
 
@@ -507,6 +513,73 @@ async def test_a_reply_without_a_turn_plays_when_nothing_was_cancelled() -> None
         AudioFinished(FIRST_RESPONSE, FIRST_ITEM),
         ResponseFinished(FIRST_RESPONSE, FIRST_ITEM, "", True, "completed", "stop"),
     ]
+
+
+CALL_ID = "session-call-0"
+
+
+def answer_of(call_id: str, output: str) -> tuple[TimedChunk, list[str], bool]:
+    """The control an answer to call_id sends: the output, to the thinker alone, in no turn, so no stop cancels it."""
+    return (
+        tool_response_chunk(
+            [ToolResponse(id=call_id, name="delegate", response=output)], None
+        ),
+        ["thinker"],
+        False,
+    )
+
+
+async def open_adapter_with_a_call(coordinator: VoiceCoordinator) -> InteractionAdapter:
+    """An adapter whose first reply made the call CALL_ID."""
+    adapter, _ = await open_adapter(coordinator)
+    await run_unit(
+        adapter, coordinator, 0, 1, voice(HEARD_PCM, delegates=("weather in Nanjing",))
+    )
+    return adapter
+
+
+@pytest.mark.asyncio
+async def test_the_output_of_a_call_reaches_the_thinker_once() -> None:
+    """The client answered a call the model made, and the model never read the result, or read it twice."""
+    coordinator = VoiceCoordinator()
+    adapter = await open_adapter_with_a_call(coordinator)
+
+    await adapter.answer_call(CALL_ID, "Sunny.")
+    with pytest.raises(ProtocolError) as refusal:
+        await adapter.answer_call(CALL_ID, "Sunny.")
+    await adapter.close()
+
+    assert coordinator.controlled == [answer_of(CALL_ID, "Sunny.")]
+    assert (refusal.value.code, refusal.value.param) == (
+        "invalid_request",
+        "item.call_id",
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("call_id", "output", "param"),
+    [
+        ("session-call-1", "Sunny.", "item.call_id"),
+        (CALL_ID, " \n", "item.output"),
+        (CALL_ID, "x" * (MAX_CALL_OUTPUT_CHARS + 1), "item.output"),
+    ],
+    ids=["a_call_the_model_never_made", "a_blank_output", "an_output_past_the_bound"],
+)
+async def test_an_output_the_model_cannot_take_is_refused_and_leaves_the_call_open(
+    call_id: str, output: str, param: str
+) -> None:
+    """The client sent an output the model cannot take, and the session passed it on, or used up the call so that the client could not answer it again."""
+    coordinator = VoiceCoordinator()
+    adapter = await open_adapter_with_a_call(coordinator)
+
+    with pytest.raises(ProtocolError) as refusal:
+        await adapter.answer_call(call_id, output)
+    await adapter.answer_call(CALL_ID, "Sunny.")
+    await adapter.close()
+
+    assert (refusal.value.code, refusal.value.param) == ("invalid_request", param)
+    assert coordinator.controlled == [answer_of(CALL_ID, "Sunny.")]
 
 
 def test_the_deployment_grants_the_client_stop() -> None:

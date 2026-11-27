@@ -56,6 +56,8 @@ class MiniCPMOThinkerSessionState:
     delegate_task_ids: list[int] | None = None
     # A delegate opened inside an open delegate leaves the span without a task.
     is_delegate_malformed: bool = False
+    # note (cuzmi): The client ran the task whatever became of the reply, so its result waits for the model's next idle unit through any stop.
+    backend_token_ids: list[int] = field(default_factory=list)
 
     def drop_units(
         self, drop_order: Iterable[int], next_unit_start: int, target_start: int

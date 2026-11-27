@@ -34,6 +34,7 @@ from sglang_omni.serve.realtime.schema import (
     CLIENT_EVENT,
     MAX_EVENT_ID_LENGTH,
     AudioAppendEvent,
+    ConversationItemCreateEvent,
     ConversationItemTruncateEvent,
     ImageAppendEvent,
     SessionUpdateEvent,
@@ -269,6 +270,8 @@ class SharedRealtimeSession:
             await self.runtime.commit()
         elif isinstance(event, ConversationItemTruncateEvent):
             await self.runtime.truncate(event.item_id, event.audio_end_ms)
+        elif isinstance(event, ConversationItemCreateEvent):
+            await self.runtime.answer_call(event.item.call_id, event.item.output)
         elif event.type == "sglang.input_audio.end":
             await self.runtime.end(event.event_id)
         elif event.type == "session.close":

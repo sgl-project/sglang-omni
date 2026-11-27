@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import base64
 import logging
+from dataclasses import dataclass, field
 from typing import Literal
 
 import pytest
@@ -441,7 +442,13 @@ def test_client_close_cancels_visible_response_then_closes_socket() -> None:
         (b"\0", "invalid_request", None),
         ("{not json", "invalid_request", None),
         ('{"type": "session.close"}', "invalid_request", None),
-        ('{"event_id": "e", "type": "conversation.item.create"}', "not_supported", "e"),
+        ('{"event_id": "e", "type": "conversation.item.delete"}', "not_supported", "e"),
+        (
+            '{"event_id": "e", "type": "conversation.item.create", "item":'
+            ' {"type": "function_call_output", "call_id": "call", "output": "done"}}',
+            "not_supported",
+            "e",
+        ),
         (
             '{"event_id": "e", "type": "input_audio_buffer.commit"}',
             "not_applicable",
@@ -480,6 +487,37 @@ def test_malformed_or_unsupported_frames_are_non_fatal(
     assert error["error"]["event_id"] == event_id
     assert error["sglang"]["fatal"] is False
     assert updated["type"] == "session.updated"
+
+
+@dataclass(kw_only=True)
+class CallAnsweringAdapter(ScriptedAdapter):
+    """Records the outputs the client sends for the session's function calls."""
+
+    answers: list[tuple[str, str]] = field(default_factory=list)
+
+    async def answer_call(self, call_id: str, output: str) -> None:
+        self.answers.append((call_id, output))
+
+
+def test_a_function_call_output_reaches_the_adapter_as_the_answer_to_its_call() -> None:
+    """The client answered a function call the session made, and the session refused the answer, so the model never heard the result."""
+    adapter = CallAnsweringAdapter()
+    with build_test_client(adapter).websocket_connect("/v1/realtime") as websocket:
+        open_session(websocket)
+        send_event(
+            websocket,
+            "conversation.item.create",
+            item={
+                "type": "function_call_output",
+                "call_id": "call",
+                "output": "Sunny.",
+            },
+        )
+        send_event(websocket, "session.update", session={})
+        updated = websocket.receive_json()
+
+    assert updated["type"] == "session.updated"
+    assert adapter.answers == [("call", "Sunny.")]
 
 
 def test_full_admission_queue_releases_adapter_and_allows_retry(

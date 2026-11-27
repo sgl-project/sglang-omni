@@ -26,7 +26,10 @@ from sglang_omni.models.minicpm_o.native_config import (
     MiniCPMODuplexSampling,
     MiniCPMODuplexWindow,
 )
+from sglang_omni.models.minicpm_o.routing import THINKER_STAGE
 from sglang_omni.models.minicpm_o.special_tokens import (
+    DELEGATE_SPECIAL_TOKENS,
+    REQUIRED_SPECIAL_TOKENS,
     MiniCPMOSpecialTokenIds,
     resolve_special_token_ids,
 )
@@ -42,9 +45,11 @@ from sglang_omni.proto.streams import (
     INTERRUPT,
     PCM16_BYTES_PER_SAMPLE,
     SESSION_CONTROL,
+    TOOL_RESPONSE,
     TRUNCATE,
     control_type,
 )
+from sglang_omni.proto.tools import ToolResponse, tool_response_chunk, tool_responses_of
 from sglang_omni.scheduling.sglang_backend.ar_session import (
     ARSessionAdapter,
     ARSessionPreparation,
@@ -67,13 +72,16 @@ from sglang_omni.serve.realtime.output import (
     TextDelta,
     TextFinished,
 )
-from sglang_omni.serve.realtime.types import Capabilities, samples_to_ms
+from sglang_omni.serve.realtime.types import Capabilities, ProtocolError, samples_to_ms
 
 logger = logging.getLogger(__name__)
 
 # note (ruoyu): A client's truncate follows its stop within a unit or two; this many listen units after a reply's last spoken unit, a cut would re-feed more audio than any stop needs, so the reply is no longer cut.
 TRUNCATE_WINDOW_UNITS = 10
 DELEGATE_FUNCTION_NAME = "delegate"
+# note (cuzmi): The official Venus harness bounds every result it hands the model to this many characters.
+MAX_CALL_OUTPUT_CHARS = 3000
+PROTOCOL_TOKENS = (*REQUIRED_SPECIAL_TOKENS, *DELEGATE_SPECIAL_TOKENS)
 
 
 def keep_through_unit_of(event: TimedChunk) -> int | None:
@@ -141,8 +149,32 @@ class ThinkerAdapter(ARSessionAdapter):
             else:
                 # note (ruoyu): The truncate names a reply that ended, but the model may already have begun the next one, whose units the client will hear.
                 pass
+        elif event.format == TOOL_RESPONSE:
+            state = self.states[session_identity]
+            for response in tool_responses_of(event):
+                assert isinstance(response.response, str)
+                state.backend_token_ids.extend(
+                    self.backend_token_ids_of(response.response)
+                )
         else:
             pass
+
+    def backend_token_ids_of(self, text: str) -> list[int]:
+        """The backend span a call's result enters the history as: no text inside it reads as a special token, so a result can neither open a span nor switch the model between speaking and listening."""
+        delegate_tokens = self.special.delegate_tokens
+        assert delegate_tokens is not None
+        sanitized = text
+        # note (cuzmi): The official harness strips the protocol tokens until none is left, so that one spelled across another is gone too.
+        while any(token in sanitized for token in PROTOCOL_TOKENS):
+            for token in PROTOCOL_TOKENS:
+                sanitized = sanitized.replace(token, "")
+        return [
+            delegate_tokens.backend_start,
+            *self.tokenizer.encode(
+                sanitized.strip(), add_special_tokens=False, split_special_tokens=True
+            ),
+            delegate_tokens.backend_end,
+        ]
 
     def cut_reply(
         self, state: MiniCPMOThinkerSessionState, keep_through_unit: int | None
@@ -554,6 +586,7 @@ class OutputConverter:
         self.reply: Reply | None = None
         self.serial: int = 0
         self.call_serial: int = 0
+        self.unanswered_call_ids: set[str] = set()
 
     def cancel(self) -> KeptReply | None:
         """Mark the open reply cancelled and keep it through the last unit the client received; None when no reply is open or it is already cancelled."""
@@ -564,6 +597,17 @@ class OutputConverter:
             reply.is_cancelled = True
             reply.keep_through_unit = reply.last_delivered_unit
             return KeptReply(turn=reply.turn, keep_through_unit=reply.keep_through_unit)
+
+    def answer(self, call_id: str) -> None:
+        """Take call_id off the calls waiting for their result; a call the session never made, or one already answered, is the client's error."""
+        if call_id in self.unanswered_call_ids:
+            self.unanswered_call_ids.remove(call_id)
+        else:
+            raise ProtocolError(
+                "invalid_request",
+                "call_id names no function call awaiting output",
+                "item.call_id",
+            )
 
     def truncate(self, item_id: str, audio_end_ms: float) -> KeptReply | None:
         """Keep the latest reply, when item_id names it and the client stopped it or the model ended it, through the last unit the client had played at audio_end_ms, never past a unit it received or a unit already kept; None when the position does not move back."""
@@ -676,18 +720,20 @@ class OutputConverter:
                 pass
             for task in value["delegates"]:
                 reply.call_count += 1
+                call_id = f"{output.session_identity.id}-call-{self.call_serial}"
+                self.call_serial += 1
+                self.unanswered_call_ids.add(call_id)
                 events.append(
                     FunctionCallFinished(
                         reply.response_id,
                         item_id=f"{reply.response_id}-function-call-{reply.call_count}",
                         # note (cuzmi): The message is the response's first output item and its calls follow it.
                         output_index=reply.call_count,
-                        call_id=f"{output.session_identity.id}-call-{self.call_serial}",
+                        call_id=call_id,
                         name=DELEGATE_FUNCTION_NAME,
                         arguments=json.dumps({"task": task}),
                     )
                 )
-                self.call_serial += 1
         else:
             pass
         if value["end_of_turn"] or output.eos:
@@ -748,6 +794,34 @@ class RealtimeAdapter(CoordinatorAdapter):
                     turn=kept_reply.turn,
                 ),
             )
+
+    async def answer_call(self, call_id: str, output: str) -> None:
+        """Hand the thinker the result of a call the model made; the model reads it at its next idle unit, so a reply it is speaking goes on."""
+        assert self.session_identity is not None
+        if not output.strip():
+            raise ProtocolError(
+                "invalid_request", "function call output is blank", "item.output"
+            )
+        elif len(output) > MAX_CALL_OUTPUT_CHARS:
+            raise ProtocolError(
+                "invalid_request",
+                f"function call output exceeds {MAX_CALL_OUTPUT_CHARS} characters",
+                "item.output",
+            )
+        else:
+            self.output_converter.answer(call_id)
+        await self.client.control_session(
+            self.session_identity,
+            tool_response_chunk(
+                [
+                    ToolResponse(
+                        id=call_id, name=DELEGATE_FUNCTION_NAME, response=output
+                    )
+                ],
+                None,
+            ),
+            stages=[THINKER_STAGE],
+        )
 
 
 def build_realtime_deployment(

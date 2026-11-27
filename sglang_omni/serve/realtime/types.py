@@ -269,6 +269,9 @@ class InteractionAdapter:
     async def truncate(self, item_id: str, audio_end_ms: float) -> None:
         raise ProtocolError("not_supported", "this session does not truncate responses")
 
+    async def answer_call(self, call_id: str, output: str) -> None:
+        raise ProtocolError("not_supported", "this session makes no function calls")
+
     async def commit(self) -> None:
         raise ProtocolError(
             "not_supported", "this session does not take client commits"
