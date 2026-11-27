@@ -97,13 +97,18 @@ func TestPillThinkingLevel(t *testing.T) {
 // answer is pasted and kept, the snapshot says the level, and the
 // service's setting stays.
 func TestPillThinkingLevelEndToEnd(t *testing.T) {
-	chat := &fakeChat{text: "Hello, VoxtNew.", delay: time.Minute}
+	recorded := make(chan struct{}, 1)
+	chat := &fakeChat{text: "Hello, VoxtNew.", delay: time.Minute, recorded: recorded}
 	set, keys, _ := fileSetup(t, "hello aura link", chat)
 	ev := script(t, hotkeyLine(0, "transcribe/0", proto.PhaseTrigger), hotkeyLine(400, "transcribe/0", proto.PhaseTrigger))
 	a := newSessionApp(t, ev, set, keys)
 	a.pump("the model's step", func() bool {
-		return a.sess.State == session.Composing && a.sess.CanSkip && len(chat.requests()) == 1
+		return a.sess.State == session.Composing && a.sess.CanSkip
 	})
+	// The snapshot arrives on the UI queue; the request is recorded on the
+	// model's goroutine and posts nothing. Wait for the request itself, or
+	// the pump can miss it and sit until its deadline (#4724).
+	awaitPumping(a, recorded, "the model's request")
 	chat.mu.Lock()
 	chat.delay = 0
 	chat.mu.Unlock()
