@@ -7,9 +7,15 @@ import json
 from typing import Protocol
 
 import torch
+from sglang.srt.arg_groups.model_override_base import resolved_view
+from sglang.srt.mem_cache.unified_radix_cache import UnifiedRadixCache
+from sglang.srt.server_args import ServerArgs
 from transformers import AutoTokenizer
 
 from sglang_omni.model_runner.model_worker import ModelWorker
+from sglang_omni.models.nemotron_voicechat.ascend_session_kv_reuse import (
+    VoiceChatAscendStreamingSession,
+)
 from sglang_omni.models.nemotron_voicechat.code2wav_stream import DECODE_WINDOW_FRAMES
 from sglang_omni.models.nemotron_voicechat.conformer import AudioPerception
 from sglang_omni.models.nemotron_voicechat.duplex_ar import (
@@ -37,6 +43,7 @@ from sglang_omni.models.nemotron_voicechat.tools import (
     tool_system_prompt,
 )
 from sglang_omni.models.weight_loader import load_module, resolve_dtype
+from sglang_omni.platforms import current_platform
 from sglang_omni.proto.request import StagePayload
 from sglang_omni.scheduling.generation_batch_policy import CudaGraphBackend
 from sglang_omni.scheduling.omni_scheduler import OmniScheduler
@@ -69,16 +76,43 @@ class DuplexSessionBuilderMixin:
     disable_cuda_graph = False
 
     def generation_defaults(self, *, dtype: str) -> dict[str, str | int | bool]:
+        if current_platform.is_npu():
+            # Ascend attention reads paged KV in the validated 128-token configuration.
+            attention_backend, page_size_tokens = "ascend", 128
+        else:
+            # Triton supports the single-token KV pages used by streaming sessions.
+            attention_backend, page_size_tokens = "triton", 1
         return {
             **super().generation_defaults(dtype=dtype),
             "enable_streaming_session": True,
             "max_running_requests": MAX_RUNNING_REQUESTS,
             "max_total_tokens": SESSION_KV_TOKEN_BUDGET,
-            # Triton supports the single-token KV pages used by streaming sessions.
-            "attention_backend": "triton",
-            "page_size": 1,
+            "attention_backend": attention_backend,
+            "page_size": page_size_tokens,
             "cuda_graph_backend_prefill": CudaGraphBackend.DISABLED,
         }
+
+    def validate_before_infrastructure(self, server_args: ServerArgs) -> None:
+        super().validate_before_infrastructure(server_args)
+        if current_platform.is_npu() and resolved_view(server_args).page_size == 1:
+            raise ValueError(
+                "VoiceChat Ascend attention requires paged KV. Set page_size to 128."
+            )
+        else:
+            pass
+
+    def post_scheduler_setup(
+        self,
+        scheduler: OmniScheduler[SGLangARRequestData],
+        model_runner: DuplexThinkerRunner | DuplexTalkerRunner,
+    ) -> None:
+        super().post_scheduler_setup(scheduler, model_runner)
+        if current_platform.is_npu():
+            tree_cache = scheduler.tree_cache
+            assert isinstance(tree_cache, UnifiedRadixCache)
+            tree_cache.session = VoiceChatAscendStreamingSession(tree_cache)
+        else:
+            pass
 
     def extra_scheduler_kwargs(self) -> dict[str, ARSessionAdapter | int]:
         return {
