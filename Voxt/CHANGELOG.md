@@ -2,6 +2,18 @@
 
 All notable changes to Voxt. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [Semantic Versioning](https://semver.org/). Each version's section is its release notes: English first, then the same in Chinese under `### 中文`, with `####` headings below it (docs/release.md §2.1).
 
+## [Unreleased]
+
+### Changed
+
+- **Setting help stays on row titles** (#3856): hover a setting or section title for its help instead of a separate info icon; redundant page subtitles and explanatory captions are gone, while errors, permission notices and other functional status stay. Language model debug keeps each request's unsaved prompt draft when you switch requests or display languages.
+
+### 中文
+
+#### 变更
+
+- **设置说明移到行标题上**（#3856）：把指针停在设置或分区标题上即可查看说明，不再单独显示信息图标；多余的页面副标题和解释文字已移除，错误、权限提示和其他功能状态仍然保留。语言模型调试在切换请求或显示语言时，也会保留每个请求尚未保存的提示词草稿。
+
 ## [2.1.4] - 2026-11-26
 
 ### Added
@@ -21,7 +33,6 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 ### Changed
 
-- **Setting help stays on row titles** (#3856): hover a setting or section title for its help instead of a separate info icon; redundant page subtitles and explanatory captions are gone, while errors, permission notices and other functional status stay. Language model debug keeps each request's unsaved prompt draft when you switch requests or display languages.
 - **Experimental settings**: Sessions (experimental), its history notice and the Next session shortcut move from Settings → Shortcuts to Settings → Experimental, and the switch explains what the card's session row does. The page no longer lists the Session 1/2/3 shortcuts, whose numbers shift as sessions come and go, or the switch counts. Existing session settings keep their values.
 - **Qwen3-ASR 1.7B (8bit) is the recommended speech model again**: the setup guide, Home and the feature pages download Qwen3-ASR 1.7B (8bit) with its 726 MB DFlash draft (3.2 GB together), so Faster transcription is on from the start, and Automatic picks it first once it is installed. MOSS-Transcribe-Diarize stays on the Speech models page, and a model you chose for a feature stays as chosen.
 - **Anthropic lists the current Claude models, and they answer without thinking first** (#4697): the Model menu offers Claude Haiku 5.5, Sonnet 5.5, Opus 5.5 and Fable 5.2 instead of Sonnet 4.6, Haiku 4.5 and Opus 4.6, and Claude Haiku 5.5 is the default. Claude's 5.5 models think before every answer unless asked not to, so Voxt now turns thinking off as it does for other services: Sonnet 5.5 with the setting it takes for that, while Opus 5.5 and Fable 5.2 always think. A setup that kept the default model moves to Claude Haiku 5.5; a model you chose stays.
@@ -33,7 +44,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **Meetings are proofread sooner**: after a meeting, the microphone track's proofreading starts as soon as its own final transcription is done and runs while the system track is still transcribing, instead of waiting for both; one request is in flight at a time, and the proofread text lands in one save, in the same order as before. A proofreading request that fails now keeps only its own lines as recognised instead of discarding the whole proofread. A language model served on this Mac does not overlap, so recognition keeps the GPU and memory to itself.
 - **Live words show dim until they are final** (#4574): while you speak, the overlay and the answer card show the speech model's words so far in a dimmer color; they turn to the normal color once the recognised text replaces them.
 - **The pill keeps its width when you stop** (#4574): the dots take the waveform's place, and Use transcript takes the feature name's with them, so the row stays as wide and centred, and the microphone icon no longer jumps.
-- **A tidier Dictionary page** (#4597): one column, as Snippets. A line under the title says what the page is for; the terms sit in a card, each with what it may be heard as and its note under it, and a switch on the right; click a term to edit it, and Delete shows under the pointer. Suggestions get a card of their own with Add as their button. The dictionary's switches (Use the dictionary, Speech hints, Glossary for the language model, Learn from my corrections) and Scan history move into Dictionary settings (the gear by Add term), each with help on its title in place of the folded guide; when the dictionary is off, the page says so with a Turn on button. The profile shows beside the title once there is more than one, as a menu to switch, rename or delete; New profile… is in the ⋯ menu. In the term dialog, Aliases is now Heard as.
+- **A tidier Dictionary page** (#4597): one column, as Snippets. A line under the title says what the page is for; the terms sit in a card, each with what it may be heard as and its note under it, and a switch on the right; click a term to edit it, and Delete shows under the pointer. Suggestions get a card of their own with Add as their button. The dictionary's switches (Use the dictionary, Speech hints, Glossary for the language model, Learn from my corrections) and Scan history move into Dictionary settings (the gear by Add term), each with its ⓘ in place of the folded guide; when the dictionary is off, the page says so with a Turn on button. The profile shows beside the title once there is more than one, as a menu to switch, rename or delete; New profile… is in the ⋯ menu. In the term dialog, Aliases is now Heard as.
 - **Rewrite plays no recording sounds** (#4582): its card opens with the microphone, so you can see it, and you may only type.
 - **A new picture behind the overlay preview** (#4533): Settings → Overlay style shows the overlay over a soft blue-violet to peach gradient of our own, in place of the picture from Voxt 1.x.
 - **Transcribe, Translate and Rewrite are Settings sections** (#4478): their shortcuts, models, prompts and Try areas have moved out of the sidebar. Old feature links and the ⌘3–⌘5 shortcuts open the matching section; Speech models and Language models stay in Settings too.
@@ -81,7 +92,6 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 #### 变更
 
-- **设置说明移到行标题上**（#3856）：把指针停在设置或分区标题上即可查看说明，不再单独显示信息图标；多余的页面副标题和解释文字已移除，错误、权限提示和其他功能状态仍然保留。语言模型调试在切换请求或显示语言时，也会保留每个请求尚未保存的提示词草稿。
 - **实验功能设置**：“会话（实验功能）”开关、历史提示和“下一个会话”快捷键从“设置 → 快捷键”移到“设置 → 实验功能”，开关说明写清卡片上的会话行能做什么。页面不再列出会话 1/2/3 的快捷键（会话编号会随新建、删除变动）和切换次数统计。已有会话设置保持不变。
 - **推荐的语音识别模型改回 Qwen3-ASR 1.7B (8bit)**：设置引导、首页和功能页下载 Qwen3-ASR 1.7B (8bit) 及其 726 MB 的 DFlash 草稿（共 3.2 GB），转录加速一开始就开着；装好后“自动”先用它。MOSS-Transcribe-Diarize 仍在语音识别模型页，功能里选过的模型不变。
 - **Anthropic 列出当前的 Claude 模型，回答前不再先思考**（#4697）：模型菜单里的 Sonnet 4.6、Haiku 4.5 和 Opus 4.6 换成 Claude Haiku 5.5、Sonnet 5.5、Opus 5.5 和 Fable 5.2，默认用 Claude Haiku 5.5。Claude 的 5.5 系列不明确关掉就会在每次回答前思考，所以 Voxt 现在像对其他服务一样关掉思考：Sonnet 5.5 用它接受的写法关掉，Opus 5.5 和 Fable 5.2 始终会思考。沿用默认模型的设置会改用 Claude Haiku 5.5，自己选过的模型不变。
@@ -90,7 +100,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **词典控件也能从更多操作菜单使用**：“使用词典”“语音识别提示”“语言模型术语表”“从我的改正中学习”和“扫描历史”除了“词典设置”，也能在与导入、导出同一个菜单里使用。“添加词条”仍在页头，词典学习行为不变。菜单旁边的 ⓘ 保留这三项设置的说明，包括读取内容的隐私承诺。
 - **实时文字先淡后实**（#4574）：说话时，浮窗和答案卡片里语音识别模型的实时文字用淡色显示；识别结果出来替换后，换成正常颜色。
 - **停止后浮窗不再跳**（#4574）：圆点接替波形的位置，“用识别原文”出现时和圆点一起接替功能名的位置，整行宽度不变、仍然居中，麦克风图标不再跳动。
-- **词典页更清楚**（#4597）：和片段页一样改成一栏。标题下一行说明这个页面做什么；词条放在一张卡片里，每条下面是可能听成的写法和备注，开关在右边；点词条就能编辑，指针移上去才出现删除。建议单独一张卡片，按钮是“添加”。词典的几个开关（使用词典、识别热词、语言模型术语表、从我的改正中学习）和“扫描历史”移进“词典设置”（“添加词条”旁边的齿轮），每个开关的标题说明讲清它的作用，取代原来折叠的“词典的用法”；词典关掉时页面上会提示，并有“打开”按钮。有两个以上词典配置时，当前配置显示在标题旁边，点开可以切换、重命名或删除；“新建词典配置…”在 ⋯ 菜单里。词条对话框里的“别名”改叫“可能听成”。
+- **词典页更清楚**（#4597）：和片段页一样改成一栏。标题下一行说明这个页面做什么；词条放在一张卡片里，每条下面是可能听成的写法和备注，开关在右边；点词条就能编辑，指针移上去才出现删除。建议单独一张卡片，按钮是“添加”。词典的几个开关（使用词典、识别热词、语言模型术语表、从我的改正中学习）和“扫描历史”移进“词典设置”（“添加词条”旁边的齿轮），每个开关的 ⓘ 讲清它的作用，取代原来折叠的“词典的用法”；词典关掉时页面上会提示，并有“打开”按钮。有两个以上词典配置时，当前配置显示在标题旁边，点开可以切换、重命名或删除；“新建词典配置…”在 ⋯ 菜单里。词条对话框里的“别名”改叫“可能听成”。
 - **改写不再响提示音**（#4582）：按下改写，卡片和麦克风一起打开，看得见，也可以只打字。
 - **浮窗预览换了背景图**（#4533）：设置 → 浮窗样式的预览改用我们自己做的蓝紫到橙桃渐变，不再用 Voxt 1.x 的图。
 - **转录、翻译、改写移到“设置”里**（#4478）：快捷键、模型、提示词和“试一试”都从侧边栏移到对应分节。旧功能链接和 ⌘3–⌘5 会打开对应分节；语音识别模型和语言模型仍在“设置”里。
