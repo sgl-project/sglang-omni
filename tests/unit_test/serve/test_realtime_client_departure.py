@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 
 import pytest
@@ -15,6 +16,10 @@ from sglang_omni.client.client import Client
 from sglang_omni.config import RealtimeTranscriptionConfig
 from sglang_omni.serve.openai_api import create_app
 from sglang_omni.serve.realtime import session as session_module
+from sglang_omni.serve.realtime.audio_buffer import (
+    PCM16_BYTES_PER_SAMPLE,
+    PCM_SAMPLE_RATE,
+)
 from sglang_omni.serve.realtime.manager import RealtimeSessionManager
 from sglang_omni.serve.realtime.task_cleanup import close_websocket
 from tests.unit_test.fixtures.realtime_fakes import MODEL_NAME, HealthCoordinator
@@ -90,7 +95,9 @@ def realtime_app(monkeypatch: pytest.MonkeyPatch) -> FastAPI:
         Client(HealthCoordinator(True)),
         model_name=MODEL_NAME,
         enable_realtime=True,
-        realtime_transcription=RealtimeTranscriptionConfig(strategy_cls=IdleStrategy),
+        realtime_transcription=RealtimeTranscriptionConfig(
+            strategy_cls=IdleStrategy, max_segment_s=1.0
+        ),
     )
 
 
@@ -108,6 +115,47 @@ async def test_client_vanishing_during_a_send_releases_its_session(
     await realtime_app(websocket_scope(query_string), peer.receive, peer.send)
 
     assert peer.sent_frame_count == 2
+    assert not realtime_app.state.realtime_manager.sessions
+
+
+@pytest.mark.asyncio
+async def test_client_vanishing_during_final_with_more_finals_pending(
+    realtime_app: FastAPI,
+) -> None:
+    num_samples = int(2.5 * PCM_SAMPLE_RATE)
+    audio = base64.b64encode(bytes(num_samples * PCM16_BYTES_PER_SAMPLE)).decode()
+    peer = VanishingPeer(
+        frames=[
+            json.dumps({"type": "input_audio_buffer.append", "audio": audio}),
+            json.dumps({"type": "transcription.done"}),
+        ],
+        failing_message_type="websocket.close",
+    )
+    committed_segments: list[int] = []
+    attempted_finals: list[int] = []
+
+    async def send(message: Message) -> None:
+        if message["type"] == "websocket.send":
+            event = json.loads(message["text"])
+            if event["type"] == "input_audio_buffer.committed":
+                committed_segments.append(event["segment_id"])
+            elif event["type"] == "transcription.segment":
+                assert event["is_final"]
+                attempted_finals.append(event["segment_id"])
+                raise OSError("client vanished")
+            else:
+                pass
+        else:
+            pass
+        await peer.send(message)
+
+    await asyncio.wait_for(
+        realtime_app(websocket_scope(b"intent=transcription"), peer.receive, send),
+        timeout=2.0,
+    )
+
+    assert committed_segments == [0, 1, 2]
+    assert attempted_finals == [0]
     assert not realtime_app.state.realtime_manager.sessions
 
 

@@ -14,7 +14,7 @@ from typing import Protocol
 import numpy as np
 from fastapi import WebSocket
 from pydantic import ValidationError
-from starlette.websockets import WebSocketState
+from starlette.websockets import WebSocketDisconnect, WebSocketState
 
 from sglang_omni.audio.vad import (
     VAD_FRAME_SAMPLES,
@@ -263,6 +263,8 @@ class RealtimeTranscriptionSession:
             pass
         try:
             await getattr(self, self.handlers[type(event)])(event)
+        except WebSocketDisconnect:
+            raise
         except Exception:
             logger.exception(
                 "Realtime transcription handler failed: session=%s event=%s",
@@ -864,11 +866,21 @@ class RealtimeTranscriptionSession:
         del event
         self.state = SessionState.INPUT_DONE
         await self.commit_buffer("session_end")
-        if self.final_waiters:
-            await asyncio.gather(*list(self.final_waiters))
-        else:
-            pass
-        await self.cancel_and_abort(self.decode_worker_task, None)
+        decode_worker = self.decode_worker_task
+        finals_done = asyncio.gather(*self.final_waiters)
+        try:
+            await asyncio.wait(
+                (finals_done, decode_worker), return_when=asyncio.FIRST_COMPLETED
+            )
+            if decode_worker.done():
+                await decode_worker
+                return
+            else:
+                await finals_done
+        finally:
+            finals_done.cancel()
+            await asyncio.gather(finals_done, return_exceptions=True)
+        await self.cancel_and_abort(decode_worker, None)
         ordered = sorted(self.committed_segments, key=lambda item: item.segment_id)
         # The latest spoken segment names the language the user is speaking now.
         spoken_languages = [item.language for item in ordered if item.text]
