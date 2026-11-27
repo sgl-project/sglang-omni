@@ -18,6 +18,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **Import-preview libraries upgrade after later database migrations**: Voxt adds a missing note source-app column without rerunning those later migrations, so notes and imported meetings stay readable after upgrading and restarting.
 - **Continue processing refuses an import without usable decoded audio**: a missing, truncated, unreadable, or zero-sample WAV no longer lets Continue processing finish an empty meeting; it stays interrupted and reports the recording error.
 - **Continue processing refreshes an open meeting's details when it finishes**: after Continue processing an interrupted import, the details kept showing Continue processing until Voxt restarted, so clicking it again repeated the model pass. The open details now reload when the import reaches done.
+- **Cancelling an import after a correction failure keeps its recording**: if transcript correction failed and the summary was then cancelled, Voxt returned only the correction error, marked the import done and deleted its WAV. It now reports the cancellation too and leaves the import interrupted for Continue processing.
 
 ### 中文
 
@@ -35,6 +36,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **旧导入预览数据库经过后续迁移后仍能打开**：Voxt 会补上缺失的笔记来源 App 列，不重复执行后续迁移；升级和重启后，笔记与导入的会议仍可读取。
 - **没有可用解码音频的导入不会完成**：WAV 缺失、截断、不可读或没有任何音频样本时，「继续整理」会报告录音错误并保持已中断，不再把空会议标为完成。
 - **继续整理完成后刷新打开的会议详情**：中断的导入点「继续整理」完成后，详情一直显示「继续整理」直到重启 Voxt，再点一次会重复跑模型。现在导入完成后，打开的详情会自动刷新。
+- **校对失败后取消摘要仍保留导入录音**：转录稿校对失败、随后取消摘要时，Voxt 之前只返回校对错误，把导入标为完成并删除 WAV。现在也会报告取消，让导入保持已中断，可以继续整理。
 
 ## [Unreleased]
 

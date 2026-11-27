@@ -70,7 +70,8 @@ func (d *importDiarizer) got() []asr.FileRequest {
 // blockingSummaryChat lets the test cancel while the summary is running.
 type blockingSummaryChat struct {
 	fixingChat
-	started chan struct{}
+	started       chan struct{}
+	correctionErr error
 }
 
 func (c *blockingSummaryChat) Chat(ctx context.Context, req llm.Request) (llm.Response, error) {
@@ -78,6 +79,9 @@ func (c *blockingSummaryChat) Chat(ctx context.Context, req llm.Request) (llm.Re
 		close(c.started)
 		<-ctx.Done()
 		return llm.Response{}, ctx.Err()
+	}
+	if c.correctionErr != nil {
+		return llm.Response{}, c.correctionErr
 	}
 	return c.fixingChat.Chat(ctx, req)
 }
@@ -418,6 +422,40 @@ func TestImportCancelDuringSummaryCanContinue(t *testing.T) {
 	mt, _, err = repo.Meeting(context.Background(), id)
 	if err != nil || mt.Status != store.MeetingDone || mt.Title != "T" || mt.Summary == "" {
 		t.Fatalf("after Continue: status %s, title %q, summary %q, err %v", mt.Status, mt.Title, mt.Summary, err)
+	}
+}
+
+// A failed correction must not hide a later summary cancellation: the
+// interrupted import keeps its WAV for Continue processing.
+func TestImportCancelAfterCorrectionFailureKeepsWAV(t *testing.T) {
+	correctionFailure := errors.New("correction failed")
+	chat := &blockingSummaryChat{started: make(chan struct{}), correctionErr: correctionFailure}
+	diarizer := &importDiarizer{result: asr.Result{Segments: []asr.SpeakerSegment{
+		{Start: 0, End: time.Second, Speaker: "S01", Text: "Box one"},
+	}}}
+	m, repo := importFixture(t, chat, diarizer, &importFileASR{})
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	var id string
+	go func() {
+		var err error
+		id, err = m.Import(ctx, ImportRequest{Name: "long", CreatedAt: time.Now(), PCM: importPCM(1)}, nil)
+		done <- err
+	}()
+	<-chat.started
+	cancel()
+	if err := <-done; !errors.Is(err, context.Canceled) || !errors.Is(err, correctionFailure) {
+		t.Fatalf("err %v, want both the correction failure and cancellation", err)
+	}
+	mt, _, err := repo.Meeting(context.Background(), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mt.Status != store.MeetingInterrupted || mt.Audio == "" {
+		t.Fatalf("status %s, audio %q", mt.Status, mt.Audio)
+	}
+	if _, err := os.Stat(filepath.Join(m.cfg.Dir, mt.Audio, "system.wav")); err != nil {
+		t.Fatalf("the interrupted import lost its WAV: %v", err)
 	}
 }
 

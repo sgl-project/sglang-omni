@@ -150,24 +150,22 @@ func (m *Manager) finalizeProgress(id string) func(float64) {
 
 // correctAndSummarize corrects the transcript, then summarizes it; a
 // correction that fails leaves the summary to the recognised text, and
-// the caller hears of it.
+// the caller hears of both failures.
 func (m *Manager) correctAndSummarize(ctx context.Context, id string) error {
-	var first error
+	var result error
 	if err := m.CorrectTranscript(ctx, id); err != nil {
 		m.warn("correct: " + err.Error())
-		first = err
+		result = err
 	}
 	m.dropCorrectOverlap()
 	if err := m.GenerateMeetingSummary(ctx, id); err != nil {
 		m.warn("summary: " + err.Error())
-		if first == nil {
-			first = err
-		}
+		result = errors.Join(result, err)
 	}
 	if m.cfg.Updated != nil {
 		m.cfg.Updated(id)
 	}
-	return first
+	return result
 }
 
 func (m *Manager) warn(msg string) {
