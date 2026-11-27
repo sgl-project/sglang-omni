@@ -42,10 +42,12 @@ class FakeTensor:
 
 def make_spec(stages: list[tuple[int | None, bool]]) -> SimpleNamespace:
     specs = [
-        SimpleNamespace(gpu_id=gpu_id, allow_child_processes=is_child)
-        for gpu_id, is_child in stages
+        SimpleNamespace(
+            stage_name=f"stage_{i}", gpu_id=gpu_id, allow_child_processes=is_child
+        )
+        for i, (gpu_id, is_child) in enumerate(stages)
     ]
-    return SimpleNamespace(stage_specs=specs)
+    return SimpleNamespace(process_name="worker_0", stage_specs=specs)
 
 
 def install_fake_cuda(monkeypatch: pytest.MonkeyPatch, record: list[int]) -> None:
@@ -74,6 +76,29 @@ def test_warms_once_on_the_lowest_host_gpu_and_registers_its_file(
     assert process._prewarm_cuda_ipc_handles == [  # noqa: leading-underscore
         b"/torch_fake_0"
     ]
+
+
+def test_unexportable_allocation_names_the_process_stages_and_requirement(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An allocator whose memory cuIpcGetMemHandle rejects failed startup with a bare CUDA error."""
+    record: list[int] = []
+    install_fake_cuda(monkeypatch, record)
+
+    def reject_export(self: FakeStorage) -> None:
+        raise RuntimeError("CUDA error: invalid argument")
+
+    monkeypatch.setattr(FakeStorage, "_share_cuda_", reject_export)
+    spec = make_spec([(1, False), (None, False), (2, True)])
+    with pytest.raises(RuntimeError) as raised:
+        stage_workers.prewarm_cuda_ipc_export(spec, logging.getLogger("test"))
+    message = str(raised.value)
+    assert "'worker_0' (stages: stage_0)" in message
+    assert "cuda:1" in message
+    assert "cuIpcGetMemHandle" in message
+    assert "CUDA error: invalid argument" in message
+    assert stage_workers._cuda_ipc_warm_shares == []  # noqa: leading-underscore
+    assert process._prewarm_cuda_ipc_handles == []  # noqa: leading-underscore
 
 
 def test_cpu_and_child_process_stages_warm_nothing(
