@@ -1,0 +1,19 @@
+name: Close restricted author's pull requests
+
+on:
+  pull_request_target:
+    types: [opened, reopened]
+
+jobs:
+  close:
+    # timokolllin-cpu, author of #4748. The account ID survives a rename.
+    if: github.repository == 'sgl-project/sglang-omni' && github.event.pull_request.user.id == 243892584
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+    steps:
+      - name: Close pull request
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: gh api --method PATCH "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER" -f state=closed --silent
