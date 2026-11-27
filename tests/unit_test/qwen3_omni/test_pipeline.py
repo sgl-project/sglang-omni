@@ -11,6 +11,7 @@ from collections.abc import Mapping, Sequence
 from concurrent.futures import Future, ThreadPoolExecutor
 from copy import deepcopy
 from io import BytesIO
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Protocol
 from unittest.mock import AsyncMock, Mock
@@ -72,6 +73,7 @@ from sglang_omni.models.qwen3_omni.request_builders import (
     resolve_preprocessing_next_stages,
     resolve_preprocessing_next_stages_speech,
 )
+from sglang_omni.preprocessing import video as video_mod
 from sglang_omni.preprocessing.audio import decode_audio_bytes, ensure_audio_list_async
 from sglang_omni.preprocessing.resource_connector import (
     FramePool,
@@ -3376,6 +3378,93 @@ def test_preprocessing_stop_drops_videos_still_waiting_for_a_thread(
     scheduler.video_executor.shutdown(wait=True)
 
     assert sorted(started) == ["running-first", "running-second", "text"]
+    assert not worker.is_alive()
+
+
+def test_preprocessing_stop_lets_a_running_video_finish_its_queued_frame_work(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Stopping the stage cancelled frame jobs a running video waited on, and concurrent.futures.wait never returns for a job cancelled in a pool's queue, so the video's threads never ended and the stage process could not exit."""
+    frames = torch.zeros(4, 3, 4, 4, dtype=torch.uint8)
+    monkeypatch.setattr(
+        video_mod.qwen_vision, "get_video_reader_backend", lambda: "torchvision"
+    )
+    monkeypatch.setitem(
+        video_mod.qwen_vision.VIDEO_READER_BACKENDS,
+        "torchvision",
+        lambda video_options: (frames, 2.0),
+    )
+    expected, _ = video_mod.load_video_path(tmp_path / "video.mp4", decode_threads=16)
+    slices_submitted = threading.Event()
+    wait_for_futures = video_mod.wait
+
+    def wait_for_slices(futures: list[Future[None]]) -> object:
+        slices_submitted.set()
+        return wait_for_futures(futures, timeout=5)
+
+    monkeypatch.setattr(video_mod, "wait", wait_for_slices)
+
+    class Preprocessor:
+        async def process(
+            self,
+            payload: StagePayload,
+            request_inputs: RequestInputs,
+            video_lane: preprocessor_mod.VideoLane | None,
+        ) -> torch.Tensor:
+            assert video_lane is not None
+
+            def load_video() -> tuple[torch.Tensor, float]:
+                return video_mod.load_video_path(
+                    tmp_path / "video.mp4",
+                    decode_threads=16,
+                    frame_pool=video_lane.frame_pool,
+                )
+
+            resized, _ = await asyncio.get_running_loop().run_in_executor(
+                video_lane.media_executor, load_video
+            )
+            return resized
+
+    scheduler = qwen_stages.PreprocessingScheduler(
+        Preprocessor(),
+        video_request_worker_count=2,
+        stage_intraop_threads=1,
+        stage_cpu_count=2,
+        video_decode_threads=None,
+    )
+    frame_threads_held = threading.Barrier(3, timeout=5)
+    frame_threads_release = threading.Event()
+
+    def hold_frame_thread() -> None:
+        frame_threads_held.wait()
+        assert frame_threads_release.wait(timeout=5)
+
+    worker = threading.Thread(target=scheduler.start, daemon=True)
+    worker.start()
+    try:
+        held = [
+            scheduler.frame_pool.frame_executor.submit(hold_frame_thread)
+            for _ in range(2)
+        ]
+        frame_threads_held.wait()
+        scheduler.inbox.put(video_request("video"))
+        assert slices_submitted.wait(timeout=5)
+    finally:
+        scheduler.stop()
+        worker.join(timeout=3)
+        frame_threads_release.set()
+    result = scheduler.outbox.get(timeout=10)
+    for executor in (
+        scheduler.video_executor,
+        scheduler.media_executor,
+        scheduler.frame_pool.decode_executor,
+        scheduler.frame_pool.frame_executor,
+    ):
+        executor.shutdown(wait=True)
+
+    assert (result.request_id, result.type) == ("video", "result")
+    assert torch.equal(result.data, expected)
+    assert all(future.result() is None for future in held)
     assert not worker.is_alive()
 
 

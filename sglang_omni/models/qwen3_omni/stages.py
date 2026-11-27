@@ -1111,13 +1111,14 @@ class PreprocessingScheduler(SimpleScheduler[StagePayload, StagePayload]):
         self.videos_running = 0
 
     def shut_down_video_lane(self) -> None:
+        # note (ratish): a running video waits on its media, decode and frame jobs, and concurrent.futures.wait never returns for a job a pool cancels in its queue, so only video requests no thread has taken are dropped.
+        self.video_executor.shutdown(wait=False, cancel_futures=True)
         for executor in (
-            self.video_executor,
             self.media_executor,
             self.frame_pool.decode_executor,
             self.frame_pool.frame_executor,
         ):
-            executor.shutdown(wait=False, cancel_futures=True)
+            executor.shutdown(wait=False)
 
     def run_single(self, msg: IncomingMessage, loop: asyncio.AbstractEventLoop) -> None:
         request_inputs = read_request_inputs(msg.data)
