@@ -104,7 +104,7 @@ func TestMessagesRequest(t *testing.T) {
 			t.Errorf("cache %v: system %s", promptCache, system)
 		}
 		messages, _ := json.Marshal(b["messages"])
-		if string(messages) != `[{"role":"user","content":"hi"},{"role":"assistant","content":"yes"},{"role":"user","content":"go"}]` {
+		if string(messages) != `[{"content":"hi","role":"user"},{"content":"yes","role":"assistant"},{"content":"go","role":"user"}]` {
 			t.Errorf("cache %v: messages %s", promptCache, messages)
 		}
 		if stop, _ := json.Marshal(b["stop_sequences"]); string(stop) != `["\n\n"]` {
