@@ -143,6 +143,15 @@ def test_hash_media_item_keys_content_not_mutable_addresses() -> None:
     assert first != cache_key.hash_media_item("data:image/png,content-b")
 
 
+@pytest.mark.parametrize("size", [8193, 16384])
+def test_hash_file_sampled_covers_a_small_file_past_the_head(tmp_path, size) -> None:
+    # Without a separate tail window, the bytes after the head still count.
+    first, second = tmp_path / "a.wav", tmp_path / "b.wav"
+    first.write_bytes(b"\0" * size)
+    second.write_bytes(b"\0" * (size - 1) + b"\1")
+    assert cache_key.hash_file_sampled(first) != cache_key.hash_file_sampled(second)
+
+
 @pytest.mark.parametrize(
     "tensor",
     [
