@@ -5,7 +5,13 @@ from __future__ import annotations
 
 import json
 
-from scripts.docs_review.models import CheckView, Finding, Report, ReviewBundle
+from scripts.docs_review.models import (
+    CheckView,
+    CollectedFile,
+    Finding,
+    Report,
+    ReviewBundle,
+)
 
 
 def render_bundle(bundle: ReviewBundle) -> str:
@@ -35,15 +41,28 @@ def render_bundle(bundle: ReviewBundle) -> str:
             sort_keys=True,
         ),
     ]
-    for collected in bundle.files:
-        parts.append(
-            f"File {collected.file_path} change {collected.change} truncated={collected.truncated} missing={collected.missing}"
-        )
-        numbered: list[str] = []
-        for line_number, line in enumerate(collected.content.splitlines(), start=1):
-            numbered.append(f"{line_number}: {line}")
-        parts.append("\n".join(numbered))
+    parts.extend(render_collected_file(file) for file in bundle.files)
     return "\n".join(parts)
+
+
+def render_collected_file(file: CollectedFile) -> str:
+    header = f"File {file.file_path} change {file.change} truncated={file.truncated} missing={file.missing}"
+
+    def numbered(content: str, start: int) -> str:
+        return "\n".join(
+            f"{number}: {line}"
+            for number, line in enumerate(content.splitlines(), start)
+        )
+
+    if file.excerpts:
+        body = "\n...\n".join(
+            f"[Lines {part.line_start}-{part.line_end}]\n"
+            + numbered(part.content, part.line_start)
+            for part in file.excerpts
+        )
+    else:
+        body = numbered(file.content, 1)
+    return header + "\n" + body
 
 
 def render_markdown(report: Report) -> str:

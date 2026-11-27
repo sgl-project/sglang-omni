@@ -183,12 +183,20 @@ class ReviewRule:
 
 
 @dataclass(frozen=True, kw_only=True)
+class FileExcerpt:
+    line_start: int
+    line_end: int
+    content: str
+
+
+@dataclass(frozen=True, kw_only=True)
 class CollectedFile:
     file_path: str
     change: FileChange
     truncated: bool
     content: str
     missing: bool = False
+    excerpts: tuple[FileExcerpt, ...] = ()
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -225,6 +233,7 @@ class ReviewRequest:
     follow_up_authorized: bool = False
     retry_count: int = 0
     include_paths: list[str] = field(default_factory=list)
+    max_bundle_bytes: int | None = None
 
 
 class DocumentationReviewer(Protocol):

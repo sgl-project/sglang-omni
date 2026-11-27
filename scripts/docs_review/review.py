@@ -60,28 +60,68 @@ class ReviewRun:
     report: Report
 
 
+@dataclass(frozen=True, kw_only=True)
+class PreparedReview:
+    bundle: ReviewBundle
+    prompt_text: str
+    prompt_version: str
+    input_hash: str
+
+
+def prepare_review(request: ReviewRequest) -> PreparedReview:
+    bundle = collect_review_bundle(request)
+    prompt_text = read_prompt()
+    prompt_version = hashlib.sha256(prompt_text.encode()).hexdigest()
+    return PreparedReview(
+        bundle=bundle,
+        prompt_text=prompt_text,
+        prompt_version=prompt_version,
+        input_hash=review_input_sha256(bundle, request.model_settings, prompt_version),
+    )
+
+
 def run_review(
     request: ReviewRequest,
     reviewer: DocumentationReviewer | None,
     clock: Clock,
+    *,
+    prepared: PreparedReview | None = None,
 ) -> ReviewRun:
     if request.retry_count < 0:
         raise ValueError("retry_count must be zero or greater")
     else:
         pass
-    bundle = collect_review_bundle(request)
-    prompt_text = read_prompt()
-    prompt_version = hashlib.sha256(prompt_text.encode()).hexdigest()
-    input_hash = review_input_sha256(bundle, request.model_settings, prompt_version)
-    payload = bundle_payload(bundle, prompt_version, input_hash, request.model_settings)
+    prepared_review = prepared if prepared is not None else prepare_review(request)
+    bundle = prepared_review.bundle
+    payload = bundle_payload(
+        bundle,
+        prepared_review.prompt_version,
+        prepared_review.input_hash,
+        request.model_settings,
+    )
     with closing(ReviewLedger(request.ledger_path)) as ledger:
-        report = ledger.fetch(input_hash)
+        report = ledger.fetch(prepared_review.input_hash)
         if report is None:
             report = review_uncached(
-                request, reviewer, clock.now(), bundle, payload, prompt_text, ledger
+                request,
+                reviewer,
+                clock.now(),
+                bundle,
+                payload,
+                prepared_review.prompt_text,
+                ledger,
             )
         else:
-            pass
+            report = report.model_copy(
+                update={
+                    "base_commit_sha": bundle.base_commit_sha,
+                    "head_commit_sha": bundle.head_commit_sha,
+                    "merge_base_commit_sha": bundle.merge_base_commit_sha,
+                    "check_results": interpret_checks(
+                        bundle.checks, bundle.head_commit_sha
+                    ),
+                }
+            )
     return ReviewRun(bundle=bundle, payload=payload, report=report)
 
 
@@ -292,18 +332,31 @@ def validate_findings(
 def citation_matches(
     bundle: ReviewBundle, file_path: str, line_start: int, line_end: int, quote: str
 ) -> bool:
-    if quote == "":
+    if quote == "" or line_start < 1 or line_end < line_start:
         return False
     else:
         pass
     for collected in bundle.files:
         if collected.file_path == file_path:
-            lines = collected.content.splitlines()
-            if line_start < 1 or line_end > len(lines) or line_end < line_start:
+            if collected.excerpts:
+                for excerpt in collected.excerpts:
+                    if (
+                        excerpt.line_start <= line_start
+                        and line_end <= excerpt.line_end
+                    ):
+                        lines = excerpt.content.splitlines()
+                        start_offset = line_start - excerpt.line_start
+                        end_offset = line_end - excerpt.line_start + 1
+                        return quote in "\n".join(lines[start_offset:end_offset])
+                    else:
+                        pass
                 return False
             else:
-                excerpt = "\n".join(lines[line_start - 1 : line_end])
-                return quote in excerpt
+                lines = collected.content.splitlines()
+                if line_end > len(lines):
+                    return False
+                else:
+                    return quote in "\n".join(lines[line_start - 1 : line_end])
         else:
             pass
     return False
