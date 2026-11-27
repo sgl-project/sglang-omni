@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import os
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from contextlib import AbstractContextManager, nullcontext
 from typing import TYPE_CHECKING, Protocol
 
@@ -18,7 +18,10 @@ if TYPE_CHECKING:
     from torch.nn.attention import SDPBackend
 
     from sglang_omni.comm.data_ref import TransportKind
-    from sglang_omni.pipeline.stage_workers import StageLaunchConfig
+    from sglang_omni.pipeline.stage_workers import (
+        StageLaunchConfig,
+        StageWorkerProcessSpec,
+    )
     from sglang_omni.platforms.device_graph import DeviceGraphBackend
     from sglang_omni.profiler.torch_profiler import TorchProfiler
 else:
@@ -141,6 +144,33 @@ class OmniPlatform(DeviceMixin):
     ) -> dict[str, str]:
         """Return per-process environment overrides needed before child startup."""
         return {}
+
+    def get_process_placement_env(
+        self,
+        process_name: str,
+        stage_specs: list[StageLaunchConfig],
+        env: Mapping[str, str] | None = None,
+    ) -> dict[str, str]:
+        """Return env that places a whole worker process, for platforms that cannot place a stage by device index."""
+        return {}
+
+    def plan_process_placement(
+        self, process_specs: list[StageWorkerProcessSpec]
+    ) -> None:
+        """Forget placements of earlier pipelines and reserve what this pipeline's workers already pin, before any worker starts."""
+
+    def get_process_cpu_mask(
+        self, env: Mapping[str, str], gpu_ids: Iterable[int | None] = ()
+    ) -> set[int] | None:
+        """CPUs the worker's start env binds it to, which also bound its OMP thread count, or None for no binding."""
+        return None
+
+    def get_process_thread_budget(self) -> int | None:
+        """Threads one worker process can use, replacing the host-wide equal share, or None to keep the share."""
+        return None
+
+    def prepare_worker_process(self, gpu_ids: Iterable[int | None] = ()) -> None:
+        """Run once in a freshly spawned stage worker, before model construction."""
 
     def get_intra_node_transport(self) -> TransportKind:
         """Get TransportKind between devices on the same node"""

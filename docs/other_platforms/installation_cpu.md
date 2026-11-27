@@ -128,3 +128,30 @@ SGLANG_USE_CPU_ENGINE=1 sgl-omni serve \
 To explicitly select PyTorch native attention, including on AMX-capable Xeon CPUs, append `--asr.engine.attention_backend torch_native` to the server command.
 
 See the [Whisper cookbook](../cookbook/whisper_asr.md) for request parameters, supported response formats, and the SeedTTS WER benchmark.
+
+<a id="numa"></a>
+
+## NUMA placement
+
+Each stage worker process is bound to one NUMA node. By default the launcher
+picks the least-used node for each process, and every tensor-parallel rank gets
+its own node. Tensor-parallel groups choose their nodes first, before the other
+stages, so start order does not decide who shares. A warning is logged when
+there are more processes than nodes and two workers end up on the same node.
+
+`SGLANG_OMNI_CPU_NUMA_MAP` pins stages to nodes, using the node ids `lscpu`
+reports:
+
+```bash
+# one node per stage; a tp_size=2 stage takes two nodes joined by '+'
+SGLANG_OMNI_CPU_NUMA_MAP="thinker=0+1,talker=2" \
+SGLANG_USE_CPU_ENGINE=1 sgl-omni serve --model-path <model> --port 8000
+```
+
+Nodes named in the map are reserved, so other workers avoid them while free
+nodes remain. A stage must list either one node or `tp_size` nodes, and an
+unknown node id is rejected at startup.
+
+Setting `SGLANG_CPU_OMP_THREADS_BIND` yourself overrides the placement for that
+worker. The OMP thread count of each worker is capped to the size of its bound
+CPU set and to its share of the container CPU quota.

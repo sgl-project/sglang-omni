@@ -47,6 +47,7 @@ from sglang_omni.profiler.event_recorder import (
 )
 from sglang_omni.proto import AbortMessage, AdminResultMessage
 from sglang_omni.scheduling.message import StageScheduler
+from sglang_omni.utils.cpu import LAUNCHER_CPUS_ENV
 from sglang_omni.utils.gpu_compat import (
     apply_gpu_compat_env_defaults,
     get_gpu_compat_env_defaults,
@@ -203,7 +204,20 @@ class StageWorkerProcessSpec:
     failure_event: Event | None = field(default=None, repr=False, compare=False)
 
 
-def get_worker_process_env(spec: StageWorkerProcessSpec) -> dict[str, str]:
+def get_process_placement_env(
+    spec: StageWorkerProcessSpec, env: Mapping[str, str] | None
+) -> dict[str, str]:
+    """Env placing the whole process, which only CPU does."""
+    if not current_platform.is_cpu():
+        return {}
+    return current_platform.get_process_placement_env(
+        spec.process_name, list(spec.stage_specs), env=env
+    )
+
+
+def get_worker_process_env(
+    spec: StageWorkerProcessSpec, env: Mapping[str, str] | None = None
+) -> dict[str, str]:
     """Return the spawn-time env overrides for *spec*.
 
     Hard invariant: a TP stage (``tp_size > 1``) must own its OS process
@@ -211,6 +225,8 @@ def get_worker_process_env(spec: StageWorkerProcessSpec) -> dict[str, str]:
     tenant, so mixing a TP stage with any other stage in the same process group
     is a placement bug. A stage that owns native child processes also owns its
     process, which the platform may narrow to that stage's GPUs.
+
+    On CPU the platform also places the whole process, since CPU has no device index to place a stage with.
     """
     native = [s for s in spec.stage_specs if s.allow_child_processes]
     if native and len(spec.stage_specs) > 1:
@@ -218,16 +234,13 @@ def get_worker_process_env(spec: StageWorkerProcessSpec) -> dict[str, str]:
             "A stage that owns native child processes must own its OS process"
         )
     elif native:
-        env = current_platform.get_stage_process_env(native[0])
-        return {**env, NATIVE_GPUS_NARROWED_ENV: "true"} if env else {}
+        stage_env = current_platform.get_stage_process_env(native[0])
+        narrowed = {NATIVE_GPUS_NARROWED_ENV: "true"} if stage_env else {}
+        return {**stage_env, **narrowed, **get_process_placement_env(spec, env)}
     else:
         pass
     tp_stages = [s for s in spec.stage_specs if s.tp_size > 1]
-    if not tp_stages:
-        return {}
-    else:
-        pass
-    if len(tp_stages) > 1 or len(spec.stage_specs) > 1:
+    if tp_stages and (len(tp_stages) > 1 or len(spec.stage_specs) > 1):
         raise AssertionError(
             f"Process {spec.process_name!r} mixes a TP stage with other "
             "stages; TP stages must own their OS process exclusively. "
@@ -235,7 +248,10 @@ def get_worker_process_env(spec: StageWorkerProcessSpec) -> dict[str, str]:
         )
     else:
         pass
-    return current_platform.get_stage_process_env(tp_stages[0])
+    stage_env = (
+        current_platform.get_stage_process_env(tp_stages[0]) if tp_stages else {}
+    )
+    return {**stage_env, **get_process_placement_env(spec, env)}
 
 
 @contextmanager
@@ -246,16 +262,44 @@ def spawn_affinity(spec: StageWorkerProcessSpec) -> Generator[None, None, None]:
     that thread's mask, so every thread the child creates, including pools
     started while it imports its stages, stays on the planned CPUs.
     """
-    launcher_cpus = None if spec.cpu_affinity is None else os.sched_getaffinity(0)
-    if launcher_cpus is not None:
-        os.sched_setaffinity(0, spec.cpu_affinity)
+    planned_cpus = spec.cpu_affinity
+    on_cpu = current_platform.is_cpu()
+    if on_cpu:
+        planned_cpus = (
+            current_platform.get_process_cpu_mask(
+                os.environ, stage_gpu_ids(spec.stage_specs)
+            )
+            or planned_cpus
+        )
     else:
         pass
+    if not planned_cpus:
+        yield
+        return
+    launcher_cpus = os.sched_getaffinity(0)
+    target_cpus = launcher_cpus & set(planned_cpus) if on_cpu else set(planned_cpus)
+    if not target_cpus:
+        logger.warning(
+            "Process %s plans CPUs outside the launcher's allowed CPUs; starting it unbound.",
+            spec.process_name,
+        )
+        yield
+        return
+    previous_launcher_env = os.environ.get(LAUNCHER_CPUS_ENV)
+    if on_cpu:
+        # The child reads the topology before narrowing itself, but it inherits this narrowed mask.
+        os.environ[LAUNCHER_CPUS_ENV] = ",".join(map(str, sorted(launcher_cpus)))
+    else:
+        pass
+    os.sched_setaffinity(0, target_cpus)
     try:
         yield
     finally:
-        if launcher_cpus is not None:
-            os.sched_setaffinity(0, launcher_cpus)
+        os.sched_setaffinity(0, launcher_cpus)
+        if on_cpu and previous_launcher_env is None:
+            os.environ.pop(LAUNCHER_CPUS_ENV, None)
+        elif on_cpu:
+            os.environ[LAUNCHER_CPUS_ENV] = previous_launcher_env
         else:
             pass
 
@@ -287,23 +331,9 @@ def patched_spawn_env(
                 env_default_updates[key] = value
             else:
                 pass
-    default_threads = env_default_updates.get("OMP_NUM_THREADS", "")
-    if (
-        spec.cpu_affinity is not None
-        and default_threads.isdigit()
-        and int(default_threads) > len(spec.cpu_affinity)
-        and not any(
-            "OMP_NUM_THREADS" in stage_spec.written_env
-            for stage_spec in spec.stage_specs
-        )
-    ):
-        # note (Richard Wang): a derived default sized for the whole host would
-        # put more threads than CPUs on a bound process. Written values still win.
-        env_default_updates["OMP_NUM_THREADS"] = str(len(spec.cpu_affinity))
-    else:
-        pass
-
-    worker_process_env = get_worker_process_env(spec)
+    worker_process_env = get_worker_process_env(
+        spec, {**os.environ, **env_default_updates}
+    )
     compat_env_defaults = get_gpu_compat_env_defaults(
         {
             **os.environ,
@@ -311,6 +341,29 @@ def patched_spawn_env(
             **worker_process_env,
         }
     )
+    bound_cpus = (
+        current_platform.get_process_cpu_mask(
+            {**os.environ, **env_default_updates, **worker_process_env},
+            stage_gpu_ids(spec.stage_specs),
+        )
+        if current_platform.is_cpu()
+        else None
+    )
+    caps = [len(cpus) for cpus in (spec.cpu_affinity, bound_cpus) if cpus]
+    thread_cap = min(caps) if caps else None
+    planned_threads = env_default_updates.get("OMP_NUM_THREADS", "")
+    if (
+        thread_cap is not None
+        and planned_threads.isdigit()
+        and int(planned_threads) > thread_cap
+        and not any(
+            "OMP_NUM_THREADS" in stage_spec.written_env
+            for stage_spec in spec.stage_specs
+        )
+    ):
+        # note (Richard Wang): a derived default sized for the whole host would
+        # put more threads than CPUs on a bound process. Written values still win.
+        env_default_updates["OMP_NUM_THREADS"] = str(thread_cap)
     updates = {
         **env_default_updates,
         **compat_env_defaults,
@@ -323,7 +376,11 @@ def patched_spawn_env(
         and "OMP_NUM_THREADS" not in os.environ
         and "OMP_NUM_THREADS" not in updates
     ):
-        updates["OMP_NUM_THREADS"] = str(spec.cpu_threads)
+        updates["OMP_NUM_THREADS"] = str(
+            spec.cpu_threads
+            if thread_cap is None
+            else min(spec.cpu_threads, thread_cap)
+        )
         updates["SGLANG_OMNI_OMP_FROM_CPU_PLAN"] = "1"
         omp_source = "cpu_plan_fallback"
     else:
@@ -714,6 +771,10 @@ def stage_process_main(
     log = logging.getLogger(f"stage_workers.{spec.process_name}")
 
     try:
+        if current_platform.is_cpu():
+            current_platform.prepare_worker_process(stage_gpu_ids(spec.stage_specs))
+        else:
+            pass
         for stage_spec in spec.stage_specs:
             prepare_accelerator_environment(stage_spec, log)
         apply_gpu_compat_env_defaults()
