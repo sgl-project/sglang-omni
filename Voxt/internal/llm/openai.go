@@ -345,6 +345,7 @@ func (o *OpenAI) mentionsExtra(detail string) bool {
 }
 
 type oaChoice struct {
+	Index   int `json:"index"`
 	Message *struct {
 		Content *string `json:"content"`
 		Refusal *string `json:"refusal"`
@@ -434,6 +435,9 @@ func (o *OpenAI) readStream(ctx context.Context, body io.Reader, onDelta func(st
 			out.Usage = r.Usage.usage()
 		}
 		for _, c := range r.Choices {
+			if c.Index != 0 {
+				continue
+			}
 			if c.Delta != nil && c.Delta.Content != nil && *c.Delta.Content != "" {
 				text.WriteString(*c.Delta.Content)
 				onDelta(*c.Delta.Content)
