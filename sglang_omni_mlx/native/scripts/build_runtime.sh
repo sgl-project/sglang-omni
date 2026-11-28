@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Builds the native Qwen3-ASR runtime into a self-contained directory.
-# Note (XXXXRT666): MLX is built from a pinned main commit, since no release has
-# ml-explore/mlx#4791 yet, with scripts/mlx-patches applied in name order: each
-# is the MLX source change of the ml-explore/mlx pull request its name starts
-# with. The build is kept per commit and patch set under $work/mlx.
+# Note (XXXXRT666): MLX is built from the source of its v0.32.5 release, with
+# scripts/mlx-patches applied in name order: each is the MLX source change of
+# the ml-explore/mlx pull request its name starts with. The build is kept per
+# commit and patch set under $work/mlx.
 set -euo pipefail
 
 output="${1:?usage: build_runtime.sh <output-directory> [<work-directory>]}"
@@ -14,7 +14,7 @@ test "$(uname -m)" = arm64 || { echo "Apple Silicon is required" >&2; exit 1; }
 command -v uv >/dev/null || { echo "uv is required" >&2; exit 1; }
 
 deployment_target="${MACOSX_DEPLOYMENT_TARGET:-15.0}"
-mlx_commit=5598dfa0aeb94bb9f4ac462e2b02a1ff35f56c13
+mlx_commit=cfc675e9e59cb6ee29a647cf8fe87ef844eff879 # v0.32.5
 shopt -s nullglob
 mlx_patches=("$native_dir"/scripts/mlx-patches/*.patch)
 shopt -u nullglob
