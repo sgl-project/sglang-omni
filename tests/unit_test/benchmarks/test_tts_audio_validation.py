@@ -15,15 +15,24 @@ from benchmarks.tts_serving.spec import BenchmarkSpec
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("starts_with_riff", [False, True])
 @pytest.mark.parametrize(
     ("sample_rate_hz", "duration_ms", "expected_success"),
     [(8000, 60, True), (16000, 60, True), (24000, 50, True), (48000, 40, False)],
 )
 async def test_http_pcm_minimum_duration_uses_response_sample_rate(
-    sample_rate_hz: int, duration_ms: int, expected_success: bool
+    sample_rate_hz: int,
+    duration_ms: int,
+    expected_success: bool,
+    starts_with_riff: bool,
 ) -> None:
     """The benchmark misclassified PCM duration when the response was not 24 kHz."""
     pcm_samples = b"\x01\x00" * (sample_rate_hz * duration_ms // 1000)
+    # Raw samples can begin with the same bytes as a container marker.
+    if starts_with_riff:
+        pcm_samples = b"RIFF" + pcm_samples[4:]
+    else:
+        pass
 
     async def audio_response(request: web.Request) -> web.Response:
         assert (await request.json())["response_format"] == "pcm"
