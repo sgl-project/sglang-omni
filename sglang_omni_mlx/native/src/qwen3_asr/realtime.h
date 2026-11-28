@@ -3,7 +3,6 @@
 // then finalized.
 #pragma once
 
-#include <array>
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -91,15 +90,9 @@ void NoteForegroundRequest();
 // start on, when the audio before it was recognised otherwise.
 class RealtimeSession : public omni_server::RealtimeConnection {
 public:
-  using DecodeOverride = std::function<omni_common::TranscriptionResult(
-      const std::vector<float> &, const std::atomic<bool> &, RefreshReuse *)>;
-
   RealtimeSession(omni_server::TranscriptionWorker &worker,
                   const Qwen3ASRTranscriber &transcriber,
                   RealtimeSettings settings, Sender sender);
-  RealtimeSession(omni_server::TranscriptionWorker &worker,
-                  DecodeOverride decode_override, RealtimeSettings settings,
-                  Sender sender);
 
   bool Handle(const nlohmann::json &message) override;
   void Close() override;
@@ -126,6 +119,7 @@ public:
 private:
   friend struct tests::RealtimeSessionTestAccess;
 
+  // One segment owns its pending pause, speech epoch and metadata validity.
   struct Segment {
     int segment_id = 0;
     long start_sample = 0;
@@ -133,6 +127,10 @@ private:
     long last_submitted_refresh_end_sample = 0;
     long last_completed_refresh_end_sample = 0;
     long last_pause_speech_end_sample = 0;
+    std::optional<long> speech_epoch;
+    // The only retained hint belongs to this segment and dies with it.
+    std::optional<PauseRefreshHint> pending_pause;
+    bool pause_metadata_valid = true;
     std::optional<std::string> language;
     int decode_count = 0;
     std::string transcript;
@@ -146,39 +144,16 @@ private:
     std::shared_ptr<RefreshReuse> reuse;
   };
 
-  struct DeferredPauseHint {
-    PauseRefreshHint hint;
-    int segment_id = 0;
-    long speech_epoch = 0;
-  };
-
-  struct PauseRefreshStats {
-    uint64_t hints_received = 0;
-    std::array<uint64_t, kPauseHintDispositionCount> terminal_dispositions{};
-    uint64_t hints_deferred = 0;
-    uint64_t speech_metadata_invalid = 0;
-    uint64_t cadence_submissions = 0;
-    uint64_t immediate_pause_submissions = 0;
-    uint64_t deferred_pause_submissions = 0;
-  };
-
-  struct WorkerTiming {
-    std::optional<std::chrono::steady_clock::time_point> submitted_at;
-    std::optional<std::chrono::steady_clock::time_point> worker_started_at;
-    // Prefill and shadow setup precedes transcription; refresh uses worker
-    // start.
-    std::optional<std::chrono::steady_clock::time_point> execution_started_at;
-    std::optional<std::chrono::steady_clock::time_point> decode_finished_at;
-    std::optional<std::chrono::steady_clock::time_point> callback_finished_at;
-  };
-
   struct RefreshTiming {
     int decode_index = 0;
     RefreshSource source = RefreshSource::kNone;
     int segment_id = 0;
     long end_sample = 0;
     long speech_end_sample = 0;
-    WorkerTiming worker;
+    std::optional<std::chrono::steady_clock::time_point> submitted_at;
+    std::optional<std::chrono::steady_clock::time_point> worker_started_at;
+    std::optional<std::chrono::steady_clock::time_point> decode_finished_at;
+    std::optional<std::chrono::steady_clock::time_point> callback_finished_at;
     std::optional<std::chrono::steady_clock::time_point>
         preview_send_attempt_at;
   };
@@ -186,10 +161,10 @@ private:
   void Append(const nlohmann::json &audio,
               const nlohmann::json &preview_refresh,
               const nlohmann::json &speech_epoch, bool pause_hint_received);
-  void DiscardDeferredPauseHint(PauseHintDisposition disposition);
+  void DiscardPendingPauseHint(PauseHintDisposition disposition);
   void RecordPauseHintDisposition(
       PauseHintDisposition disposition,
-      std::optional<PauseRefreshHint> hint = std::nullopt, int segment_id = -1,
+      std::optional<PauseRefreshHint> hint = std::nullopt,
       long submitted_refresh_end_sample = -1,
       long completed_refresh_end_sample = -1);
   void LogAttribution(nlohmann::ordered_json event) const;
@@ -251,21 +226,20 @@ private:
   void FinalizeThrough(long end_sample);
 
   omni_server::TranscriptionWorker &worker_;
-  const Qwen3ASRTranscriber *transcriber_;
-  DecodeOverride decode_override_;
+  const Qwen3ASRTranscriber &transcriber_;
   const RealtimeSettings settings_;
 
-  // Session state; refreshes finish on the worker thread.
+  // mutex_ protects segment and pause state. Final handoff, speech resumption,
+  // rollover and Close consume a pending hint under this lock. A pending hint
+  // alone never submits work; refreshing_ covers a refresh from before submit
+  // until completion, so at most one is queued or running.
   std::mutex mutex_;
   std::condition_variable refresh_done_;
   std::optional<std::string> language_;
   bool preview_refresh_enabled_ = false;
   bool preview_refresh_defer_busy_enabled_ = false;
   std::atomic<bool> preview_refresh_attribution_enabled_ = false;
-  bool pause_refresh_metadata_valid_ = true;
-  std::optional<long> speech_epoch_;
-  std::optional<DeferredPauseHint> deferred_pause_hint_;
-  PauseRefreshStats pause_refresh_stats_;
+  uint64_t pause_hints_received_ = 0;
   int next_refresh_decode_index_ = 1;
   bool attribution_summary_logged_ = false;
   bool pause_refresh_final_handoff_ = false;

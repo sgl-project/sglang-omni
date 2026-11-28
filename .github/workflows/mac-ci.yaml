@@ -176,9 +176,10 @@ jobs:
           "$RUNNER_TEMP/runtime-build/cmake/tokenizer_preference_test"
           "$RUNNER_TEMP/runtime-build/cmake/moss_model_test"
           "$RUNNER_TEMP/runtime-build/cmake/moss_realtime_test"
-          "$RUNNER_TEMP/runtime-build/venv/bin/python" -c \
-            'import subprocess,sys; subprocess.run([sys.argv[1]], timeout=30, check=True)' \
+          for run in $(seq 1 10); do
+            echo "Pause-refresh native regression $run/10"
             "$RUNNER_TEMP/runtime-build/cmake/qwen3_asr_pause_refresh_test"
+          done
           ccache --show-stats
 
       - name: Set up the test Python

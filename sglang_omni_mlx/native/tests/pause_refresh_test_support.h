@@ -1,13 +1,30 @@
 // SPDX-License-Identifier: Apache-2.0
 #pragma once
 
+#include <atomic>
 #include <chrono>
+#include <functional>
 #include <future>
+#include <memory>
 #include <mutex>
 #include <stdexcept>
 #include <string>
+#include <utility>
+
+#include "qwen3_asr/realtime.h"
 
 namespace qwen3_asr::tests {
+
+using PauseRefreshTestDecoder = Qwen3ASRTranscriber::Decoder;
+
+inline std::shared_ptr<RealtimeSession> MakePauseRefreshSession(
+    omni_server::TranscriptionWorker &worker, PauseRefreshTestDecoder decoder,
+    RealtimeSettings settings, omni_server::RealtimeConnection::Sender sender) {
+  static Qwen3ASRTranscriber transcriber;
+  transcriber.decoder = std::move(decoder);
+  return std::make_shared<RealtimeSession>(worker, transcriber, settings,
+                                           std::move(sender));
+}
 
 inline constexpr auto kPauseRefreshTestWait = std::chrono::seconds(10);
 

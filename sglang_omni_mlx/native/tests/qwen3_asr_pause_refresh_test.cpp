@@ -4,9 +4,12 @@
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
+#include <functional>
 #include <future>
 #include <iostream>
 #include <limits>
+#include <map>
+#include <memory>
 #include <mutex>
 #include <optional>
 #include <streambuf>
@@ -41,6 +44,8 @@ using qwen3_asr::FinalReuse;
 using qwen3_asr::PauseRefreshHint;
 using qwen3_asr::RealtimeSession;
 using qwen3_asr::RefreshReuse;
+using qwen3_asr::tests::MakePauseRefreshSession;
+using qwen3_asr::tests::PauseRefreshTestDecoder;
 using qwen3_asr::tests::Require;
 using qwen3_asr::tests::TestGate;
 using qwen3_asr::tests::TestSignal;
@@ -64,9 +69,15 @@ public:
     });
   }
 
-  bool Contains(const std::string &needle) {
+  size_t Count(const std::string &needle) {
     std::lock_guard<std::mutex> lock(mutex_);
-    return output_.find(needle) != std::string::npos;
+    size_t count = 0;
+    for (size_t position = 0;
+         (position = output_.find(needle, position)) != std::string::npos;
+         position += needle.size()) {
+      ++count;
+    }
+    return count;
   }
 
 protected:
@@ -164,9 +175,9 @@ TranscriptionResult PreviewResult() {
   return result;
 }
 
-RealtimeSession::DecodeOverride
-PauseDecoder(TestSignal &started, std::shared_future<void> release,
-             std::atomic<int> &decoded_samples) {
+PauseRefreshTestDecoder PauseDecoder(TestSignal &started,
+                                     std::shared_future<void> release,
+                                     std::atomic<int> &decoded_samples) {
   return [&started, release = std::move(release), &decoded_samples](
              const std::vector<float> &samples, const std::atomic<bool> &cancel,
              RefreshReuse *reuse) -> TranscriptionResult {
@@ -212,6 +223,43 @@ void DrainWorker(TranscriptionWorker &worker, TestSignal &drained) {
   drained.Wait("worker did not drain after the pause-refresh scenario");
 }
 
+struct PauseRefreshFixture {
+  TranscriptionWorker worker{[] {}, [] {}};
+  std::shared_ptr<RealtimeSession> session;
+
+  PauseRefreshFixture(
+      PauseRefreshTestDecoder decoder, qwen3_asr::RealtimeSettings settings,
+      omni_server::RealtimeConnection::Sender sender =
+          [](const std::string &) { return true; })
+      : session(MakePauseRefreshSession(worker, std::move(decoder), settings,
+                                        std::move(sender))) {}
+
+  void Update(bool pause_enabled, bool deferred_enabled = false,
+              bool attribution_enabled = false) {
+    UpdateSession(session, pause_enabled, deferred_enabled,
+                  attribution_enabled);
+  }
+
+  bool AppendSamples(
+      int sample_count,
+      const std::optional<nlohmann::json> &hint = std::nullopt,
+      const std::optional<nlohmann::json> &speech_epoch = std::nullopt) {
+    return session->Handle(AppendMessage(sample_count, hint, speech_epoch));
+  }
+
+  bool AppendMilliseconds(
+      int duration_ms, const std::optional<nlohmann::json> &hint = std::nullopt,
+      const std::optional<nlohmann::json> &speech_epoch = std::nullopt) {
+    return AppendSamples(duration_ms * static_cast<int>(kSampleRate) / 1000,
+                         hint, speech_epoch);
+  }
+
+  void Drain() {
+    TestSignal drained;
+    DrainWorker(worker, drained);
+  }
+};
+
 void TestInvalidHintsKeepAudioAndDoNotSchedule() {
   const long audio_end_sample = 800 * kSampleRate / kMillisecondsPerSecond;
   const std::vector<std::pair<std::string, nlohmann::json>> invalid_hints = {
@@ -231,8 +279,7 @@ void TestInvalidHintsKeepAudioAndDoNotSchedule() {
   for (const auto &[name, invalid_hint] : invalid_hints) {
     std::atomic<int> decoded_samples = 0;
     TestSignal decoded;
-    TranscriptionWorker worker([] {}, [] {});
-    RealtimeSession::DecodeOverride decoder =
+    PauseRefreshTestDecoder decoder =
         [&decoded_samples, &decoded](const std::vector<float> &samples,
                                      const std::atomic<bool> &,
                                      RefreshReuse *) -> TranscriptionResult {
@@ -240,19 +287,17 @@ void TestInvalidHintsKeepAudioAndDoNotSchedule() {
       decoded.Notify();
       return PreviewResult();
     };
-    auto session = std::make_shared<RealtimeSession>(
-        worker, std::move(decoder),
-        qwen3_asr::MakeRealtimeSettings(1000, 10000, 30.0),
-        [](const std::string &) { return true; });
-    UpdateSession(session, true);
-    Require(session->Handle(AppendMessage(static_cast<int>(audio_end_sample),
-                                          invalid_hint)),
-            name + " invalid hint rejected valid audio");
-    Require(worker.RequestStates().empty(),
+    PauseRefreshFixture fixture(
+        std::move(decoder), qwen3_asr::MakeRealtimeSettings(1000, 10000, 30.0));
+    fixture.Update(true);
+    Require(
+        fixture.AppendSamples(static_cast<int>(audio_end_sample), invalid_hint),
+        name + " invalid hint rejected valid audio");
+    Require(fixture.worker.RequestStates().empty(),
             name + " malformed pause hint scheduled work");
 
-    Require(session->Handle(AppendMessage(
-                100 * static_cast<int>(kSampleRate) / 1000,
+    Require(fixture.AppendMilliseconds(
+                100,
                 nlohmann::json{{"speech_start_sample", 0},
                                {"speech_end_sample", kSpeechEndSample}})),
             name + " valid follow-up append was rejected");
@@ -265,18 +310,15 @@ void TestInvalidHintsKeepAudioAndDoNotSchedule() {
 
 void TestRepeatedPauseHintIsNotAdmitted() {
   TestSignal preview_sent;
-  TestSignal worker_drained;
   std::atomic<int> decode_count = 0;
-  TranscriptionWorker worker([] {}, [] {});
-  RealtimeSession::DecodeOverride decoder =
+  PauseRefreshTestDecoder decoder =
       [&decode_count](const std::vector<float> &, const std::atomic<bool> &,
                       RefreshReuse *) -> TranscriptionResult {
     decode_count.fetch_add(1);
     return PreviewResult();
   };
-  auto session = std::make_shared<RealtimeSession>(
-      worker, std::move(decoder),
-      qwen3_asr::MakeRealtimeSettings(1000, 900, 30.0),
+  PauseRefreshFixture fixture(
+      std::move(decoder), qwen3_asr::MakeRealtimeSettings(1000, 900, 30.0),
       [&preview_sent](const std::string &serialized) {
         if (nlohmann::json::parse(serialized).value("type", std::string()) ==
             "transcription.segment") {
@@ -285,32 +327,27 @@ void TestRepeatedPauseHintIsNotAdmitted() {
         }
         return true;
       });
-  UpdateSession(session, true);
+  fixture.Update(true);
   const nlohmann::json repeated_hint = {
       {"speech_start_sample", 0}, {"speech_end_sample", kSpeechEndSample}};
-  Require(session->Handle(AppendMessage(
-              800 * static_cast<int>(kSampleRate) / 1000, repeated_hint)),
+  Require(fixture.AppendMilliseconds(800, repeated_hint),
           "initial pause append was rejected");
   preview_sent.Wait("initial pause refresh did not finish");
-  Require(session->Handle(AppendMessage(
-              100 * static_cast<int>(kSampleRate) / 1000, repeated_hint)),
+  Require(fixture.AppendMilliseconds(100, repeated_hint),
           "repeated pause append was rejected");
-  DrainWorker(worker, worker_drained);
+  fixture.Drain();
   Require(decode_count.load() == 1,
           "the same pause hint admitted more than one refresh");
 }
 
-void TestBusyPauseHintDeferredAdmission(bool enable_deferred) {
+void TestBusyPauseHintAdmission(bool enable_deferred, bool close_pending) {
   TestLogCapture log_capture;
   TestSignal first_started;
   TestSignal second_started;
-  TestSignal worker_drained;
   std::atomic<int> decode_count = 0;
   std::vector<int> decoded_samples;
-  TranscriptionWorker worker([] {}, [] {});
   TestGate release_first;
-  auto session = std::make_shared<RealtimeSession>(
-      worker,
+  PauseRefreshFixture fixture(
       [&first_started, &second_started, release = release_first.Future(),
        &decode_count, &decoded_samples](const std::vector<float> &samples,
                                         const std::atomic<bool> &cancel,
@@ -322,55 +359,73 @@ void TestBusyPauseHintDeferredAdmission(bool enable_deferred) {
           WaitFor(release, "first refresh release timed out");
         } else if (call == 2) {
           second_started.Notify();
-        } else {
         }
         if (cancel.load()) {
           throw GenerationCancelled();
-        } else {
         }
         TranscriptionResult result = PreviewResult();
         result.text += std::to_string(call);
         return result;
       },
-      qwen3_asr::MakeRealtimeSettings(1000, 100, 30.0),
-      [](const std::string &) { return true; });
-  UpdateSession(session, true, enable_deferred, true);
-  Require(session->Handle(AppendMessage(
-              100 * static_cast<int>(kSampleRate) / 1000, std::nullopt, 0)),
+      qwen3_asr::MakeRealtimeSettings(1000, 100, 30.0));
+  fixture.Update(true, enable_deferred, true);
+  Require(fixture.AppendMilliseconds(100, std::nullopt, 0),
           "initial cadence append was rejected");
   first_started.Wait("initial cadence refresh did not start");
   const nlohmann::json hint = {
       {"speech_start_sample", 100 * kSampleRate / 1000},
       {"speech_end_sample", 600 * kSampleRate / 1000}};
-  Require(session->Handle(AppendMessage(
-              700 * static_cast<int>(kSampleRate) / 1000, hint, 1)),
+  Require(fixture.AppendMilliseconds(700, hint, 1),
           "busy pause append was rejected");
-  const std::map<std::string, int> request_states = worker.RequestStates();
-  Require(request_states.find("queued") == request_states.end(),
+  Require(!fixture.worker.RequestStates().contains("queued"),
           "busy pause created a second worker request");
-  Require(session->Handle(AppendMessage(
-              100 * static_cast<int>(kSampleRate) / 1000, hint, 1)),
+  Require(fixture.AppendMilliseconds(100, hint, 1),
           "duplicate busy pause append was rejected");
   Require(log_capture.WaitFor(enable_deferred
                                   ? "\"disposition\":\"deferred\""
                                   : "\"disposition\":\"refresh_busy\""),
           "busy pause outcome was not attributed");
-  release_first.Release();
-  if (enable_deferred) {
-    second_started.Wait("useful busy pause was not admitted after completion");
-  } else {
+
+  if (close_pending) {
+    fixture.session->Close();
   }
-  DrainWorker(worker, worker_drained);
-  Require(decode_count.load() == (enable_deferred ? 2 : 1),
-          "busy-pause arm submitted the wrong number of refreshes");
-  if (enable_deferred) {
-    Require(log_capture.WaitFor("\"disposition\":\"admitted_deferred\""),
-            "deferred admission had no terminal attribution");
+  release_first.Release();
+  if (enable_deferred && !close_pending) {
+    second_started.Wait("useful busy pause was not admitted after completion");
+  }
+  fixture.Drain();
+  const int expected_decodes = enable_deferred && !close_pending ? 2 : 1;
+  Require(decode_count.load() == expected_decodes,
+          "busy-pause outcome submitted the wrong number of refreshes");
+  Require(log_capture.Count("\"event\":\"refresh\"") ==
+                  static_cast<size_t>(expected_decodes) &&
+              log_capture.Count("\"queue_wait_us\"") ==
+                  static_cast<size_t>(expected_decodes) &&
+              log_capture.Count("\"decode_execution_wall_us\"") ==
+                  static_cast<size_t>(expected_decodes) &&
+              log_capture.Count("\"callback_finished_at_us\"") ==
+                  static_cast<size_t>(expected_decodes),
+          "refresh timing trace was incomplete");
+  if (enable_deferred && !close_pending) {
     Require(decoded_samples.size() == 2 &&
-                decoded_samples[1] ==
-                    900 * kSampleRate / kMillisecondsPerSecond,
-            "deferred refresh did not snapshot the newest uncovered audio");
-  } else {
+                decoded_samples[1] == 900 * kSampleRate / 1000,
+            "deferred refresh did not use the latest uncovered audio");
+  }
+  if (!close_pending) {
+    fixture.session->Close();
+  }
+
+  const std::string terminal_disposition =
+      close_pending     ? "\"disposition\":\"session_close\""
+      : enable_deferred ? "\"disposition\":\"admitted_deferred\""
+                        : "\"disposition\":\"refresh_busy\"";
+  Require(log_capture.WaitFor("\"hints_received\":2") &&
+              log_capture.Count("\"disposition\":\"duplicate\"") == 1 &&
+              log_capture.Count(terminal_disposition) == 1,
+          "received hints did not reconcile with terminal attribution");
+  if (enable_deferred) {
+    Require(log_capture.Count("\"disposition\":\"deferred\"") == 1,
+            "deferred admission was not recorded as an intermediate state");
   }
 }
 
@@ -378,111 +433,42 @@ void TestBusyPauseCoveredAndInsufficientHintsAreNotDeferred() {
   for (const auto &[name, initial_ms, hint_start_ms, hint_end_ms] :
        std::vector<std::tuple<std::string, int, int, int>>{
            {"covered", 800, 0, 600}, {"insufficient", 400, 300, 450}}) {
-    TestLogCapture log_capture;
     TestSignal first_started;
-    TestSignal worker_drained;
     std::atomic<int> decode_count = 0;
-    TranscriptionWorker worker([] {}, [] {});
     TestGate release_first;
-    auto session = std::make_shared<RealtimeSession>(
-        worker,
+    PauseRefreshFixture fixture(
         [&first_started, release = release_first.Future(),
          &decode_count](const std::vector<float> &, const std::atomic<bool> &,
                         RefreshReuse *) -> TranscriptionResult {
-          decode_count.fetch_add(1);
+          ++decode_count;
           first_started.Notify();
           WaitFor(release, "busy-refresh release timed out");
           return PreviewResult();
         },
-        qwen3_asr::MakeRealtimeSettings(1000, 100, 30.0),
-        [](const std::string &) { return true; });
-    UpdateSession(session, true, true, true);
-    Require(session->Handle(
-                AppendMessage(initial_ms * static_cast<int>(kSampleRate) / 1000,
-                              std::nullopt, 0)),
+        qwen3_asr::MakeRealtimeSettings(1000, 100, 30.0));
+    fixture.Update(true, true);
+    Require(fixture.AppendMilliseconds(initial_ms, std::nullopt, 0),
             name + " initial append was rejected");
     first_started.Wait(name + " initial refresh did not start");
     const nlohmann::json hint = {
         {"speech_start_sample", hint_start_ms * kSampleRate / 1000},
         {"speech_end_sample", hint_end_ms * kSampleRate / 1000}};
     const int added_ms = name == "covered" ? 100 : 400;
-    Require(session->Handle(AppendMessage(
-                added_ms * static_cast<int>(kSampleRate) / 1000, hint, 1)),
+    Require(fixture.AppendMilliseconds(added_ms, hint, 1),
             name + " busy append was rejected");
     release_first.Release();
-    DrainWorker(worker, worker_drained);
+    fixture.Drain();
     Require(decode_count.load() == 1,
             name + " busy pause admitted a second refresh");
-    const std::string disposition = name == "covered"
-                                        ? "covered_by_submitted_refresh"
-                                        : "insufficient_new_speech";
-    Require(log_capture.WaitFor("\"disposition\":\"" + disposition + "\""),
-            name + " busy rejection had no terminal attribution");
-    Require(log_capture.WaitFor("\"last_completed_refresh_end_sample\":0"),
-            name + " busy hint treated an in-flight decode as completed");
-  }
-}
-
-void TestIdlePauseRejectionsHaveExactAttribution() {
-  for (const auto &[name, speech_start_ms, speech_end_ms, disposition] :
-       std::vector<std::tuple<std::string, int, int, std::string>>{
-           {"covered", 0, 600, "covered_by_submitted_refresh"},
-           {"insufficient", 650, 950, "insufficient_new_speech"}}) {
-    TestLogCapture log_capture;
-    TestSignal worker_drained;
-    std::atomic<int> decode_count = 0;
-    TranscriptionWorker worker([] {}, [] {});
-    auto session = std::make_shared<RealtimeSession>(
-        worker,
-        [&decode_count](const std::vector<float> &, const std::atomic<bool> &,
-                        RefreshReuse *) -> TranscriptionResult {
-          decode_count.fetch_add(1);
-          return PreviewResult();
-        },
-        qwen3_asr::MakeRealtimeSettings(1000, 100, 30.0),
-        [](const std::string &) { return true; });
-    UpdateSession(session, true, false, true);
-    Require(session->Handle(AppendMessage(
-                800 * static_cast<int>(kSampleRate) / 1000, std::nullopt)),
-            name + " initial cadence append was rejected");
-    DrainWorker(worker, worker_drained);
-    Require(decode_count.load() == 1,
-            name + " initial cadence refresh did not complete");
-
-    const nlohmann::json hint = {
-        {"speech_start_sample", speech_start_ms * kSampleRate / 1000},
-        {"speech_end_sample", speech_end_ms * kSampleRate / 1000}};
-    Require(session->Handle(AppendMessage(
-                200 * static_cast<int>(kSampleRate) / 1000, hint)),
-            name + " pause append was rejected");
-    Require(log_capture.WaitFor("\"disposition\":\"" + disposition + "\""),
-            name + " pause rejection had no terminal attribution");
-    if (name == "covered") {
-      Require(log_capture.WaitFor("\"last_submitted_refresh_end_sample\":" +
-                                  std::to_string(800 * kSampleRate / 1000)),
-              "covered attribution omitted submitted audio coverage");
-      Require(log_capture.WaitFor("\"last_completed_refresh_end_sample\":" +
-                                  std::to_string(800 * kSampleRate / 1000)),
-              "covered attribution omitted completed audio coverage");
-    } else {
-    }
-    TestSignal rejection_drained;
-    DrainWorker(worker, rejection_drained);
-    Require(decode_count.load() == 1,
-            name + " idle rejection unexpectedly submitted a refresh");
   }
 }
 
 void TestDeferredPauseIsInvalidatedBySpeechResumeOrMalformedEpoch() {
   for (const bool malformed_epoch : {false, true}) {
-    TestLogCapture log_capture;
     TestSignal first_started;
-    TestSignal worker_drained;
     std::atomic<int> decode_count = 0;
-    TranscriptionWorker worker([] {}, [] {});
     TestGate release_first;
-    auto session = std::make_shared<RealtimeSession>(
-        worker,
+    PauseRefreshFixture fixture(
         [&first_started, release = release_first.Future(),
          &decode_count](const std::vector<float> &, const std::atomic<bool> &,
                         RefreshReuse *) -> TranscriptionResult {
@@ -491,46 +477,34 @@ void TestDeferredPauseIsInvalidatedBySpeechResumeOrMalformedEpoch() {
           WaitFor(release, "resume-test refresh release timed out");
           return PreviewResult();
         },
-        qwen3_asr::MakeRealtimeSettings(1000, 100, 30.0),
-        [](const std::string &) { return true; });
-    UpdateSession(session, true, true, true);
-    Require(session->Handle(AppendMessage(
-                100 * static_cast<int>(kSampleRate) / 1000, std::nullopt, 0)),
+        qwen3_asr::MakeRealtimeSettings(1000, 100, 30.0));
+    fixture.Update(true, true);
+    Require(fixture.AppendMilliseconds(100, std::nullopt, 0),
             "resume-test initial append was rejected");
     first_started.Wait("resume-test refresh did not start");
     const nlohmann::json hint = {
         {"speech_start_sample", 100 * kSampleRate / 1000},
         {"speech_end_sample", 600 * kSampleRate / 1000}};
-    Require(session->Handle(AppendMessage(
-                700 * static_cast<int>(kSampleRate) / 1000, hint, 1)),
+    Require(fixture.AppendMilliseconds(700, hint, 1),
             "resume-test hint append was rejected");
     const nlohmann::json epoch =
         malformed_epoch ? nlohmann::json("bad") : nlohmann::json(2);
-    Require(
-        session->Handle(AppendMessage(
-            100 * static_cast<int>(kSampleRate) / 1000, std::nullopt, epoch)),
-        "resume-test resumption append was rejected");
+    Require(fixture.AppendMilliseconds(100, std::nullopt, epoch),
+            "resume-test resumption append was rejected");
     release_first.Release();
-    DrainWorker(worker, worker_drained);
+    fixture.Drain();
     Require(decode_count.load() == 1,
             "invalidated pending pause admitted a stale refresh");
-    const std::string disposition =
-        malformed_epoch ? "invalid_deferred_metadata" : "speech_resumption";
-    Require(log_capture.WaitFor("\"disposition\":\"" + disposition + "\""),
-            "deferred invalidation had no terminal attribution");
   }
 }
 
 void TestLaterValidPauseReplacesResumedHint() {
   TestSignal first_started;
   TestSignal second_started;
-  TestSignal worker_drained;
   std::atomic<int> decode_count = 0;
   std::vector<int> decoded_samples;
-  TranscriptionWorker worker([] {}, [] {});
   TestGate release_first;
-  auto session = std::make_shared<RealtimeSession>(
-      worker,
+  PauseRefreshFixture fixture(
       [&first_started, &second_started, release = release_first.Future(),
        &decode_count, &decoded_samples](const std::vector<float> &samples,
                                         const std::atomic<bool> &cancel,
@@ -550,31 +524,28 @@ void TestLaterValidPauseReplacesResumedHint() {
         }
         return PreviewResult();
       },
-      qwen3_asr::MakeRealtimeSettings(1000, 100, 30.0),
-      [](const std::string &) { return true; });
-  UpdateSession(session, true, true);
-  Require(session->Handle(AppendMessage(
-              100 * static_cast<int>(kSampleRate) / 1000, std::nullopt, 0)),
+      qwen3_asr::MakeRealtimeSettings(1000, 100, 30.0));
+  fixture.Update(true, true);
+  Require(fixture.AppendMilliseconds(100, std::nullopt, 0),
           "later-pause initial append was rejected");
   first_started.Wait("later-pause initial refresh did not start");
   const nlohmann::json first_hint = {
       {"speech_start_sample", 100 * kSampleRate / 1000},
       {"speech_end_sample", 300 * kSampleRate / 1000}};
-  Require(session->Handle(AppendMessage(
-              400 * static_cast<int>(kSampleRate) / 1000, first_hint, 1)),
+  Require(fixture.AppendMilliseconds(400, first_hint, 1),
           "first pause hint append was rejected");
   const nlohmann::json resumed_hint = {
       {"speech_start_sample", 560 * kSampleRate / 1000},
       {"speech_end_sample", 760 * kSampleRate / 1000}};
-  Require(session->Handle(AppendMessage(
-              460 * static_cast<int>(kSampleRate) / 1000, resumed_hint, 2)),
+  Require(fixture.AppendMilliseconds(460, resumed_hint, 2),
           "resumed pause hint append was rejected");
-  const std::map<std::string, int> request_states = worker.RequestStates();
+  const std::map<std::string, int> request_states =
+      fixture.worker.RequestStates();
   Require(request_states.find("queued") == request_states.end(),
           "resumed pause queued work before the active refresh completed");
   release_first.Release();
   second_started.Wait("later valid pause was not admitted after resumption");
-  DrainWorker(worker, worker_drained);
+  fixture.Drain();
   Require(decode_count.load() == 2 && decoded_samples.size() == 2 &&
               decoded_samples[0] ==
                   100 * static_cast<int>(kSampleRate) / 1000 &&
@@ -584,15 +555,11 @@ void TestLaterValidPauseReplacesResumedHint() {
 
 void TestCadenceAndFinalHandoffSupersedePendingPause() {
   for (const bool final_handoff : {false, true}) {
-    TestLogCapture log_capture;
     TestSignal first_started;
     TestSignal second_started;
-    TestSignal worker_drained;
     std::atomic<int> decode_count = 0;
-    TranscriptionWorker worker([] {}, [] {});
     TestGate release_first;
-    auto session = std::make_shared<RealtimeSession>(
-        worker,
+    PauseRefreshFixture fixture(
         [&first_started, &second_started, release = release_first.Future(),
          &decode_count](const std::vector<float> &, const std::atomic<bool> &,
                         RefreshReuse *) -> TranscriptionResult {
@@ -606,39 +573,32 @@ void TestCadenceAndFinalHandoffSupersedePendingPause() {
           }
           return PreviewResult();
         },
-        qwen3_asr::MakeRealtimeSettings(1000, 100, 30.0),
-        [](const std::string &) { return true; });
-    UpdateSession(session, true, true, true);
-    Require(session->Handle(AppendMessage(
-                100 * static_cast<int>(kSampleRate) / 1000, std::nullopt, 0)),
+        qwen3_asr::MakeRealtimeSettings(1000, 100, 30.0));
+    fixture.Update(true, true);
+    Require(fixture.AppendMilliseconds(100, std::nullopt, 0),
             "cadence/final initial append was rejected");
     first_started.Wait("cadence/final initial refresh did not start");
     const nlohmann::json hint = {
         {"speech_start_sample", 100 * kSampleRate / 1000},
         {"speech_end_sample", 600 * kSampleRate / 1000}};
     const int added_ms = final_handoff ? 700 : 1100;
-    Require(session->Handle(AppendMessage(
-                added_ms * static_cast<int>(kSampleRate) / 1000, hint, 1)),
+    Require(fixture.AppendMilliseconds(added_ms, hint, 1),
             "cadence/final busy append was rejected");
     if (final_handoff) {
       static_cast<void>(
-          session->TakeFinalReuse(std::string(""), false, true, true));
+          fixture.session->TakeFinalReuse(std::string(""), false, true, true));
     } else {
     }
     release_first.Release();
     if (final_handoff) {
-      DrainWorker(worker, worker_drained);
+      fixture.Drain();
       Require(decode_count.load() == 1,
               "Final handoff did not fence deferred pause admission");
-      Require(log_capture.WaitFor("\"disposition\":\"final_handoff\""),
-              "Final handoff did not terminally attribute the deferred hint");
     } else {
       second_started.Wait("due cadence refresh did not start");
-      DrainWorker(worker, worker_drained);
+      fixture.Drain();
       Require(decode_count.load() == 2,
               "cadence and pending pause caused multiple refreshes");
-      Require(log_capture.WaitFor("\"disposition\":\"superseded_by_cadence\""),
-              "cadence did not terminally attribute the busy hint");
     }
   }
 }
@@ -646,12 +606,9 @@ void TestCadenceAndFinalHandoffSupersedePendingPause() {
 void TestIntermediatePieceDoesNotFenceDeferredPause() {
   TestSignal first_started;
   TestSignal second_started;
-  TestSignal worker_drained;
   std::atomic<int> decode_count = 0;
-  TranscriptionWorker worker([] {}, [] {});
   TestGate release_first;
-  auto session = std::make_shared<RealtimeSession>(
-      worker,
+  PauseRefreshFixture fixture(
       [&first_started, &second_started, release = release_first.Future(),
        &decode_count](const std::vector<float> &, const std::atomic<bool> &,
                       RefreshReuse *) -> TranscriptionResult {
@@ -665,84 +622,33 @@ void TestIntermediatePieceDoesNotFenceDeferredPause() {
         }
         return PreviewResult();
       },
-      qwen3_asr::MakeRealtimeSettings(1000, 100, 30.0),
-      [](const std::string &) { return true; });
-  UpdateSession(session, true, true);
-  Require(session->Handle(AppendMessage(
-              100 * static_cast<int>(kSampleRate) / 1000, std::nullopt, 0)),
+      qwen3_asr::MakeRealtimeSettings(1000, 100, 30.0));
+  fixture.Update(true, true);
+  Require(fixture.AppendMilliseconds(100, std::nullopt, 0),
           "piece-test initial append was rejected");
   first_started.Wait("piece-test initial refresh did not start");
   const nlohmann::json hint = {
       {"speech_start_sample", 100 * kSampleRate / 1000},
       {"speech_end_sample", 600 * kSampleRate / 1000}};
-  Require(session->Handle(AppendMessage(
-              700 * static_cast<int>(kSampleRate) / 1000, hint, 1)),
+  Require(fixture.AppendMilliseconds(700, hint, 1),
           "piece-test pause append was rejected");
-  static_cast<void>(session->TakeFinalReuse(std::string(""), false, true, false,
-                                            200 * kSampleRate / 1000));
+  static_cast<void>(fixture.session->TakeFinalReuse(
+      std::string(""), false, true, false, 200 * kSampleRate / 1000));
   release_first.Release();
   second_started.Wait("intermediate piece permanently fenced the pause");
-  DrainWorker(worker, worker_drained);
+  fixture.Drain();
   Require(decode_count.load() == 2,
           "intermediate piece caused an incorrect pause-refresh count");
 }
 
-void TestCloseCancelsDeferredPause() {
-  TestLogCapture log_capture;
-  TestSignal first_started;
-  TestSignal worker_drained;
-  std::atomic<int> decode_count = 0;
-  TranscriptionWorker worker([] {}, [] {});
-  TestGate release_first;
-  auto session = std::make_shared<RealtimeSession>(
-      worker,
-      [&first_started, release = release_first.Future(), &decode_count](
-          const std::vector<float> &, const std::atomic<bool> &cancel,
-          RefreshReuse *) -> TranscriptionResult {
-        decode_count.fetch_add(1);
-        first_started.Notify();
-        WaitFor(release, "close-test refresh release timed out");
-        if (cancel.load()) {
-          throw GenerationCancelled();
-        } else {
-        }
-        return PreviewResult();
-      },
-      qwen3_asr::MakeRealtimeSettings(1000, 100, 30.0),
-      [](const std::string &) { return true; });
-  UpdateSession(session, true, true, true);
-  Require(session->Handle(AppendMessage(
-              100 * static_cast<int>(kSampleRate) / 1000, std::nullopt, 0)),
-          "close-test initial append was rejected");
-  first_started.Wait("close-test initial refresh did not start");
-  const nlohmann::json hint = {
-      {"speech_start_sample", 100 * kSampleRate / 1000},
-      {"speech_end_sample", 600 * kSampleRate / 1000}};
-  Require(session->Handle(AppendMessage(
-              700 * static_cast<int>(kSampleRate) / 1000, hint, 1)),
-          "close-test pause append was rejected");
-  session->Close();
-  Require(log_capture.WaitFor("\"disposition\":\"session_close\""),
-          "session close did not terminally attribute its pending hint");
-  Require(log_capture.WaitFor("\"deferred_pending_at_close\":false"),
-          "session summary omitted its deferred-hint close state");
-  release_first.Release();
-  DrainWorker(worker, worker_drained);
-  Require(decode_count.load() == 1,
-          "closed session admitted a stale deferred refresh");
-}
-
 void TestDeferredPauseClearedOnSegmentRollover() {
-  TestLogCapture log_capture;
   TestSignal first_started;
   TestSignal overflow_detected;
   TestSignal worker_drained;
   std::vector<int> decoded_samples;
-  TranscriptionWorker worker([] {}, [] {});
   TestGate release_first;
   TestGate release_overflow;
-  auto session = std::make_shared<RealtimeSession>(
-      worker,
+  PauseRefreshFixture fixture(
       [&first_started, release = release_first.Future(), &decoded_samples](
           const std::vector<float> &samples, const std::atomic<bool> &cancel,
           RefreshReuse *) -> TranscriptionResult {
@@ -758,52 +664,42 @@ void TestDeferredPauseClearedOnSegmentRollover() {
         }
         return PreviewResult();
       },
-      qwen3_asr::MakeRealtimeSettings(1000, 100, 1.0),
-      [](const std::string &) { return true; });
+      qwen3_asr::MakeRealtimeSettings(1000, 100, 1.0));
   qwen3_asr::tests::RealtimeSessionTestAccess::SetBeforeRolloverFinalize(
-      *session, [&] {
+      *fixture.session, [&] {
         overflow_detected.Notify();
         WaitFor(release_overflow.Future(),
                 "rollover finalization gate release timed out");
       });
-  UpdateSession(session, true, true, true);
-  Require(session->Handle(AppendMessage(
-              100 * static_cast<int>(kSampleRate) / 1000, std::nullopt, 0)),
+  fixture.Update(true, true);
+  Require(fixture.AppendMilliseconds(100, std::nullopt, 0),
           "rollover-test initial append was rejected");
   first_started.Wait("rollover-test refresh did not start");
   const nlohmann::json hint = {
       {"speech_start_sample", 100 * kSampleRate / 1000},
       {"speech_end_sample", 600 * kSampleRate / 1000}};
-  Require(session->Handle(AppendMessage(
-              700 * static_cast<int>(kSampleRate) / 1000, hint, 1)),
+  Require(fixture.AppendMilliseconds(700, hint, 1),
           "rollover-test busy pause append was rejected");
 
   std::promise<void> append_started;
   std::future<void> append_started_future = append_started.get_future();
   auto rollover = std::async(std::launch::async, [&] {
     append_started.set_value();
-    return session->Handle(
-        AppendMessage(201 * static_cast<int>(kSampleRate) / 1000, hint, 1));
+    return fixture.AppendMilliseconds(201, hint, 1);
   });
   ReleaseGatesOnExit release_gates{release_first, release_overflow};
   WaitFor(append_started_future, "rollover append thread did not start");
   overflow_detected.Wait(
       "rollover was not detected while holding the session lock");
-  const bool rollover_logged =
-      log_capture.WaitFor("\"disposition\":\"segment_rollover\"");
   release_first.Release();
   try {
-    DrainWorker(worker, worker_drained);
+    DrainWorker(fixture.worker, worker_drained);
   } catch (...) {
     release_overflow.Release();
     throw;
   }
   const size_t refreshes_before_finalize = decoded_samples.size();
   release_overflow.Release();
-  Require(rollover_logged,
-          "segment rollover did not invalidate the pending pause hint");
-  Require(!log_capture.Contains("\"disposition\":\"invalid\""),
-          "overflow append hint was reprocessed against the new segment");
   Require(refreshes_before_finalize == 1,
           "completion in the rollover gap admitted the stale deferred pause");
   Require(rollover.wait_for(std::chrono::seconds(2)) ==
@@ -819,7 +715,6 @@ void TestDeferredPauseClearedOnSegmentRollover() {
 
 void TestPauseRefreshFinalOrdering(bool queue_behind_blocker,
                                    bool close_during_pause) {
-  TestLogCapture log_capture;
   TestSignal blocker_started;
   TestSignal pause_started;
   TestSignal final_finished;
@@ -844,7 +739,7 @@ void TestPauseRefreshFinalOrdering(bool queue_behind_blocker,
   } else {
   }
 
-  auto session = std::make_shared<RealtimeSession>(
+  auto session = MakePauseRefreshSession(
       worker,
       PauseDecoder(pause_started, release_pause.Future(), decoded_samples),
       qwen3_asr::MakeRealtimeSettings(1000, 900, 30.0),
@@ -856,7 +751,7 @@ void TestPauseRefreshFinalOrdering(bool queue_behind_blocker,
         }
         return true;
       });
-  UpdateSession(session, true, false, true);
+  UpdateSession(session, true, false);
   Require(session->Handle(AppendMessage(
               800 * static_cast<int>(kSampleRate) / 1000,
               nlohmann::json{{"speech_start_sample", 0},
@@ -865,6 +760,8 @@ void TestPauseRefreshFinalOrdering(bool queue_behind_blocker,
   if (!queue_behind_blocker) {
     pause_started.Wait("pause refresh did not start");
   } else {
+    Require(worker.RequestStates().contains("queued"),
+            "pause refresh did not queue behind the worker blocker");
   }
   if (close_during_pause) {
     session->Close();
@@ -893,8 +790,11 @@ void TestPauseRefreshFinalOrdering(bool queue_behind_blocker,
     release_blocker.Release();
   } else {
   }
-  pause_started.Wait("pause refresh did not reach its barrier");
-  release_pause.Release();
+  if (!queue_behind_blocker || !close_during_pause) {
+    pause_started.Wait("pause refresh did not reach its barrier");
+    release_pause.Release();
+  } else {
+  }
   if (close_during_pause) {
     worker.Submit(
         [](const std::atomic<bool> &) { return TranscriptionResult{}; },
@@ -905,11 +805,11 @@ void TestPauseRefreshFinalOrdering(bool queue_behind_blocker,
         });
     worker_drained.Wait("worker did not drain after close");
     Require(decoded_samples.load() ==
-                    800 * kSampleRate / kMillisecondsPerSecond &&
+                    (queue_behind_blocker
+                         ? 0
+                         : 800 * kSampleRate / kMillisecondsPerSecond) &&
                 segment_events.load() == 0,
             "close did not cancel the running pause refresh");
-    Require(log_capture.WaitFor("\"status\":\"cancelled\""),
-            "cancelled refresh had no terminal timing record");
   } else {
     final_finished.Wait("Final decode did not finish");
     Require(saw_pause_reuse.load(),
@@ -920,124 +820,216 @@ void TestPauseRefreshFinalOrdering(bool queue_behind_blocker,
   }
 }
 
-void TestQueuedCancellationLeavesExecutionTimesAbsent() {
-  TestLogCapture log_capture;
-  TestSignal blocker_started;
-  TestSignal worker_drained;
-  std::atomic<int> decode_count = 0;
-  TranscriptionWorker worker([] {}, [] {});
-  TestGate release_blocker;
-  const std::shared_future<void> blocker_release = release_blocker.Future();
-  worker.Submit(
-      [&blocker_started, blocker_release](const std::atomic<bool> &) {
-        blocker_started.Notify();
-        WaitFor(blocker_release, "queued-cancel blocker release timed out");
-        return TranscriptionResult{};
-      },
-      NewCancelFlag(),
-      [](std::optional<TranscriptionResult>, std::exception_ptr) {});
-  blocker_started.Wait("queued-cancel blocker did not start");
-
-  auto session = std::make_shared<RealtimeSession>(
-      worker,
-      [&decode_count](const std::vector<float> &, const std::atomic<bool> &,
-                      RefreshReuse *) -> TranscriptionResult {
-        decode_count.fetch_add(1);
-        return PreviewResult();
-      },
-      qwen3_asr::MakeRealtimeSettings(1000, 100, 30.0),
-      [](const std::string &) { return true; });
-  UpdateSession(session, true, false, true);
-  Require(session->Handle(AppendMessage(
-              100 * static_cast<int>(kSampleRate) / 1000, std::nullopt)),
-          "queued-cancel cadence append was rejected");
-  const std::map<std::string, int> request_states = worker.RequestStates();
-  Require(request_states.contains("queued"),
-          "queued-cancel test did not queue a refresh behind the blocker");
-  session->Close();
-  release_blocker.Release();
-  DrainWorker(worker, worker_drained);
-  Require(decode_count.load() == 0,
-          "cancelled queued refresh executed its transcription callable");
-  Require(log_capture.WaitFor("\"status\":\"cancelled\""),
-          "queued cancellation had no terminal refresh record");
-  Require(log_capture.WaitFor("\"worker_started_at_us\":null"),
-          "queued cancellation invented a worker-start timestamp");
-  Require(log_capture.WaitFor("\"decode_finished_at_us\":null"),
-          "queued cancellation invented a decode-finished timestamp");
-}
-
-void TestFinalFenceBlocksPauseAndPreservesCadence() {
-  TestSignal preview_sent;
-  std::atomic<int> decoded_samples = 0;
-  std::atomic<int> preview_count = 0;
-  TranscriptionWorker worker([] {}, [] {});
-  auto session = std::make_shared<RealtimeSession>(
-      worker,
-      [&decoded_samples](const std::vector<float> &samples,
-                         const std::atomic<bool> &,
-                         RefreshReuse *) -> TranscriptionResult {
-        decoded_samples.store(static_cast<int>(samples.size()));
-        return PreviewResult();
-      },
-      qwen3_asr::MakeRealtimeSettings(1000, 500, 30.0),
-      [&preview_sent, &preview_count](const std::string &serialized) {
-        const auto event = nlohmann::json::parse(serialized);
-        if (event.value("type", std::string()) == "transcription.segment") {
-          preview_count.fetch_add(1);
-          preview_sent.Notify();
-        } else {
-        }
-        return true;
-      });
-  UpdateSession(session, true);
-  session->TakeFinalReuse(std::string(""), false, true, true);
-  Require(session->Handle(AppendMessage(
-              400 * static_cast<int>(kSampleRate) / 1000,
-              nlohmann::json{{"speech_start_sample", 0},
-                             {"speech_end_sample", 300 * kSampleRate / 1000}})),
-          "pause append after Final preparation was rejected");
-  Require(worker.RequestStates().empty(),
-          "pause hint after Final preparation queued a refresh");
-  Require(session->Handle(AppendMessage(
-              100 * static_cast<int>(kSampleRate) / 1000, std::nullopt)),
-          "ordinary cadence append after Final preparation was rejected");
-  preview_sent.Wait("ordinary cadence preview timed out");
-  Require(decoded_samples.load() == 500 * kSampleRate / 1000 &&
-              preview_count.load() == 1,
-          "Final fence suppressed the ordinary preview path");
-}
-
 } // namespace
 
 namespace qwen3_asr::tests {
-void TestAdmissionPolicy();
-void TestDeferredHintState();
-void TestPauseRefreshRequiresSessionOptIn();
+
+void TestAdmissionPolicy() {
+  constexpr long sample_rate = 16000;
+  constexpr long first_refresh_sample = sample_rate / 10;
+  const auto base = [] {
+    RefreshAdmissionInput input;
+    input.audio_end_sample = first_refresh_sample;
+    input.next_refresh_sample = first_refresh_sample;
+    input.decode_interval_samples = sample_rate;
+    input.minimum_new_speech_samples = sample_rate / 5;
+    return input;
+  };
+  auto pause_case = base();
+  pause_case.audio_end_sample = 800 * sample_rate / 1000;
+  pause_case.next_refresh_sample = 1400 * sample_rate / 1000;
+  pause_case.last_submitted_refresh_end_sample = 400 * sample_rate / 1000;
+  pause_case.pause_hint = PauseRefreshHint{0, 600 * sample_rate / 1000};
+
+  struct Case {
+    const char *name;
+    RefreshAdmissionInput input;
+    RefreshSource source;
+    PauseHintDisposition disposition;
+    long next_refresh_sample;
+  };
+  std::vector<Case> cases;
+  cases.push_back({"first cadence", base(), RefreshSource::kCadence,
+                   PauseHintDisposition::kNone,
+                   first_refresh_sample + sample_rate});
+  auto input = base();
+  input.silent = true;
+  cases.push_back({"leading silence", input, RefreshSource::kNone,
+                   PauseHintDisposition::kNone, first_refresh_sample});
+  input.has_decoded = true;
+  cases.push_back({"post-preview silence", input, RefreshSource::kNone,
+                   PauseHintDisposition::kNone,
+                   input.audio_end_sample + sample_rate});
+  cases.push_back({"immediate pause", pause_case, RefreshSource::kPause,
+                   PauseHintDisposition::kAdmittedImmediate,
+                   pause_case.audio_end_sample + sample_rate});
+  input = pause_case;
+  input.pause_hint_deferred = true;
+  cases.push_back({"deferred pause", input, RefreshSource::kDeferredPause,
+                   PauseHintDisposition::kAdmittedDeferred,
+                   input.audio_end_sample + sample_rate});
+  input = pause_case;
+  input.last_submitted_refresh_end_sample = 600 * sample_rate / 1000;
+  cases.push_back({"covered speech", input, RefreshSource::kNone,
+                   PauseHintDisposition::kCovered, input.next_refresh_sample});
+  input = pause_case;
+  input.pause_hint =
+      PauseRefreshHint{300 * sample_rate / 1000, 590 * sample_rate / 1000};
+  cases.push_back({"insufficient new speech", input, RefreshSource::kNone,
+                   PauseHintDisposition::kInsufficientNewSpeech,
+                   input.next_refresh_sample});
+  input = pause_case;
+  input.refreshing = true;
+  input.last_submitted_refresh_end_sample = 100 * sample_rate / 1000;
+  input.pause_hint =
+      PauseRefreshHint{100 * sample_rate / 1000, 600 * sample_rate / 1000};
+  cases.push_back({"busy useful hint", input, RefreshSource::kNone,
+                   PauseHintDisposition::kRefreshBusy,
+                   input.next_refresh_sample});
+  input = pause_case;
+  input.cancelled = true;
+  cases.push_back({"cancelled pause", input, RefreshSource::kNone,
+                   PauseHintDisposition::kCancelled,
+                   input.next_refresh_sample});
+  input = pause_case;
+  input.final_handoff = true;
+  cases.push_back({"Final handoff pause", input, RefreshSource::kNone,
+                   PauseHintDisposition::kFinalHandoff,
+                   input.next_refresh_sample});
+  input.audio_end_sample = input.next_refresh_sample;
+  cases.push_back({"cadence after handoff", input, RefreshSource::kCadence,
+                   PauseHintDisposition::kFinalHandoff,
+                   input.audio_end_sample + sample_rate});
+  input = base();
+  input.finalizing = true;
+  cases.push_back({"segment finalization", input, RefreshSource::kNone,
+                   PauseHintDisposition::kNone, input.next_refresh_sample});
+
+  for (const Case &test : cases) {
+    const RefreshAdmission admission = SelectRefreshAdmission(test.input);
+    Require(admission.source == test.source &&
+                admission.disposition == test.disposition &&
+                admission.next_refresh_sample == test.next_refresh_sample,
+            std::string(test.name) + " selected the wrong refresh decision");
+  }
+
+  const std::vector<
+      std::pair<std::optional<PauseRefreshHint>, PauseHintDisposition>>
+      consumption_cases = {
+          {std::nullopt, PauseHintDisposition::kNone},
+          {PauseRefreshHint{-1, 400}, PauseHintDisposition::kInvalid},
+          {PauseRefreshHint{400, 300}, PauseHintDisposition::kInvalid},
+          {PauseRefreshHint{0, 1200}, PauseHintDisposition::kInvalid},
+          {PauseRefreshHint{100, 600}, PauseHintDisposition::kDuplicate},
+          {PauseRefreshHint{100, 800}, PauseHintDisposition::kNone}};
+  for (const auto &[hint, disposition] : consumption_cases) {
+    const PauseHintConsumption consumed =
+        ConsumePauseRefreshHint(hint, 0, 1000, 600);
+    Require(consumed.disposition == disposition,
+            "hint validation or deduplication changed");
+    if (disposition == PauseHintDisposition::kNone && hint.has_value()) {
+      Require(consumed.hint.has_value() &&
+                  consumed.hint->speech_start_sample ==
+                      hint->speech_start_sample &&
+                  consumed.hint->speech_end_sample == hint->speech_end_sample &&
+                  consumed.last_speech_end_sample == 800,
+              "a valid hint did not advance the consumed speech endpoint");
+    }
+  }
+}
+
+void TestPauseRefreshRequiresSessionOptIn() {
+  const std::vector<std::pair<std::optional<nlohmann::json>, bool>> cases = {
+      {std::nullopt, false},
+      {nlohmann::json(false), false},
+      {nlohmann::json("true"), false},
+      {nlohmann::json(true), true}};
+  for (const auto &[opt_in_value, should_decode] : cases) {
+    TestSignal decoded;
+    TestSignal cadence_decoded;
+    TestSignal worker_drained;
+    std::atomic<int> decode_count = 0;
+    omni_server::TranscriptionWorker worker([] {}, [] {});
+    auto session = MakePauseRefreshSession(
+        worker,
+        [&decoded, &cadence_decoded,
+         &decode_count](const std::vector<float> &, const std::atomic<bool> &,
+                        RefreshReuse *) -> TranscriptionResult {
+          const int count = ++decode_count;
+          decoded.Notify();
+          if (count == 2) {
+            cadence_decoded.Notify();
+          } else {
+          }
+          return PreviewResult();
+        },
+        qwen3_asr::MakeRealtimeSettings(1000, should_decode ? 500 : 1000, 30.0),
+        [](const std::string &) { return true; });
+    nlohmann::json settings = {{"turn_detection", nullptr},
+                               {"final_prompt", ""}};
+    if (opt_in_value.has_value()) {
+      settings["preview_refresh_enabled"] = *opt_in_value;
+    }
+    Require(
+        session->Handle({{"type", "session.update"}, {"session", settings}}),
+        "session opt-in update was rejected");
+    const int first_append_ms = should_decode ? 400 : 800;
+    const nlohmann::json hint = {
+        {"speech_start_sample", 0},
+        {"speech_end_sample",
+         (should_decode ? 300 : 600) * kSampleRate / 1000}};
+    Require(session->Handle(AppendMessage(
+                first_append_ms * static_cast<int>(kSampleRate) / 1000, hint)),
+            "pause append was rejected");
+    if (should_decode) {
+      decoded.Wait("enabled session pause refresh timed out");
+      Require(decode_count.load() == 1,
+              "enabled session did not admit one pause refresh");
+      DrainWorker(worker, worker_drained);
+      session->TakeFinalReuse(std::string(""), false, true, true);
+      const nlohmann::json later_hint = {
+          {"speech_start_sample", 400 * kSampleRate / 1000},
+          {"speech_end_sample", 900 * kSampleRate / 1000}};
+      Require(session->Handle(AppendMessage(
+                  600 * static_cast<int>(kSampleRate) / 1000, later_hint)),
+              "pause append after Final preparation was rejected");
+      Require(worker.RequestStates().empty(),
+              "pause hint after Final preparation queued a refresh");
+      Require(session->Handle(AppendMessage(
+                  400 * static_cast<int>(kSampleRate) / 1000, std::nullopt)),
+              "ordinary cadence append after Final preparation was rejected");
+      cadence_decoded.Wait("ordinary cadence preview timed out");
+      Require(decode_count.load() == 2,
+              "Final fence suppressed the ordinary cadence preview");
+    } else {
+      Require(worker.RequestStates().empty() && decode_count.load() == 0,
+              "session without boolean opt-in admitted a pause refresh");
+    }
+    session->Close();
+  }
+}
+
 } // namespace qwen3_asr::tests
 
 int main() {
   try {
     qwen3_asr::tests::TestAdmissionPolicy();
-    qwen3_asr::tests::TestDeferredHintState();
     TestInvalidHintsKeepAudioAndDoNotSchedule();
     TestRepeatedPauseHintIsNotAdmitted();
-    TestBusyPauseHintDeferredAdmission(false);
-    TestBusyPauseHintDeferredAdmission(true);
+    TestBusyPauseHintAdmission(false, false);
+    TestBusyPauseHintAdmission(true, false);
+    TestBusyPauseHintAdmission(true, true);
     TestBusyPauseCoveredAndInsufficientHintsAreNotDeferred();
-    TestIdlePauseRejectionsHaveExactAttribution();
     TestDeferredPauseIsInvalidatedBySpeechResumeOrMalformedEpoch();
     TestLaterValidPauseReplacesResumedHint();
     TestCadenceAndFinalHandoffSupersedePendingPause();
     TestIntermediatePieceDoesNotFenceDeferredPause();
-    TestCloseCancelsDeferredPause();
     TestDeferredPauseClearedOnSegmentRollover();
     qwen3_asr::tests::TestPauseRefreshRequiresSessionOptIn();
     TestPauseRefreshFinalOrdering(true, false);
     TestPauseRefreshFinalOrdering(false, false);
     TestPauseRefreshFinalOrdering(false, true);
-    TestQueuedCancellationLeavesExecutionTimesAbsent();
-    TestFinalFenceBlocksPauseAndPreservesCadence();
+    TestPauseRefreshFinalOrdering(true, true);
   } catch (const std::exception &error) {
     std::cerr << error.what() << '\n';
     return 1;

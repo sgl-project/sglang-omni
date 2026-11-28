@@ -556,10 +556,9 @@ set_target_properties(moss_realtime_test PROPERTIES
 
 add_executable(qwen3_asr_pause_refresh_test EXCLUDE_FROM_ALL
   tests/qwen3_asr_pause_refresh_test.cpp
-  tests/qwen3_asr_pause_refresh_opt_in_test.cpp
-  tests/qwen3_asr_pause_refresh_policy_test.cpp)
-target_include_directories(qwen3_asr_pause_refresh_test PRIVATE src)
-target_link_libraries(qwen3_asr_pause_refresh_test PRIVATE qwen3_asr omni_service)
+  src/qwen3_asr/realtime.cpp)
+target_include_directories(qwen3_asr_pause_refresh_test PRIVATE tests/doubles src)
+target_link_libraries(qwen3_asr_pause_refresh_test PRIVATE common omni_service)
 target_compile_options(qwen3_asr_pause_refresh_test PRIVATE -Wall -Wextra)
 set_target_properties(qwen3_asr_pause_refresh_test PROPERTIES
   BUILD_RPATH "${MLX_LIBRARY_DIRS};@loader_path")
