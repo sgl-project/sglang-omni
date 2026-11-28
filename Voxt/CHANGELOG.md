@@ -13,6 +13,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 ### Fixed
 - **The transcription preview stays where you drag it** (#4701): dragged while new words came in, the preview jumped back toward where the drag started, and the screen's edge pulled it back before you let go. It now grows where you have it; dragged past the screen's edge, it returns to the screen once you let go.
+- **Meeting model usage follows Spoken language**: with Meetings on Automatic, the model usage check now follows the meeting's Spoken language override. The model the meeting actually opens is marked Used by Meetings and cannot be hidden from the meeting model menu.
 
 ### 中文
 
@@ -25,6 +26,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 #### 修复
 - **拖动转录预览时不再跳回去**（#4701）：边说边拖时，每来一批新字，预览会朝拖动开始的位置跳一下；拖到屏幕边缘，还没松手就被拉回来。现在它在拖到的位置上变大；拖出屏幕边缘的，松手后才回到屏幕内。
+- **会议模型的使用关系跟随说话语言**：会议使用「自动」时，Used by 和会议模型菜单现在会跟随会议的「说话语言」设置。会议实际打开的模型会标为 Used by Meetings，不能再被隐藏。
 
 ## [2.1.4] - 2026-11-26
 
