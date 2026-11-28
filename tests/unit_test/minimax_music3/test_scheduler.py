@@ -7,7 +7,12 @@ from unittest.mock import Mock
 
 import pytest
 import torch
-from sglang.srt.managers.schedule_batch import NextBatchPlan, Req, ScheduleBatch
+from sglang.srt.managers.schedule_batch import (
+    FINISH_LENGTH,
+    NextBatchPlan,
+    Req,
+    ScheduleBatch,
+)
 from sglang.srt.managers.schedule_policy import AddReqResult, PrefillAdder
 from sglang.srt.runtime_context import get_context, get_schedule
 
@@ -429,20 +434,70 @@ def test_prefill_never_returns_the_first_row_of_a_rejected_pair(
 
 
 @pytest.mark.parametrize("scheduler", [16], indirect=True)
+@pytest.mark.parametrize("has_pending_decode", [False, True])
 def test_decode_shortfall_ends_both_rows_without_requeue(
-    scheduler: MiniMaxMusic3Scheduler, monkeypatch: pytest.MonkeyPatch
+    scheduler: MiniMaxMusic3Scheduler,
+    monkeypatch: pytest.MonkeyPatch,
+    has_pending_decode: bool,
 ) -> None:
+    """An async override bypassed Music3's pair-safe decode failure path."""
     rows = paired_requests([128], 10)
     batch = ScheduleBatch(reqs=rows, batch_is_full=True)
     scheduler.running_batch = batch
+    scheduler.async_pending = Mock() if has_pending_decode else None
+
+    def clear_pending_decode() -> None:
+        scheduler.async_pending = None
+
+    resolve_pending_decode = Mock(side_effect=clear_pending_decode)
+    monkeypatch.setattr(scheduler, "resolve_pending_async", resolve_pending_decode)
     monkeypatch.setattr(batch, "check_decode_mem", lambda: False)
 
     assert scheduler.update_running_batch(batch).is_empty()
+    assert resolve_pending_decode.call_count == int(has_pending_decode)
     assert scheduler.waiting_queue == []
     assert scheduler.aborted_request_ids == {row.rid for row in rows}
     error = scheduler.outbox.get_nowait()
     assert error.request_id == rows[0].rid
     assert "KV capacity" in str(error.data)
+    assert scheduler.outbox.empty()
+
+
+@pytest.mark.parametrize("scheduler", [16], indirect=True)
+@pytest.mark.parametrize("has_decode_memory", [False, True])
+def test_pending_decode_only_drains_when_kv_capacity_requires_it(
+    scheduler: MiniMaxMusic3Scheduler,
+    monkeypatch: pytest.MonkeyPatch,
+    has_decode_memory: bool,
+) -> None:
+    """KV pressure must resolve a pair's pending last frame before aborting it."""
+    rows = paired_requests([128], 10)
+    batch = ScheduleBatch(reqs=rows, batch_is_full=True)
+    scheduler.running_batch = batch
+    scheduler.async_pending = Mock()
+    pending_decode = scheduler.async_pending
+    scheduler.new_token_ratio_tracker = Mock()
+    monkeypatch.setattr(batch, "check_decode_mem", lambda: has_decode_memory)
+    monkeypatch.setattr(batch, "prepare_for_decode", Mock())
+
+    def finish_pending_pair() -> None:
+        for row in rows:
+            row.finished_reason = FINISH_LENGTH(length=10)
+        scheduler.async_pending = None
+
+    monkeypatch.setattr(scheduler, "resolve_pending_async", finish_pending_pair)
+
+    assert scheduler.update_running_batch(batch) is batch
+    if has_decode_memory:
+        assert batch.reqs == rows
+        assert scheduler.async_pending is pending_decode
+        batch.prepare_for_decode.assert_called_once()
+    else:
+        assert batch.is_empty()
+        assert scheduler.async_pending is None
+        batch.prepare_for_decode.assert_not_called()
+    assert scheduler.aborted_request_ids == set()
+    assert scheduler.waiting_queue == []
     assert scheduler.outbox.empty()
 
 

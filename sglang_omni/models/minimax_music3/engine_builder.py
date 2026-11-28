@@ -83,6 +83,7 @@ class MiniMaxMusic3EngineBuilder(TtsEngineBuilder["MiniMaxMusic3SGLangRequestDat
         enable_serial_offload: bool = False,
         serial_offload_source: Literal["mmap", "ram"] = "mmap",
         serial_offload_cache_dir: str | None = None,
+        enable_async_decode: bool,
     ) -> None:
         self.max_running_requests = int(max_running_requests)
         if self.max_running_requests <= 0:
@@ -92,6 +93,7 @@ class MiniMaxMusic3EngineBuilder(TtsEngineBuilder["MiniMaxMusic3SGLangRequestDat
         self.enable_serial_offload = bool(enable_serial_offload)
         self.serial_offload_source = serial_offload_source
         self.serial_offload_cache_dir = serial_offload_cache_dir
+        self.enable_async_decode = bool(enable_async_decode)
         self.model_runner: MiniMaxMusic3ModelRunner | None = None
         self.checkpoint_root: str | None = None
 
@@ -288,7 +290,9 @@ class MiniMaxMusic3EngineBuilder(TtsEngineBuilder["MiniMaxMusic3SGLangRequestDat
 
         return {
             "stream_output_builder": build_stream_output,
-            "enable_async_decode": False,
+            # note (ruiling): launch frame N+1 before the host reads frame N; serial offload stays synchronous.
+            "enable_async_decode": self.enable_async_decode
+            and not self.enable_serial_offload,
         }
 
 

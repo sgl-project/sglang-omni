@@ -11,6 +11,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 import torch
+from sglang.srt.managers.schedule_batch import FINISH_ABORT
+from sglang.srt.utils.common import async_h2d
 
 from sglang_omni.model_runner.base import ModelRunner
 from sglang_omni.model_runner.model_worker import ModelWorker
@@ -106,6 +108,21 @@ class MiniMaxMusic3ARState:
     pending_chunks: list[tuple[torch.Tensor, dict[str, str | int | bool]]] = field(
         default_factory=list
     )
+
+
+@dataclass
+class MiniMaxMusic3SampledFrame:
+    """One frame sampled on the device for every CFG pair, not yet read by the host.
+
+    Async decode resolves from host_token_ids, the pinned copy made at launch.
+    """
+
+    cond_requests: list[SchedulerRequest]
+    ar_states: list[MiniMaxMusic3ARState]
+    codes: torch.Tensor
+    frame_hidden: torch.Tensor
+    stopped: torch.Tensor
+    host_token_ids: torch.Tensor | None = None
 
 
 class MiniMaxMusic3ModelRunner(ModelRunner["MiniMaxMusic3SGLangRequestData"]):
@@ -284,6 +301,17 @@ class MiniMaxMusic3ModelRunner(ModelRunner["MiniMaxMusic3SGLangRequestData"]):
         emit: bool,
     ) -> None:
         """Sample one frame per row and queue whatever windows it completes."""
+        frame = self.sample_frame(result, requests)
+        self.commit_frame(frame, frame.stopped.tolist(), emit=emit)
+
+    def sample_frame(
+        self, result: GenerationBatchResult, requests: list[SchedulerRequest]
+    ) -> MiniMaxMusic3SampledFrame:
+        """Enqueue c0 sampling and the RVQ depth pass for one frame per pair.
+
+        Only device work and host-owned counters: nothing here reads a device
+        value, so async decode can launch the next frame before this one lands.
+        """
         model = self.model
         logits_output = result.logits_output
         hidden = logits_output.hidden_states
@@ -324,12 +352,12 @@ class MiniMaxMusic3ModelRunner(ModelRunner["MiniMaxMusic3SGLangRequestData"]):
             else:
                 pass
         ar_states = [self.ar_state(request) for request in cond_requests]
-        seeds = torch.tensor(
+        seeds = async_h2d(
             [ar_state.sampling_seed for ar_state in ar_states],
             dtype=torch.int64,
             device=hidden.device,
         )
-        frame_positions = torch.tensor(
+        frame_positions = async_h2d(
             [ar_state.sampling_position for ar_state in ar_states],
             dtype=torch.int64,
             device=hidden.device,
@@ -365,27 +393,105 @@ class MiniMaxMusic3ModelRunner(ModelRunner["MiniMaxMusic3SGLangRequestData"]):
             )
         else:
             pass
+        result.next_token_ids = model.c0_logit_ids[sampled.repeat_interleave(2)]
+        return MiniMaxMusic3SampledFrame(
+            cond_requests=cond_requests,
+            ar_states=ar_states,
+            codes=codes,
+            frame_hidden=frame_hidden,
+            stopped=stopped,
+        )
 
-        for index, stop in enumerate(stopped.tolist()):
-            ar_state = ar_states[index]
-            if stop:
+    def commit_frame(
+        self,
+        frame: MiniMaxMusic3SampledFrame,
+        stopped: list[bool],
+        *,
+        emit: bool,
+        rows: list[int] | None = None,
+        feedback: bool = True,
+    ) -> None:
+        """Record a sampled frame on the host for the given pair rows.
+
+        Async decode leaves the feedback codes alone: its launch already fed this
+        frame forward, and the next launch has since replaced them.
+        """
+        for index in range(len(stopped)) if rows is None else rows:
+            ar_state = frame.ar_states[index]
+            if stopped[index]:
                 ar_state.finish_reason = "stop"
                 continue
             else:
                 pass
-            ar_state.feedback_codes = codes[index : index + 1]
+            if feedback:
+                ar_state.feedback_codes = frame.codes[index : index + 1]
+            else:
+                pass
             if not emit:
                 continue
             else:
                 pass
-            ar_state.frames.append(frame_hidden[index : index + 1])
+            request_id = frame.cond_requests[index].request_id
+            ar_state.frames.append(frame.frame_hidden[index : index + 1])
             ar_state.generated_frames += 1
-            self.log_progress(cond_requests[index].request_id, ar_state)
+            self.log_progress(request_id, ar_state)
             if not self.serial_offload.enabled:
-                self.emit_ready_window(cond_requests[index].request_id, ar_state)
+                self.emit_ready_window(request_id, ar_state)
             else:
                 pass
-        result.next_token_ids = model.c0_logit_ids[sampled.repeat_interleave(2)]
+
+    def lookahead_eligible(self, batch: ScheduleBatch) -> bool:
+        # note (ruiling): reference replay consumes its trajectory per launch, so it stays synchronous.
+        return self.forced_codes_dir is None and super().lookahead_eligible(batch)
+
+    def post_decode_launch(
+        self,
+        result: GenerationBatchResult,
+        forward_batch: ForwardBatch | None,
+        requests: list[SchedulerRequest],
+    ) -> MiniMaxMusic3SampledFrame | None:
+        """Async decode: enqueue this frame and feed it to the next launch unread."""
+        if not requests:
+            return None
+        else:
+            pass
+        frame = self.sample_frame(result, requests)
+        # note (ruiling): a pair that stops here still feeds one lookahead frame;
+        # resolve drops it because the request has finished by then.
+        for index, ar_state in enumerate(frame.ar_states):
+            ar_state.feedback_codes = frame.codes[index : index + 1]
+        frame.host_token_ids = super().post_decode_launch(
+            result, forward_batch, requests
+        )
+        return frame
+
+    def post_decode_resolve(
+        self,
+        launch_buf: MiniMaxMusic3SampledFrame | None,
+        result: GenerationBatchResult,
+        forward_batch: ForwardBatch | None,
+        schedule_batch: ScheduleBatch,
+        requests: list[SchedulerRequest],
+    ) -> None:
+        """Async decode: commit a landed frame for the pairs still generating."""
+        del forward_batch, schedule_batch
+        if launch_buf is None or not requests:
+            return
+        else:
+            pass
+        assert launch_buf.host_token_ids is not None
+        token_ids = launch_buf.host_token_ids[: len(requests)]
+        result.next_token_ids = token_ids
+        stopped = (token_ids[0::2] == self.model.stop_mel_token).tolist()
+        live = [
+            index
+            for index, request in enumerate(launch_buf.cond_requests)
+            if not request.data.req.finished()
+            and not self.req_is_retracted(request.data.req)
+            # note (ruiling): a deferred abort sets to_finish; finished() turns true only in result processing.
+            and not isinstance(request.data.req.to_finish, FINISH_ABORT)
+        ]
+        self.commit_frame(launch_buf, stopped, emit=True, rows=live, feedback=False)
 
     def start_request(
         self,

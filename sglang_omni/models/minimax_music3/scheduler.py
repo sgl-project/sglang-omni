@@ -329,6 +329,11 @@ class MiniMaxMusic3Scheduler(OmniScheduler[MiniMaxMusic3SGLangRequestData]):
         return limit
 
     def update_running_batch(self, batch: ScheduleBatch) -> ScheduleBatch | None:
+        # note (ruiling): the pending frame can finish pairs before KV capacity is checked.
+        if self.async_pending is not None and not batch.check_decode_mem():
+            self.resolve_pending_async()
+        else:
+            pass
         previous_row_count = batch.batch_size()
         finishing_rows = self._reqs_finishing_inflight(
             batch

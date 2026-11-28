@@ -48,6 +48,7 @@ def create_ar_executor(
     enable_serial_offload: bool = False,
     serial_offload_source: Literal["mmap", "ram"] = "mmap",
     serial_offload_cache_dir: str | None = None,
+    enable_async_decode: bool = True,
 ):
     torch.backends.cudnn.enabled = False
     torch.backends.cuda.enable_cudnn_sdp(False)
@@ -65,6 +66,7 @@ def create_ar_executor(
         enable_serial_offload=enable_serial_offload,
         serial_offload_source=serial_offload_source,
         serial_offload_cache_dir=serial_offload_cache_dir,
+        enable_async_decode=enable_async_decode,
     )
     scheduler = builder.build(
         model_path,
@@ -74,7 +76,7 @@ def create_ar_executor(
         server_args_overrides=overrides or None,
     )
     logger.info(
-        f"MiniMax Music 3 AR executor ready (OmniScheduler) device={builder.device} max_running_requests={builder.max_running_requests}"
+        f"MiniMax Music 3 AR executor ready (OmniScheduler) device={builder.device} max_running_requests={builder.max_running_requests} async_decode={scheduler.enable_async_decode}"
     )
     return scheduler
 
