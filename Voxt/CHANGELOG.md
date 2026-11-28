@@ -13,6 +13,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 ### Fixed
 - **The transcription preview stays where you drag it** (#4701): dragged while new words came in, the preview jumped back toward where the drag started, and the screen's edge pulled it back before you let go. It now grows where you have it; dragged past the screen's edge, it returns to the screen once you let go.
+- **The empty session card follows Keep a history immediately**: turning the setting off or on updates the open card's explanation of whether sessions survive a restart, without waiting for a resize.
 
 ### 中文
 
@@ -25,6 +26,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 #### 修复
 - **拖动转录预览时不再跳回去**（#4701）：边说边拖时，每来一批新字，预览会朝拖动开始的位置跳一下；拖到屏幕边缘，还没松手就被拉回来。现在它在拖到的位置上变大；拖出屏幕边缘的，松手后才回到屏幕内。
+- **空会话卡片立即跟随「保存历史」设置更新**：关闭或打开该设置时，已打开的卡片会立即更新会话能否在重启后保留的说明，不再需要调整卡片大小。
 
 ## [2.1.4] - 2026-11-26
 
