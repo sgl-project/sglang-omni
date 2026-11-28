@@ -512,10 +512,11 @@ type fakeBoxWindow struct {
 	hidden, destroyed, offSpace bool
 	style                       mygo.VibrancyStyle
 	bounds                      mygo.Rectangle
+	invalidations               int
 }
 
 func (f *fakeBoxWindow) IsOnActiveSpace() bool                 { return !f.offSpace }
-func (f *fakeBoxWindow) Invalidate()                           {}
+func (f *fakeBoxWindow) Invalidate()                           { f.invalidations++ }
 func (f *fakeBoxWindow) SetContentBounds(r mygo.Rectangle)     { f.bounds = r }
 func (f *fakeBoxWindow) Show()                                 {}
 func (f *fakeBoxWindow) Focus()                                {}

@@ -10,6 +10,7 @@ package main
 // card as any session's would.
 
 import (
+	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/session"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
 )
@@ -57,10 +58,30 @@ func (a *app) backgroundChanged(s session.Snapshot) {
 		// bgID stays set through sessionEnded: its openAnswer is the
 		// answer's own card, not another session's.
 		a.sessionEnded(s)
+		a.clearRetryWait()
 		a.bgID = ""
 		a.syncHotkeys() // the answer no longer runs: the shortcuts settle
 	}
 	a.overlaySync()
+}
+
+// clearRetryWait clears the transient refusal in any locale wherever a session switch parked it.
+func (a *app) clearRetryWait() {
+	waits := make(map[string]bool)
+	for _, locale := range i18n.Supported() {
+		waits[i18n.NewTranslator(locale).T("Try again is available when the streaming answer finishes.")] = true
+	}
+	clear := func(card *answerCard) {
+		if waits[card.msg] {
+			card.msg = ""
+		}
+	}
+	clear(&a.answer)
+	clear(&a.under)
+	for index := range a.slots {
+		clear(&a.slots[index].answer)
+		clear(&a.slots[index].under)
+	}
 }
 
 // cardSnapshot is the session snapshot the answer card reads: the

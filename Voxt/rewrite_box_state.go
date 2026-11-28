@@ -109,6 +109,18 @@ func (a *app) boxViewState() rewriteBoxViewState {
 	if state.Subtitle == "" && a.boxAnswered() {
 		state.Subtitle = a.answer.msg // "Copied", why Insert did not work
 	}
+	if a.boxWaitsForAnswer() {
+		state.CanSend, state.CanSpeak = false, false
+		reason := i18n.T("Rewrite is available when the streaming answer finishes.")
+		if a.boxIdle() && state.Subtitle == i18n.T("Say or type what to write") {
+			state.Subtitle = reason
+		} else {
+			if a.followUpBlocked() {
+				reason = i18n.T("Continue is available when the streaming answer finishes.")
+			}
+			state.Subtitle = strings.TrimSpace(state.Subtitle + " " + reason)
+		}
+	}
 	if recording {
 		copySessionLevels(&state.Levels, a.sess.Levels)
 	}
@@ -321,9 +333,17 @@ func (a *app) boxIdle() bool {
 	return b.open && b.session == "" && b.sending == "" && b.instruction == "" && !a.boxAnswered()
 }
 
+// boxWaitsForAnswer reports whether another answer blocks this Rewrite card.
+func (a *app) boxWaitsForAnswer() bool {
+	return (a.boxAnswered() || a.boxIdle()) && !a.sess.State.Live() && a.answerStreaming()
+}
+
 // boxSpeak records the next instruction: the answer's follow-up, or an
 // idle card's first.
 func (a *app) boxSpeak() {
+	if a.boxWaitsForAnswer() {
+		return
+	}
 	if a.boxIdle() {
 		a.openBox(a.box.target, session.StartRequest{Kind: store.KindRewrite})
 		return
@@ -334,6 +354,9 @@ func (a *app) boxSpeak() {
 // boxSendNow is Send: what is typed in an idle card is its first
 // instruction.
 func (a *app) boxSendNow() {
+	if a.boxWaitsForAnswer() {
+		return
+	}
 	if typed := strings.TrimSpace(a.boxTextContent()); a.boxIdle() && typed != "" {
 		a.box.instruction, a.box.text, a.box.textSegments = typed, "", nil
 	}

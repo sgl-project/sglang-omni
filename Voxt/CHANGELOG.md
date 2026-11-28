@@ -13,6 +13,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 ### Fixed
 - **The transcription preview stays where you drag it** (#4701): dragged while new words came in, the preview jumped back toward where the drag started, and the screen's edge pulled it back before you let go. It now grows where you have it; dragged past the screen's edge, it returns to the screen once you let go.
+- **A streaming answer no longer silently removes Continue in another session**: Continue, Speak and Send stay visible but disabled and explain that they are available when the answer finishes. A Retry wait also clears when the answer finishes after the display language changes.
 
 ### 中文
 
@@ -25,6 +26,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 #### 修复
 - **拖动转录预览时不再跳回去**（#4701）：边说边拖时，每来一批新字，预览会朝拖动开始的位置跳一下；拖到屏幕边缘，还没松手就被拉回来。现在它在拖到的位置上变大；拖出屏幕边缘的，松手后才回到屏幕内。
+- **另一个会话正在生成回答时，不再直接隐藏“继续”**：继续、Speak 和 Send 保留但置灰，并说明回答完成后即可使用。切换显示语言后，重试等待也会在回答完成时消失。
 
 ## [2.1.4] - 2026-11-26
 

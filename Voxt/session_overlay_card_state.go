@@ -63,6 +63,7 @@ type sessionCardViewState struct {
 	CanInsert      bool                   `json:"can_insert"`
 	CanCopy        bool                   `json:"can_copy"`
 	CanFollowUp    bool                   `json:"can_follow_up"`
+	FollowDisabled bool                   `json:"follow_disabled,omitempty"`
 	CanStop        bool                   `json:"can_stop"`
 	CanStopAnswer  bool                   `json:"can_stop_answer"`
 	// CanUseTranscript: Transcribe's clean-up or Translate's speech can go in as recognised instead (#3821).
@@ -124,6 +125,7 @@ type sessionCardProjectionInput struct {
 	ShownDraft        string
 	FollowKeys        string
 	CanFollowUp       bool
+	FollowDisabled    bool
 	CopyKey           bool
 	InsertKey         bool
 	ThinkingProvider  settings.Provider
@@ -198,9 +200,14 @@ func buildSessionCardViewState(translator *i18n.Translator, input sessionCardPro
 		Copied: card.copied, CanCopy: card.text != "",
 		CanInsert:   card.problem == nil && card.text != "" && !input.Own,
 		CanLanguage: card.kind == store.KindTranslate && card.problem == nil && !snapshot.State.Live(),
-		CanFollowUp: input.CanFollowUp, CanStop: follow && snapshot.State == session.Recording,
+		CanFollowUp: input.CanFollowUp, FollowDisabled: input.FollowDisabled, CanStop: follow && snapshot.State == session.Recording,
 		CanStopAnswer: follow && snapshot.CanStop(), CanRetry: card.problem != nil && !snapshot.State.Live(),
 		FollowTooltip: continueTipFor(translator, input.FollowKeys),
+	}
+	if input.FollowDisabled {
+		reason := translator.T("Continue is available when the streaming answer finishes.")
+		state.Message = strings.TrimSpace(state.Message + " " + reason)
+		state.FollowTooltip = reason
 	}
 	state.Attachment, state.ThumbnailCount = sessionCardAttachment(input)
 	state.Inputs = sessionCardInputs(card.previews)
@@ -391,7 +398,8 @@ type sessionCardProjectionKey struct {
 	followKeys                            string
 	own, writing, hideLiveText, chat      bool
 	reveal                                string
-	canFollowUp, copied, conversation     bool
+	canFollowUp, followDisabled           bool
+	copied, conversation                  bool
 	copyKey, insertKey                    bool
 	sessions                              string
 	empty, keepsHistory                   bool
@@ -432,7 +440,7 @@ func sessionCardKeyFor(input sessionCardProjectionInput) sessionCardProjectionKe
 		generationBudget: input.Generation.ThinkingBudget, sizeStep: input.SizeStep,
 		turnCount: len(card.turns), followKeys: input.FollowKeys,
 		own: input.Own, writing: input.Writing, hideLiveText: input.HideLiveText,
-		canFollowUp: input.CanFollowUp, copied: card.copied, conversation: card.conversation, problemCode: problemCode,
+		canFollowUp: input.CanFollowUp, followDisabled: input.FollowDisabled, copied: card.copied, conversation: card.conversation, problemCode: problemCode,
 		copyKey: input.CopyKey, insertKey: input.InsertKey,
 		sessions: fmt.Sprint(input.Sessions), empty: input.Empty, keepsHistory: input.KeepsHistory,
 		redoWriting: sessionCardRedoWriting(input), attachment: attachment, thumbnailCount: thumbnailCount, inputCount: len(card.previews) + len(input.LivePreviews), highlights: highlights, chat: input.Chat, reveal: input.Reveal,
@@ -472,7 +480,7 @@ func (a *app) sessionCardProjectionInput() sessionCardProjectionInput {
 	}
 	input.Reveal, _ = a.revealedAnswer()
 	input.FollowKeys = a.featureKeys(hotkey.Rewrite)
-	input.CanFollowUp = a.canFollowUp()
+	input.CanFollowUp, input.FollowDisabled = a.canFollowUp(), a.followUpBlocked()
 	for _, binding := range hotkey.CardBindings(1, a.hotkeyPlan().Cancel) {
 		action, _, _ := hotkey.CardAction(binding.ID)
 		switch action {

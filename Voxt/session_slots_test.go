@@ -6,7 +6,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sgl-project/sglang-omni/Voxt/internal/compose"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/helper/proto"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/overlay/layout"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/session"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
@@ -472,6 +474,203 @@ func TestSessionSlotCloseLeavesOtherSlotStreaming(t *testing.T) {
 	a.pump("the answer's end", func() bool { return a.bgID == "" })
 	if c := a.answer; !c.open || c.text != full {
 		t.Fatalf("session 1's card %+v", c)
+	}
+}
+
+// TestSessionSlotContinueWaitsForStreamingAnswer: only one answer streams
+// at a time. While Session 1's answer is still streaming, Session 2's card
+// says why Continue, Speak and Send wait; they work when that answer ends.
+// A locale change before the end must not strand the wait on current or parked cards.
+func TestSessionSlotContinueWaitsForStreamingAnswer(t *testing.T) {
+	full := "先订会议室 then email Ann。"
+	chat := &fakeChat{text: `{"title":"Plan","content":"` + full + `"}`, stall: true, chunkDelay: 50 * time.Millisecond}
+	set, keys, _ := fileSetup(t, "plan the offsite", chat)
+	ev := script(t, hotkeyLine(0, "rewrite/0", proto.PhaseTrigger), hotkeyLine(500, "rewrite/0", proto.PhaseTrigger))
+	a := newSessionApp(t, ev, func(s *settings.Settings) {
+		set(s)
+		s.Features.Rewrite.ShowCard = true
+	}, keys)
+	a.pump("the whole answer in the card", func() bool {
+		return a.sess.CanStop() && a.sess.Draft == full
+	})
+	a.newSession()
+	streaming := a.bgID
+	if streaming == "" || a.slot != 1 {
+		t.Fatalf("switched mid-stream: slot=%d bg=%q", a.slot, a.bgID)
+	}
+	a.answer = answerCard{open: true, id: "other", conv: "other", kind: store.KindRewrite, text: "two", target: textEditApp,
+		turns: []compose.Turn{{Instruction: "write", Answer: compose.Answer{Content: "two"}}}}
+	a.box.text = "shorter"
+	a.overlaySync()
+
+	const wait = "Continue is available when the streaming answer finishes."
+	if a.canFollowUp() {
+		t.Fatal("Continue runs a second answer beside Session 1's stream")
+	}
+	if card := a.cachedCard(); card.CanFollowUp || card.FollowTooltip != wait {
+		t.Fatalf("the blocked Continue does not explain itself: %+v", card)
+	}
+	tt := cardTester(t, a.app)
+	frames(tt)
+	if !hasExact(tt, "Continue") {
+		t.Fatalf("the disabled Continue is missing: %q", firstTexts(tt))
+	}
+	if !has(tt, wait) {
+		t.Fatalf("the disabled Continue's reason is missing: %q", firstTexts(tt))
+	}
+	if view := a.boxViewState(); view.CanSpeak || view.CanSend || view.Subtitle != wait {
+		t.Fatalf("the Rewrite card does not explain the wait: %+v", view)
+	}
+	ended, endedBox := a.answer, a.box
+	const insertError = "The text did not appear in the input field."
+	a.answer.msg = insertError
+	if message := a.cachedCard().Message; !strings.Contains(message, insertError) || !strings.Contains(message, wait) {
+		t.Fatalf("the wait hides the insert error: %q", message)
+	}
+	if subtitle := a.boxViewState().Subtitle; !strings.Contains(subtitle, insertError) || !strings.Contains(subtitle, wait) {
+		t.Fatalf("the Rewrite wait hides the insert error: %q", subtitle)
+	}
+	const retryWait = "Try again is available when the streaming answer finishes."
+	for _, action := range []struct {
+		name string
+		run  func()
+	}{
+		{name: "retry", run: func() { a.retryAnswer("") }},
+		{name: "redo", run: func() { a.redoAnswer(session.StartRequest{Kind: store.KindTranslate}) }},
+	} {
+		a.answer = answerCard{open: true, id: "failed-" + action.name, kind: store.KindTranslate, problem: &session.Problem{Code: session.ProblemEmpty}}
+		action.run()
+		if !strings.Contains(a.answer.msg, retryWait) {
+			t.Fatalf("%s does not explain the wait: %q", action.name, a.answer.msg)
+		}
+	}
+	a.answer = ended
+	a.overlaySync()
+	if a.followUpAnswer("") {
+		t.Fatal("the blocked Continue accepted a follow-up")
+	}
+
+	a.answer = answerCard{open: true, id: "failed-retry", kind: store.KindTranslate, problem: &session.Problem{Code: session.ProblemEmpty}}
+	a.retryAnswer("")
+	a.newSession()
+	if a.slot != 2 {
+		t.Fatalf("the failed card did not park in Session 2: slot=%d", a.slot)
+	}
+	a.answer = answerCard{open: true, id: "current-retry", kind: store.KindTranslate, problem: &session.Problem{Code: session.ProblemEmpty}}
+	a.retryAnswer("")
+	if a.answer.msg != retryWait {
+		t.Fatalf("the current card does not have the English retry wait: %q", a.answer.msg)
+	}
+	previousLocale := i18n.Locale()
+	i18n.SetLocale("zh-Hans")
+	t.Cleanup(func() { i18n.SetLocale(previousLocale) })
+	a.mgr.StopLLM(streaming)
+	a.pump("Session 1's answer end", func() bool { return a.bgID == "" })
+	if a.answer.msg != "" {
+		t.Errorf("the retry wait outlived the stream in the current card after a locale change: %q", a.answer.msg)
+	}
+	tap(a, "session-2", textEditApp)
+	if a.answer.msg != "" {
+		t.Errorf("the retry wait outlived the stream in the parked card after a locale change: %q", a.answer.msg)
+	}
+	a.retryAnswer("")
+	a.pump("the retry's start", func() bool { return a.sess.State.Live() })
+	a.cancelSession()
+	a.pump("the retry's cancellation", func() bool { return a.sess.State.Ended() })
+	a.answer, a.box = ended, endedBox
+	a.boxSync()
+	a.overlaySync()
+	if !a.canFollowUp() {
+		t.Fatal("Continue stayed off after Session 1's answer ended")
+	}
+	if view := a.boxViewState(); !view.CanSpeak || !view.CanSend || view.Subtitle == wait {
+		t.Fatalf("the Rewrite card kept the wait after the answer ended: %+v", view)
+	}
+	a.boxActions().send()
+	if a.box.session == "" || a.followUp != a.answer.id {
+		t.Fatalf("Session 2's follow-up did not start: box=%q followUp=%q answer=%q", a.box.session, a.followUp, a.answer.id)
+	}
+	a.cancelSession()
+	a.pump("the follow-up's cancellation", func() bool { return a.sess.State.Ended() })
+}
+
+// TestSessionSlotIdleRewriteWaitsForStreamingAnswer: a new session's idle
+// Rewrite card also waits for the other session's answer. Speak and Send say
+// why, and a blocked Send leaves the typed instruction untouched.
+func TestSessionSlotIdleRewriteWaitsForStreamingAnswer(t *testing.T) {
+	full := "先订会议室 then email Ann。"
+	chat := &fakeChat{text: `{"title":"Plan","content":"` + full + `"}`, stall: true, chunkDelay: 50 * time.Millisecond}
+	set, keys, _ := fileSetup(t, "plan the offsite", chat)
+	ev := script(t, hotkeyLine(0, "rewrite/0", proto.PhaseTrigger), hotkeyLine(500, "rewrite/0", proto.PhaseTrigger))
+	a := newSessionApp(t, ev, func(s *settings.Settings) {
+		set(s)
+		s.Features.Rewrite.ShowCard = true
+	}, keys)
+	a.pump("the whole answer in the card", func() bool {
+		return a.sess.CanStop() && a.sess.Draft == full
+	})
+	a.newSession()
+	streaming := a.bgID
+	if streaming == "" || !a.boxIdle() {
+		t.Fatalf("the new session is not idle: bg=%q box=%+v", a.bgID, a.box)
+	}
+	a.box.text = "keep this draft"
+	const wait = "Rewrite is available when the streaming answer finishes."
+	if view := a.boxViewState(); view.CanSpeak || view.CanSend || view.Subtitle != wait {
+		t.Fatalf("the idle Rewrite card does not explain the wait: %+v", view)
+	}
+	const inputError = "This text is too large."
+	a.box.err = inputError
+	if subtitle := a.boxViewState().Subtitle; !strings.Contains(subtitle, inputError) || !strings.Contains(subtitle, wait) {
+		t.Fatalf("the idle Rewrite wait hides the input error: %q", subtitle)
+	}
+	a.boxActions().send()
+	if a.box.text != "keep this draft" || a.box.instruction != "" {
+		t.Fatalf("the blocked Send changed the draft: text=%q instruction=%q", a.box.text, a.box.instruction)
+	}
+	a.boxActions().speak()
+	if a.box.session != "" {
+		t.Fatalf("the blocked Speak started %q", a.box.session)
+	}
+
+	a.mgr.StopLLM(streaming)
+	a.pump("Session 1's answer end", func() bool { return a.bgID == "" })
+	if view := a.boxViewState(); !view.CanSpeak || !view.CanSend {
+		t.Fatalf("the idle Rewrite card kept the wait: %+v", view)
+	}
+	a.boxActions().send()
+	if a.box.sending == "" {
+		t.Fatalf("the idle Rewrite's first instruction did not start: box=%+v sess=%+v bg=%q notice=%+v", a.box, a.sess, a.bgID, a.notice)
+	}
+	a.cancelSession()
+	a.pump("the first instruction's cancellation", func() bool { return a.sess.State.Ended() })
+}
+
+// TestSessionToggleRefreshesOpenCard: switching Sessions on or off redraws
+// the card already open in Session 1, even though no session switch happens.
+func TestSessionToggleRefreshesOpenCard(t *testing.T) {
+	for _, on := range []bool{true, false} {
+		t.Run(strconv.FormatBool(on), func(t *testing.T) {
+			chat := &fakeChat{texts: []string{"one"}}
+			a, _, _ := rewriteSelecting(t, chat, chatA, "summarize")
+			if !on {
+				sessionsOn(a)
+				a.overlaySync()
+			}
+			native := &fakeBoxWindow{}
+			a.ov.native = true
+			a.box.win, a.box.winShown = native, true
+			a.boxSync()
+			native.invalidations = 0
+
+			a.setSessionsOn(on)
+			if native.invalidations == 0 {
+				t.Fatal("the open Rewrite card was not redrawn")
+			}
+			if got := len(a.boxViewState().Sessions); (got == 1) != on {
+				t.Fatalf("SessionsOn=%v: %d session chips", on, got)
+			}
+		})
 	}
 }
 
