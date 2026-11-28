@@ -29,7 +29,7 @@ from sglang_omni.proto import (
     StagePayload,
     SubmitMessage,
 )
-from sglang_omni.proto.messages import StreamChunkBatchMessage
+from sglang_omni.proto.messages import AbortMessage, StreamChunkBatchMessage
 from sglang_omni.proto.session import (
     SESSION_METADATA_KEY,
     SessionIdentity,
@@ -193,6 +193,67 @@ def test_stage_routes_results_streams_and_clears_abort_state(monkeypatch) -> Non
         assert not stage_obj.stream_queue.has("req-1")
 
     asyncio.run(run())
+
+
+class FirstAbortFailsScheduler(FakeScheduler):
+    def abort(self, request_id: str) -> None:
+        self.aborted.append(request_id)
+        if len(self.aborted) == 1:
+            raise RuntimeError("release_kv_cache failed")
+        else:
+            pass
+
+
+def test_abort_listener_applies_later_aborts_after_one_fails(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A scheduler abort that raises must not stop the stage from applying later aborts."""
+
+    async def run() -> None:
+        scheduler = FirstAbortFailsScheduler()
+        control_plane = RecordingStageControlPlane()
+        stage_obj = make_stage(
+            name="asr", scheduler=scheduler, control_plane=control_plane
+        )
+        stage_obj.running = True
+        control_plane.abort_inbox.put_nowait(AbortMessage(request_id="req-1"))
+        control_plane.abort_inbox.put_nowait(AbortMessage(request_id="req-2"))
+
+        listener = asyncio.create_task(stage_obj.abort_listener())
+        await asyncio.sleep(0)
+
+        assert scheduler.aborted == ["req-1", "req-2"]
+        assert not listener.done()
+        assert "Stage asr failed to abort request req-1" in caplog.text
+        listener.cancel()
+        await listener
+
+    with caplog.at_level(logging.ERROR):
+        asyncio.run(run())
+
+
+class AbortReceiveFailsControlPlane(CloseAwareControlPlane):
+    async def recv_abort(self) -> AbortMessage:
+        raise RuntimeError("abort socket failed")
+
+
+def test_stage_run_raises_when_abort_receive_fails() -> None:
+    """A broken abort channel must fail the stage instead of leaving it serving without aborts."""
+    reported = threading.Event()
+
+    async def run() -> None:
+        stage_obj = make_stage(
+            scheduler=FakeScheduler(),
+            control_plane=AbortReceiveFailsControlPlane(),
+            process_failure_callback=reported.set,
+        )
+        with pytest.raises(RuntimeError, match="abort socket failed"):
+            await asyncio.wait_for(stage_obj.run(), timeout=2.0)
+        assert isinstance(stage_obj.background_task_error, RuntimeError)
+        assert str(stage_obj.background_task_error) == "abort socket failed"
+
+    asyncio.run(run())
+    assert reported.is_set()
 
 
 def test_stage_process_rejects_dynamic_targets_outside_static_topology() -> None:

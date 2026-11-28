@@ -2653,12 +2653,18 @@ class Stage:
                     await self.tp_fanout.fanout_abort(abort_msg)
                 else:
                     pass
-                self.on_abort(abort_msg.request_id)
+                try:
+                    self.on_abort(abort_msg.request_id)
+                except Exception:
+                    logger.exception(
+                        f"Stage {self.name} failed to abort request "
+                        f"{abort_msg.request_id}"
+                    )
         except asyncio.CancelledError:
             pass
         except Exception:
             if self.scheduler_crash_error is None and self.running:
-                logger.exception("Stage %s abort listener crashed", self.name)
+                raise
             else:
                 pass
 
