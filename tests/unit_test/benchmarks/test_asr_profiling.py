@@ -8,6 +8,8 @@ import asyncio
 import io
 import json
 import time
+from collections.abc import Sequence
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -504,35 +506,108 @@ async def test_wait_for_profile_flush_waits_for_all_status_sidecars(
 @pytest.mark.asyncio
 async def test_wait_for_profile_flush_waits_for_late_stage_writer(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Coordinator finishing before a stage process creates its events file must not exit early."""
     (tmp_path / "events_coordinator_101.jsonl").write_text("")
     (tmp_path / "run_status_101.json").write_text(
         json.dumps({"stages": ["coordinator"]})
     )
+    sleep_count = 0
 
-    async def publish_late_stage() -> None:
-        await asyncio.sleep(0.03)
-        (tmp_path / "events_asr_102.jsonl").write_text("")
-        (tmp_path / "run_status_102.json").write_text(json.dumps({"stages": ["asr"]}))
+    async def fake_sleep(interval_seconds: float) -> None:
+        nonlocal sleep_count
+        sleep_count += 1
+        if sleep_count == 1:
+            (tmp_path / "events_asr_102.jsonl").write_text("")
+            (tmp_path / "run_status_102.json").write_text(
+                json.dumps({"stages": ["asr"]})
+            )
+        else:
+            pass
 
-    publisher = asyncio.create_task(publish_late_stage())
+    monkeypatch.setattr(asr_profiling.asyncio, "sleep", fake_sleep)
     flushed = await asr_profiling.wait_for_profile_flush(
         str(tmp_path),
         expected_stages=["coordinator", "asr"],
         timeout_seconds=1.0,
     )
-    await publisher
     assert flushed is True
+    assert sleep_count == 1
     assert (tmp_path / "run_status_102.json").is_file()
 
 
 @pytest.mark.asyncio
-async def test_run_profiled_pass_forwards_started_stages_to_flush_wait(
+async def test_wait_for_profile_flush_returns_false_on_timeout(
+    tmp_path: Path,
+) -> None:
+    """Missing expected stage sidecars return False once the timeout elapses."""
+    (tmp_path / "events_coordinator_101.jsonl").write_text("")
+    (tmp_path / "run_status_101.json").write_text(
+        json.dumps({"stages": ["coordinator"]})
+    )
+    flushed = await asr_profiling.wait_for_profile_flush(
+        str(tmp_path),
+        expected_stages=["coordinator", "asr"],
+        timeout_seconds=0.0,
+    )
+    assert flushed is False
+
+
+@pytest.mark.asyncio
+async def test_wait_for_profile_flush_counts_replicated_and_colocated_stages(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """run_profiled_pass aggregates stages returned by /start_request_profile across replicas."""
+    """Wait until duplicate replica stages and co-located stage sidecars satisfy all expected counts."""
+    (tmp_path / "events_coordinator_101.jsonl").write_text("")
+    (tmp_path / "run_status_101.json").write_text(
+        json.dumps({"stages": ["coordinator"]})
+    )
+    (tmp_path / "events_asr_102.jsonl").write_text("")
+    (tmp_path / "run_status_102.json").write_text("{invalid json")
+    sleep_count = 0
+
+    async def fake_sleep(interval_seconds: float) -> None:
+        nonlocal sleep_count
+        sleep_count += 1
+        if sleep_count == 1:
+            (tmp_path / "run_status_102.json").write_text(
+                json.dumps({"stages": ["encoder", "asr"]})
+            )
+        elif sleep_count == 2:
+            (tmp_path / "events_coordinator_201.jsonl").write_text("")
+            (tmp_path / "run_status_201.json").write_text(
+                json.dumps({"stages": ["coordinator", "asr"]})
+            )
+        else:
+            pass
+
+    monkeypatch.setattr(asr_profiling.asyncio, "sleep", fake_sleep)
+    flushed = await asr_profiling.wait_for_profile_flush(
+        str(tmp_path),
+        expected_stages=["coordinator", "encoder", "asr", "coordinator", "asr"],
+        timeout_seconds=1.0,
+    )
+    assert flushed is True
+    assert sleep_count == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("response_stages", "expected_forwarded_stages"),
+    [
+        (["coordinator", "asr"], ["coordinator", "asr", "coordinator", "asr"]),
+        (None, None),
+    ],
+)
+async def test_run_profiled_pass_forwards_started_stages_to_flush_wait(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    response_stages: list[str] | None,
+    expected_forwarded_stages: list[str] | None,
+) -> None:
+    """run_profiled_pass aggregates stages across replicas and falls back to None for legacy servers."""
     observed_expected_stages: list[list[str] | None] = []
 
     def fake_start(
@@ -542,16 +617,17 @@ async def test_run_profiled_pass_forwards_started_stages_to_flush_wait(
         *,
         event_buffer_capacity: int | None,
     ) -> dict[str, object]:
-        return {
-            "run_id": run_id,
-            "event_dir": event_dir,
-            "stages": ["coordinator", "asr"],
-        }
+        payload: dict[str, object] = {"run_id": run_id, "event_dir": event_dir}
+        if response_stages is not None:
+            payload["stages"] = response_stages
+        else:
+            pass
+        return payload
 
     async def fake_wait(
         event_dir: str,
         *,
-        expected_stages: list[str] | None = None,
+        expected_stages: Sequence[str] | None = None,
         timeout_seconds: float = 5.0,
     ) -> bool:
         observed_expected_stages.append(
@@ -559,7 +635,7 @@ async def test_run_profiled_pass_forwards_started_stages_to_flush_wait(
         )
         return True
 
-    async def fake_run_pass() -> dict[str, object]:
+    async def fake_run_pass() -> dict[str, float]:
         return {"wall_clock_s": 1.0}
 
     monkeypatch.setattr(asr_profiling, "start_request_profile", fake_start)
@@ -582,4 +658,4 @@ async def test_run_profiled_pass_forwards_started_stages_to_flush_wait(
         log_prefix="[conc=4]",
     )
     assert result is not None
-    assert observed_expected_stages == [["coordinator", "asr", "coordinator", "asr"]]
+    assert observed_expected_stages == [expected_forwarded_stages]
