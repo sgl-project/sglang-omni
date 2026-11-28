@@ -4,14 +4,22 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 import torch
 from sglang.multimodal_gen.runtime.managers.forward_context import set_forward_context
 from sglang.multimodal_gen.runtime.platforms import AttentionBackendEnum
+from sglang.srt.managers.schedule_batch import FINISH_ABORT
 from sglang.srt.models.qwen3 import Qwen3ForCausalLM
+from torch import nn
 from torch.nn import functional as F
 
+from sglang_omni.config import resolve_stage_factory_args
+from sglang_omni.config.path import ConfigPath
+from sglang_omni.models.minimax_music3 import model_runner as music3_runner
+from sglang_omni.models.minimax_music3 import sglang_model as music3_model
+from sglang_omni.models.minimax_music3 import stages as music3_stages
 from sglang_omni.models.minimax_music3.acoustic import (
     MiniMaxMusic3AcousticScheduler,
     resolve_acoustic_dtype,
@@ -22,6 +30,7 @@ from sglang_omni.models.minimax_music3.config import (
     MiniMaxMusic3PipelineConfig,
     MiniMaxMusic3SingleGPUPipelineConfig,
 )
+from sglang_omni.models.minimax_music3.constants import AR_CHUNK_FRAMES
 from sglang_omni.models.minimax_music3.dav import remove_weight_norm
 from sglang_omni.models.minimax_music3.dit import (
     Attention,
@@ -31,13 +40,22 @@ from sglang_omni.models.minimax_music3.dit import (
     resolve_attention_backend,
 )
 from sglang_omni.models.minimax_music3.engine_builder import MiniMaxMusic3EngineBuilder
-from sglang_omni.models.minimax_music3.model_runner import HiddenFrameBuffer
+from sglang_omni.models.minimax_music3.prompt import (
+    AUDIO_CODE_OFFSET,
+    SPECIAL_TOKEN_IDS,
+)
 from sglang_omni.models.minimax_music3.rvq_cuda_graph import RVQDepthCudaGraphRunner
-from sglang_omni.models.minimax_music3.rvq_decoder import sample_topk_seeded
+from sglang_omni.models.minimax_music3.rvq_decoder import (
+    RVQDepthDecoder,
+    sample_topk_seeded,
+)
 from sglang_omni.models.minimax_music3.serial_offload import SerialOffloadCoordinator
+from sglang_omni.models.minimax_music3.sglang_request_builder import build_stream_output
 from sglang_omni.pipeline.stage.stream_queue import StreamItem
 from sglang_omni.platforms import current_platform
 from sglang_omni.platforms.device_graph import DeviceGraphBackend
+from sglang_omni.scheduling.message import OutgoingMessage
+from sglang_omni.scheduling.types import SchedulerRequest
 from sglang_omni.scheduling.weight_cache import checkpoint_identity
 
 
@@ -83,7 +101,7 @@ def test_chunk_windows_cover_boundaries(
 
 
 def test_hidden_frame_buffer_uses_absolute_indexes_after_discard() -> None:
-    buffer = HiddenFrameBuffer()
+    buffer = music3_runner.HiddenFrameBuffer()
     for frame in range(201):
         buffer.append(torch.full((2,), frame, dtype=torch.float32))
 
@@ -600,7 +618,7 @@ def test_engine_builder_selects_native_backbone_without_mutating_legacy_config(
     legacy_config_path = legacy_dir / "config.json"
     legacy_config_path.symlink_to(blob)
 
-    builder = MiniMaxMusic3EngineBuilder()
+    builder = MiniMaxMusic3EngineBuilder(enable_async_decode=True)
     resolved = Path(builder.resolve_checkpoint(str(root)))
     load_weights = Qwen3ForCausalLM.load_weights
 
@@ -624,7 +642,9 @@ def test_checkpoint_requires_native_qwen3_backbone(tmp_path: Path) -> None:
     (root / "flowmatching_vae.pth").touch()
 
     with pytest.raises(ValueError, match="language_model/config.json"):
-        MiniMaxMusic3EngineBuilder().resolve_checkpoint(str(root))
+        MiniMaxMusic3EngineBuilder(enable_async_decode=True).resolve_checkpoint(
+            str(root)
+        )
 
 
 def test_checkpoint_rejects_non_qwen3_native_config(tmp_path: Path) -> None:
@@ -642,7 +662,9 @@ def test_checkpoint_rejects_non_qwen3_native_config(tmp_path: Path) -> None:
     (root / "flowmatching_vae.pth").touch()
 
     with pytest.raises(ValueError, match="model_type='qwen3'"):
-        MiniMaxMusic3EngineBuilder().resolve_checkpoint(str(root))
+        MiniMaxMusic3EngineBuilder(enable_async_decode=True).resolve_checkpoint(
+            str(root)
+        )
 
 
 def test_checkpoint_rejects_hidden_size_mismatch(tmp_path: Path) -> None:
@@ -660,7 +682,9 @@ def test_checkpoint_rejects_hidden_size_mismatch(tmp_path: Path) -> None:
     (root / "flowmatching_vae.pth").touch()
 
     with pytest.raises(ValueError, match="hidden_size mismatch"):
-        MiniMaxMusic3EngineBuilder().resolve_checkpoint(str(root))
+        MiniMaxMusic3EngineBuilder(enable_async_decode=True).resolve_checkpoint(
+            str(root)
+        )
 
 
 def test_serial_offload_identity_includes_native_backbone_config(
@@ -679,6 +703,7 @@ def test_serial_offload_identity_includes_native_backbone_config(
     builder = MiniMaxMusic3EngineBuilder(
         enable_serial_offload=True,
         serial_offload_source="ram",
+        enable_async_decode=True,
     )
     builder.checkpoint_root = str(root)
     coordinator = SerialOffloadCoordinator()
@@ -705,3 +730,452 @@ def test_serial_offload_identity_includes_native_backbone_config(
 
     assert coordinator.ar_residency is not None
     assert native_config in checkpoint_paths
+
+
+class TinyMusic3Model(nn.Module):
+    """The real MiniMax audio modules on a one-layer stand-in for the Qwen3 backbone."""
+
+    def __init__(self, device: torch.device) -> None:
+        super().__init__()
+        torch.manual_seed(0)
+        hidden_size, audio_vocab_size, num_codebooks = 16, 64, 8
+        self.num_codebooks = num_codebooks
+        self.audio_vocab_size = audio_vocab_size
+        self.mel_token_offset = AUDIO_CODE_OFFSET
+        self.stop_mel_token = SPECIAL_TOKEN_IDS["<|audio_end|>"]
+        self.frame_embedding_scale = num_codebooks**-0.5
+        self.graph_feedback_buffer = None
+        self.rvq_depth_graph = None
+        self.register_buffer(
+            "c0_logit_ids", music3_model.build_c0_logit_ids(self.stop_mel_token, device)
+        )
+        self.register_buffer(
+            "audio_embedding_offsets",
+            (torch.arange(num_codebooks - 1) * audio_vocab_size).unsqueeze(0),
+        )
+        vocab_size = int(self.c0_logit_ids[-1]) + 1
+        self.embed_tokens = nn.Embedding(vocab_size, hidden_size)
+        self.audio_embeddings = nn.Embedding(
+            audio_vocab_size * (num_codebooks - 1), hidden_size
+        )
+        self.rvq_decoder = RVQDepthDecoder(
+            hidden_size=hidden_size,
+            num_layers=1,
+            num_heads=2,
+            intermediate_size=32,
+            audio_vocab_size=audio_vocab_size,
+            num_codebooks=num_codebooks,
+        )
+        self.backbone = nn.Linear(hidden_size, hidden_size)
+        self.lm_head = nn.Linear(hidden_size, vocab_size, bias=False)
+        self.to(device).eval()
+
+    def get_input_embeddings(self) -> nn.Embedding:
+        return self.embed_tokens
+
+    def step(
+        self,
+        input_embeds: torch.Tensor,
+        requests: list[SchedulerRequest],
+        stop_frames: dict[int, int],
+    ) -> SimpleNamespace:
+        """One forward; a pair whose request is listed in stop_frames samples stop there."""
+        rows = torch.arange(len(requests), device=input_embeds.device) % 2
+        hidden = torch.tanh(self.backbone(input_embeds) + 0.25 * rows[:, None])
+        logits = self.lm_head(hidden).float()
+        for pair, cond in enumerate(requests[0::2]):
+            ar_state = cond.data.ar_state
+            frame = ar_state.sampling_position // self.num_codebooks
+            if stop_frames.get(ar_state.seed) == frame:
+                logits[2 * pair : 2 * pair + 2, self.stop_mel_token] = 1e4
+            else:
+                pass
+        return SimpleNamespace(
+            logits_output=SimpleNamespace(
+                hidden_states=hidden, next_token_logits=logits
+            ),
+            next_token_ids=None,
+        )
+
+
+class FinishFlag:
+    """The Req fields the runner reads; set by the stand-in output step."""
+
+    def __init__(self) -> None:
+        self.done = False
+        self.is_retracted = False
+        self.to_finish = None
+
+    def finished(self) -> bool:
+        return self.done
+
+
+def seeded_gumbel_sample(
+    logits: torch.Tensor, seeds: torch.Tensor, positions: torch.Tensor
+) -> torch.Tensor:
+    """CPU stand-in for the seeded sampler: each row depends only on its own seed and position."""
+    drawn = []
+    for row, seed, position in zip(logits.float(), seeds.tolist(), positions.tolist()):
+        generator = torch.Generator().manual_seed(seed * 1_000_003 + position)
+        noise = torch.rand(row.shape, generator=generator).to(row.device)
+        drawn.append(torch.argmax(row - torch.log(-torch.log(noise))))
+    return torch.stack(drawn)
+
+
+def music3_runner_for(
+    model: TinyMusic3Model,
+) -> music3_runner.MiniMaxMusic3ModelRunner:
+    runner = music3_runner.MiniMaxMusic3ModelRunner.__new__(
+        music3_runner.MiniMaxMusic3ModelRunner
+    )
+    runner.model = model
+    runner.forced_codes_dir = None
+    runner.dump_dir = None
+    runner.request_data = {}
+    runner.serial_offload = SimpleNamespace(
+        enabled=False, begin_dit_handoff=lambda request_id: None
+    )
+    runner.host_staging_buffers = []
+    runner.staging_slot = 0
+    if model.c0_logit_ids.device.type == "cpu":
+        runner.next_host_staging = lambda shape, dtype: torch.empty(shape, dtype=dtype)
+    else:
+        pass
+    return runner
+
+
+def music3_pairs(limits: list[int]) -> list[list[SchedulerRequest]]:
+    pairs = []
+    for seed, limit in enumerate(limits):
+        uncond = SimpleNamespace(req=FinishFlag(), ar_state=None, cfg_uncond=None)
+        cond = SimpleNamespace(
+            req=FinishFlag(),
+            cfg_uncond=uncond,
+            ar_state=music3_runner.MiniMaxMusic3ARState(
+                sampling_seed=1000 + seed, seed=seed, decode_limit=limit
+            ),
+            minimax_state=SimpleNamespace(),
+            prompt_tokens=16,
+        )
+        pairs.append(
+            [
+                SchedulerRequest(request_id=f"song{seed}", data=cond),
+                SchedulerRequest(request_id=f"song{seed}-uncond", data=uncond),
+            ]
+        )
+    return pairs
+
+
+def process_output(
+    runner: music3_runner.MiniMaxMusic3ModelRunner,
+    requests: list[SchedulerRequest],
+    token_ids: list[int],
+    emitted: dict[str, list[int]],
+    streamed: dict[str, list[OutgoingMessage]],
+) -> None:
+    """What output processing does with one step: record ids, finish on stop or
+    length, stream the queued windows, and flush the tail of a finished pair."""
+    for pair, cond in enumerate(requests[0::2]):
+        if cond.data.req.finished():
+            continue
+        else:
+            pass
+        token = token_ids[2 * pair]
+        emitted.setdefault(cond.request_id, []).append(token)
+        ar_state = cond.data.ar_state
+        done = (
+            token == SPECIAL_TOKEN_IDS["<|audio_end|>"]
+            or ar_state.generated_frames >= ar_state.decode_limit
+        )
+        if done:
+            cond.data.req.done = True
+            requests[2 * pair + 1].data.req.done = True
+        else:
+            pass
+        messages = streamed.setdefault(cond.request_id, [])
+        messages.extend(build_stream_output(cond.request_id, cond.data, None))
+        if not done and ar_state.generated_frames == AR_CHUNK_FRAMES + 1:
+            assert len(messages) == 1
+            assert (
+                messages[0].metadata["chunk_idx"],
+                messages[0].metadata["start_frame"],
+                messages[0].metadata["end_frame"],
+                messages[0].metadata["is_final"],
+            ) == (0, 0, AR_CHUNK_FRAMES, False)
+        else:
+            pass
+        if done:
+            runner.on_request_finished(cond.request_id, cond.data)
+            messages.extend(build_stream_output.flush(cond.request_id, cond.data))
+        else:
+            pass
+
+
+def launch_event(model: TinyMusic3Model):
+    """The completion event the scheduler waits on before resolve, None on CPU."""
+    device = model.c0_logit_ids.device
+    if device.type == "cpu":
+        return None
+    else:
+        event = torch.get_device_module(device).Event()
+        event.record()
+        return event
+
+
+def generate_music3(
+    model: TinyMusic3Model,
+    pairs: list[list[SchedulerRequest]],
+    stop_frames: dict[int, int],
+    *,
+    lookahead: bool,
+) -> tuple[dict[str, list[int]], dict[str, list[OutgoingMessage]]]:
+    """Prefill, then decode in scheduler order: with lookahead, step N+1 launches
+    from the batch as it stood before step N resolved. Returns the token ids and
+    the stream messages of every song."""
+    runner = music3_runner_for(model)
+    emitted: dict[str, list[int]] = {}
+    streamed: dict[str, list[OutgoingMessage]] = {}
+    batch = [request for pair in pairs for request in pair]
+    prompts = torch.stack(
+        [
+            torch.randn(16, generator=torch.Generator().manual_seed(row // 2))
+            for row in range(len(batch))
+        ]
+    ).to(model.c0_logit_ids.device)
+    result = model.step(prompts, batch, stop_frames)
+    runner.advance(result, batch, emit=False)
+    process_output(runner, batch, result.next_token_ids.tolist(), emitted, streamed)
+    pending = None
+    while True:
+        batch = [r for pair in pairs if not pair[0].data.req.finished() for r in pair]
+        if batch:
+            forward_batch = SimpleNamespace(input_embeds=None)
+            runner.before_decode(forward_batch, None, batch, is_lookahead=lookahead)
+            result = model.step(forward_batch.input_embeds, batch, stop_frames)
+        else:
+            pass
+        if not lookahead:
+            if not batch:
+                return emitted, streamed
+            else:
+                pass
+            runner.post_decode(result, None, None, batch)
+            process_output(
+                runner, batch, result.next_token_ids.tolist(), emitted, streamed
+            )
+            continue
+        else:
+            pass
+        launched = None
+        if batch:
+            frame = runner.post_decode_launch(result, None, batch)
+            launched = (frame, result, batch, launch_event(model))
+        else:
+            pass
+        if pending is not None:
+            frame, previous, previous_batch, event = pending
+            if event is not None:
+                event.synchronize()
+            else:
+                pass
+            runner.post_decode_resolve(frame, previous, None, None, previous_batch)
+            process_output(
+                runner,
+                previous_batch,
+                previous.next_token_ids.tolist(),
+                emitted,
+                streamed,
+            )
+        else:
+            pass
+        if launched is None:
+            return emitted, streamed
+        else:
+            pending = launched
+
+
+def assert_windows_cover_the_song(messages: list[OutgoingMessage], frames: int) -> None:
+    """The stream carries exactly the song's windows: the non-final ones emitted
+    during decode, then the terminal tail from the flush."""
+    assert messages
+    got = [
+        (
+            message.metadata["chunk_idx"],
+            message.metadata["start_frame"],
+            message.metadata["end_frame"],
+            message.metadata["is_final"],
+        )
+        for message in messages
+    ]
+    assert got == [
+        (window.index, window.start, window.end, window.is_last)
+        for window in chunk_windows(frames)
+    ]
+    assert all(
+        message.data.shape[1]
+        == message.metadata["end_frame"] - message.metadata["start_frame"]
+        for message in messages
+    )
+
+
+def assert_lookahead_matches_sync(
+    device: torch.device, limits: list[int], stop_frames: dict[int, int]
+) -> dict[str, int]:
+    """Lookahead keeps a just-finished pair in one extra batch. The stand-in
+    backbone is not batch-invariant, so hidden states agree to rounding here;
+    served audio stays bitwise equal under the deterministic default.
+    Returns the frame count of every song."""
+    sync_pairs, lookahead_pairs = music3_pairs(limits), music3_pairs(limits)
+    model = TinyMusic3Model(device)
+    with torch.inference_mode():
+        sync_ids, sync_stream = generate_music3(
+            model, sync_pairs, stop_frames, lookahead=False
+        )
+        lookahead_ids, lookahead_stream = generate_music3(
+            model, lookahead_pairs, stop_frames, lookahead=True
+        )
+
+    assert lookahead_ids == sync_ids
+    frames = {}
+    for sync_pair, lookahead_pair in zip(sync_pairs, lookahead_pairs, strict=True):
+        request_id = sync_pair[0].request_id
+        expected, got = sync_pair[0].data.ar_state, lookahead_pair[0].data.ar_state
+        assert (got.generated_frames, got.finish_reason) == (
+            expected.generated_frames,
+            expected.finish_reason,
+        ), request_id
+        frames[request_id] = expected.generated_frames
+        assert_windows_cover_the_song(sync_stream[request_id], frames[request_id])
+        assert_windows_cover_the_song(lookahead_stream[request_id], frames[request_id])
+        for a, b in zip(
+            sync_stream[request_id], lookahead_stream[request_id], strict=True
+        ):
+            assert a.metadata == b.metadata, request_id
+            assert torch.allclose(a.data, b.data, rtol=1e-5, atol=1e-6), request_id
+    for seed, limit in enumerate(limits):
+        stops = seed in stop_frames and stop_frames[seed] <= limit
+        assert sync_pairs[seed][0].data.ar_state.finish_reason == (
+            "stop" if stops else "length"
+        )
+    return frames
+
+
+def cpu_window_sync(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The window path waits on the device stream; a CPU stream has nothing to wait for."""
+    monkeypatch.setattr(
+        torch.cpu.Stream, "synchronize", lambda self: None, raising=False
+    )
+
+
+@pytest.mark.parametrize(
+    ("limits", "stop_frames"),
+    [
+        ([12], {}),
+        ([AR_CHUNK_FRAMES + 3], {}),
+        ([12, 9, 30], {1: 5}),
+        ([30, 30, 30, 30], {0: 3, 3: 17}),
+    ],
+)
+def test_async_decode_commits_the_frames_sync_decode_commits(
+    monkeypatch: pytest.MonkeyPatch, limits: list[int], stop_frames: dict[int, int]
+) -> None:
+    """Launching frame N+1 before frame N resolves must not change any song: same
+    token ids, frame counts, finish reasons and streamed windows, including the
+    pair that stops or hits its length while a lookahead frame is already in flight."""
+    monkeypatch.setattr(music3_runner, "sample_topk_seeded", seeded_gumbel_sample)
+    monkeypatch.setattr(music3_model, "sample_topk_seeded", seeded_gumbel_sample)
+    cpu_window_sync(monkeypatch)
+    assert_lookahead_matches_sync(torch.device("cpu"), limits, stop_frames)
+
+
+@pytest.mark.accelerator
+def test_async_decode_matches_sync_with_the_seeded_sampler_and_windows() -> None:
+    """The same parity with the real seeded sampler, across the 200-frame window
+    and its hop, so non-final windows stream while a frame is in flight."""
+    device = get_test_device_if_eligible()
+    frames = assert_lookahead_matches_sync(device, [260, 230, 120], {1: 215, 2: 40})
+    assert any(count > AR_CHUNK_FRAMES for count in frames.values())
+
+
+@torch.inference_mode()
+def test_async_decode_skips_a_pair_aborted_before_its_frame_resolves(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A deferred abort only sets to_finish, so the pair is not finished yet when
+    its launched frame resolves. That frame must commit nothing for the cancelled
+    pair and queue it no window, while the other pair commits the same frame and
+    queues its first window."""
+    monkeypatch.setattr(music3_runner, "sample_topk_seeded", seeded_gumbel_sample)
+    monkeypatch.setattr(music3_model, "sample_topk_seeded", seeded_gumbel_sample)
+    cpu_window_sync(monkeypatch)
+    model = TinyMusic3Model(torch.device("cpu"))
+    runner = music3_runner_for(model)
+    pairs = music3_pairs([2 * AR_CHUNK_FRAMES, 2 * AR_CHUNK_FRAMES])
+    batch = [request for pair in pairs for request in pair]
+
+    def step(input_embeds: torch.Tensor) -> SimpleNamespace:
+        result = model.step(input_embeds, batch, {})
+        result.logits_output.next_token_logits[:, model.stop_mel_token] = -1e4
+        return result
+
+    runner.advance(step(torch.randn(len(batch), 16)), batch, emit=False)
+    for _ in range(AR_CHUNK_FRAMES):
+        forward_batch = SimpleNamespace(input_embeds=None)
+        runner.before_decode(forward_batch, None, batch)
+        runner.post_decode(step(forward_batch.input_embeds), None, None, batch)
+    forward_batch = SimpleNamespace(input_embeds=None)
+    runner.before_decode(forward_batch, None, batch, is_lookahead=True)
+    result = step(forward_batch.input_embeds)
+    frame = runner.post_decode_launch(result, None, batch)
+    for request in pairs[0]:
+        request.data.req.to_finish = FINISH_ABORT()
+
+    runner.post_decode_resolve(frame, result, None, None, batch)
+
+    cancelled, survivor = pairs[0][0].data.ar_state, pairs[1][0].data.ar_state
+    assert not pairs[0][0].data.req.finished()
+    assert cancelled.generated_frames == AR_CHUNK_FRAMES
+    assert cancelled.pending_chunks == []
+    assert survivor.generated_frames == AR_CHUNK_FRAMES + 1
+    assert [metadata["chunk_idx"] for _, metadata in survivor.pending_chunks] == [0]
+
+
+def test_reference_replay_keeps_decode_synchronous() -> None:
+    """Replay consumes one reference frame per launch, so it never takes the lookahead."""
+    runner = music3_runner_for(TinyMusic3Model(torch.device("cpu")))
+    batch = SimpleNamespace(reqs=[])
+    assert runner.lookahead_eligible(batch)
+    runner.forced_codes_dir = "/references"
+    assert not runner.lookahead_eligible(batch)
+
+
+def test_async_decode_switch_reaches_the_scheduler_and_offload_stays_sync(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The parsed override travels through create_ar_executor and the builder to
+    the scheduler; the engine build is stubbed."""
+    monkeypatch.setattr(torch.backends.cudnn, "enabled", torch.backends.cudnn.enabled)
+    monkeypatch.setattr(torch.backends.cuda, "enable_cudnn_sdp", lambda enabled: None)
+
+    def build(builder, model_path, **kwargs) -> SimpleNamespace:
+        builder.device = "cpu"
+        return SimpleNamespace(**builder.extra_scheduler_kwargs())
+
+    monkeypatch.setattr(MiniMaxMusic3EngineBuilder, "build", build)
+
+    def executor_args(config) -> dict:
+        stages = {stage.name: stage for stage in config.stages}
+        return resolve_stage_factory_args(stages["minimax_music3_ar"], config, gpu_id=0)
+
+    config = MiniMaxMusic3SingleGPUPipelineConfig(model_path="/models/minimax")
+    values = config.model_dump()
+    ConfigPath.parse(
+        "stages.minimax_music3_ar.factory.enable_async_decode", type(config)
+    ).write(values, False)
+    disabled = executor_args(type(config)(**values))
+
+    assert disabled["enable_async_decode"] is False
+    create = music3_stages.create_ar_executor
+    assert create(**disabled).enable_async_decode is False
+    assert create(**executor_args(config)).enable_async_decode is True
+    assert not create("/models/minimax", enable_serial_offload=True).enable_async_decode

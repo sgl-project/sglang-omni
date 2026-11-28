@@ -955,8 +955,10 @@ that happened to contain an older version of the test.
 
 - `unit_test/minimax_music3/`: MiniMax Music 3 request validation, placement,
   acoustic configuration, hidden-frame buffering, deterministic sampling,
-  attention and decoder contracts, abort handling, and relay tensor validation.
-  Kernel and CUDA Graph parity cases in `test_core.py` are marked `accelerator`.
+  attention and decoder contracts, abort handling, relay tensor validation, and
+  AR async decode committing the same frames as synchronous decode.
+  Kernel, CUDA Graph and seeded-sampler async decode parity cases in
+  `test_core.py` are marked `accelerator`.
 
 - `unit_test/preprocessing/`: Reference-audio cache identity, bit-exact cached
   resampling, audio-source resolution (including declared G.711 bytes getting

@@ -63,7 +63,9 @@ def test_offload_enforces_one_cfg_pair_and_preserves_graph_selection(
     enable_serial_offload: bool,
     disable_cuda_graph: bool,
 ) -> None:
-    builder = MiniMaxMusic3EngineBuilder(enable_serial_offload=enable_serial_offload)
+    builder = MiniMaxMusic3EngineBuilder(
+        enable_serial_offload=enable_serial_offload, enable_async_decode=True
+    )
     overrides = build_generation_batch_overrides(
         server_args_overrides={
             "max_running_requests": 16,
@@ -352,7 +354,7 @@ def test_resident_music3_imports_without_memory_saver() -> None:
             "MiniMaxMusic3AcousticDecoder; "
             "from sglang_omni.models.minimax_music3.engine_builder import "
             "MiniMaxMusic3EngineBuilder; "
-            "assert not MiniMaxMusic3EngineBuilder().enable_serial_offload",
+            "assert not MiniMaxMusic3EngineBuilder(enable_async_decode=True).enable_serial_offload",
         ],
         capture_output=True,
         text=True,
