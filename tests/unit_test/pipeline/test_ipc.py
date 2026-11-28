@@ -36,6 +36,8 @@ from sglang_omni.config.topology import (
 )
 from sglang_omni.pipeline.stage_workers import StageLaunchConfig, StageWorkerProcessSpec
 from sglang_omni.profiler.event_recorder import get_recorder
+from sglang_omni.profiler.profiler_control import ProfilerControlClient
+from sglang_omni.proto.messages import ProfilerStartMessage
 from sglang_omni.serve import launcher
 from sglang_omni.serve.openai_api import ServerStatus
 from sglang_omni.serve.protocol import (
@@ -562,11 +564,18 @@ async def run_launcher_with_fake_runner(
             await asyncio.Future()
 
     class FakeProfilerControl:
-        def __init__(self, stage_control_endpoints: dict[str, str]) -> None:
-            del stage_control_endpoints
+        def __init__(
+            self,
+            stage_control_endpoints: dict[str, str],
+            *,
+            stage_writer_counts: dict[str, int] | None = None,
+        ) -> None:
+            self.stage_control_endpoints = stage_control_endpoints
+            self.stage_writer_counts = stage_writer_counts
 
-        async def broadcast_start(self, **kwargs) -> None:
+        async def broadcast_start(self, **kwargs) -> list[str]:
             profiler_calls.starts.append(kwargs)
+            return []
 
         async def broadcast_stop(self, **kwargs) -> None:
             profiler_calls.stops.append(kwargs)
@@ -1161,8 +1170,9 @@ def test_start_profile_request_only_mode_does_not_require_trace_template(
         def __init__(self) -> None:
             self.starts: list[dict] = []
 
-        async def broadcast_start(self, **kwargs) -> None:
+        async def broadcast_start(self, **kwargs) -> list[str]:
             self.starts.append(kwargs)
+            return []
 
     app = FastAPI()
     ctl = FakeProfilerControl()
@@ -1224,8 +1234,9 @@ def test_profiler_start_routes_pass_event_buffer_capacity(
             event_dir: str | None = None,
             enable_torch: bool = True,
             event_buffer_capacity: int | None = None,
-        ) -> None:
+        ) -> list[str]:
             self.capacities.append(event_buffer_capacity)
+            return []
 
     recorder = FakeRecorder()
     control = FakeProfilerControl()
@@ -1285,8 +1296,9 @@ def test_profiler_start_routes_reject_invalid_event_buffer_capacity(
             event_dir: str | None = None,
             enable_torch: bool = True,
             event_buffer_capacity: int | None = None,
-        ) -> None:
+        ) -> list[str]:
             self.starts += 1
+            return []
 
     recorder = FakeRecorder()
     control = FakeProfilerControl()
@@ -1314,8 +1326,9 @@ class RecordingProfilerControl:
     def __init__(self) -> None:
         self.calls: list[str] = []
 
-    async def broadcast_start(self, **kwargs: object) -> None:
+    async def broadcast_start(self, **kwargs: object) -> list[str]:
         self.calls.append("start")
+        return []
 
     async def broadcast_stop(self, **kwargs: object) -> None:
         self.calls.append("stop")
@@ -1350,7 +1363,7 @@ def test_start_profile_torch_mode_still_requires_trace_template() -> None:
     from sglang_omni.serve import launcher
 
     class FakeProfilerControl:
-        async def broadcast_start(self, **kwargs) -> None:
+        async def broadcast_start(self, **kwargs) -> list[str]:
             raise AssertionError("start_profile should fail before broadcasting")
 
     app = FastAPI()
@@ -1367,14 +1380,29 @@ def test_start_request_profile_returns_started_stages(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """POST /start_request_profile reports coordinator plus every broadcasted stage so clients can wait for all writers."""
-    from sglang_omni.serve import launcher
 
     class FakeRecorder:
-        def start(self, **kwargs: object) -> None:
-            return None
+        def start(
+            self,
+            run_id: str,
+            event_dir: str,
+            stage: str,
+            *,
+            event_buffer_capacity: int | None = None,
+        ) -> str:
+            return str(Path(event_dir) / f"events_{stage}_1.jsonl")
 
     class FakeProfilerControl:
-        async def broadcast_start(self, **kwargs: object) -> list[str]:
+        async def broadcast_start(
+            self,
+            run_id: str,
+            trace_path_template: str,
+            config: dict[str, object] | None = None,
+            stages: list[str] | None = None,
+            event_dir: str | None = None,
+            enable_torch: bool = True,
+            event_buffer_capacity: int | None = None,
+        ) -> list[str]:
             return ["encoder", "asr"]
 
     monkeypatch.setenv("SGLANG_OMNI_ADMIN_KEY", "")
@@ -1384,16 +1412,48 @@ def test_start_request_profile_returns_started_stages(
         app, FakeProfilerControl(), profiler_dir=str(tmp_path)
     )
     with TestClient(app) as client:
-        resp = client.post(
+        response = client.post(
             "/start_request_profile",
             json={"run_id": "run-stages", "event_dir": str(tmp_path / "events")},
         )
-    assert resp.status_code == 200
-    assert resp.json() == {
+    assert response.status_code == 200
+    assert response.json() == {
         "run_id": "run-stages",
         "event_dir": str(tmp_path / "events"),
         "stages": ["coordinator", "encoder", "asr"],
     }
+
+
+@pytest.mark.asyncio
+async def test_profiler_control_broadcast_start_returns_only_sent_stages() -> None:
+    """ProfilerControlClient.broadcast_start omits unknown stages and expands TP writer counts."""
+
+    class FakePushSocket:
+        def __init__(self) -> None:
+            self.sent_messages: list[ProfilerStartMessage] = []
+
+        async def send(self, message: ProfilerStartMessage) -> None:
+            self.sent_messages.append(message)
+
+    encoder_socket = FakePushSocket()
+    asr_socket = FakePushSocket()
+    control = ProfilerControlClient(
+        stage_endpoints={"encoder": "inproc://encoder", "asr": "inproc://asr"},
+        socks={"encoder": encoder_socket, "asr": asr_socket},
+        stage_writer_counts={"asr": 2},
+    )
+
+    sent_stages = await control.broadcast_start(
+        run_id="run-filter",
+        trace_path_template="",
+        stages=["encoder", "unknown_stage", "asr"],
+        event_dir="/tmp/events",
+        enable_torch=False,
+    )
+
+    assert sent_stages == ["encoder", "asr", "asr"]
+    assert len(encoder_socket.sent_messages) == 1
+    assert len(asr_socket.sent_messages) == 1
 
 
 @pytest.mark.asyncio
