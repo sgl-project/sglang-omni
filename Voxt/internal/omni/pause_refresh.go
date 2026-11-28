@@ -24,7 +24,6 @@ type realtimeAppend struct {
 type pauseRefreshDetector struct {
 	detector           *vad.Detector
 	closedSegmentCount int
-	observedSegments   int
 	speechEpoch        int
 }
 
@@ -62,17 +61,19 @@ func pauseRefreshEnabled(request asr.StreamRequest, spec Spec, pauseDurationMS i
 		(pauseDurationMS == 200 || pauseDurationMS == 300)
 }
 
-func (d *pauseRefreshDetector) observe(pcm []byte) *pauseRefreshHint {
+func (d *pauseRefreshDetector) observe(pcm []byte, trackSpeechEpoch bool) *pauseRefreshHint {
 	detector := d.detector
 	detector.Write(pcm)
-	segments := detector.Segments()
-	if len(segments) > d.observedSegments {
-		d.speechEpoch += len(segments) - d.observedSegments
-		d.observedSegments = len(segments)
-	} else {
-	}
 	closedSegments := detector.ClosedSegmentsSince(d.closedSegmentCount)
 	d.closedSegmentCount += len(closedSegments)
+	if trackSpeechEpoch {
+		d.speechEpoch = d.closedSegmentCount
+		if detector.Speaking() {
+			d.speechEpoch++
+		} else {
+		}
+	} else {
+	}
 	if len(closedSegments) == 0 || detector.Speaking() {
 		return nil
 	}

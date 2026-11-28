@@ -295,7 +295,7 @@ func (s *live) Send(pcm []byte) error {
 	var pauseHint *pauseRefreshHint
 	var speechEpoch *int
 	if s.pauseRefresh != nil {
-		pauseHint = s.pauseRefresh.observe(pcm)
+		pauseHint = s.pauseRefresh.observe(pcm, s.deferBusyPause)
 		if s.deferBusyPause {
 			epoch := s.pauseRefresh.speechEpoch
 			speechEpoch = &epoch

@@ -3,6 +3,7 @@
 // then finalized.
 #pragma once
 
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -24,6 +25,10 @@
 #include "qwen3_asr/realtime_refresh.h"
 
 namespace qwen3_asr {
+
+namespace tests {
+struct RealtimeSessionTestAccess;
+}
 
 struct RealtimeSettings {
   int decode_interval_samples = 0;
@@ -119,11 +124,14 @@ public:
   void CancelShadowFinal();
 
 private:
+  friend struct tests::RealtimeSessionTestAccess;
+
   struct Segment {
     int segment_id = 0;
     long start_sample = 0;
     long next_refresh_sample = 0;
     long last_submitted_refresh_end_sample = 0;
+    long last_completed_refresh_end_sample = 0;
     long last_pause_speech_end_sample = 0;
     std::optional<std::string> language;
     int decode_count = 0;
@@ -146,31 +154,22 @@ private:
 
   struct PauseRefreshStats {
     uint64_t hints_received = 0;
-    uint64_t hints_valid = 0;
-    uint64_t hints_invalid = 0;
-    uint64_t hints_duplicate = 0;
-    uint64_t hints_rejected_busy = 0;
-    uint64_t hints_rejected_covered = 0;
-    uint64_t hints_rejected_insufficient = 0;
-    uint64_t hints_rejected_final = 0;
-    uint64_t hints_rejected_cancelled = 0;
-    uint64_t hints_rejected_finalizing = 0;
-    uint64_t hints_superseded_by_cadence = 0;
+    std::array<uint64_t, kPauseHintDispositionCount> terminal_dispositions{};
     uint64_t hints_deferred = 0;
-    uint64_t deferred_superseded = 0;
-    uint64_t deferred_invalidated_resume = 0;
-    uint64_t deferred_invalidated_rollover = 0;
-    uint64_t deferred_invalidated_final = 0;
-    uint64_t deferred_invalidated_malformed = 0;
-    uint64_t deferred_invalidated_close = 0;
-    uint64_t deferred_invalidated_disabled = 0;
-    uint64_t deferred_invalidated_covered = 0;
-    uint64_t deferred_invalidated_insufficient = 0;
     uint64_t speech_metadata_invalid = 0;
-    uint64_t deferred_admitted = 0;
     uint64_t cadence_submissions = 0;
     uint64_t immediate_pause_submissions = 0;
     uint64_t deferred_pause_submissions = 0;
+  };
+
+  struct WorkerTiming {
+    std::optional<std::chrono::steady_clock::time_point> submitted_at;
+    std::optional<std::chrono::steady_clock::time_point> worker_started_at;
+    // Prefill and shadow setup precedes transcription; refresh uses worker
+    // start.
+    std::optional<std::chrono::steady_clock::time_point> execution_started_at;
+    std::optional<std::chrono::steady_clock::time_point> decode_finished_at;
+    std::optional<std::chrono::steady_clock::time_point> callback_finished_at;
   };
 
   struct RefreshTiming {
@@ -179,15 +178,28 @@ private:
     int segment_id = 0;
     long end_sample = 0;
     long speech_end_sample = 0;
-    std::chrono::steady_clock::time_point submitted_at;
-    std::chrono::steady_clock::time_point started_at;
+    WorkerTiming worker;
+    std::optional<std::chrono::steady_clock::time_point>
+        preview_send_attempt_at;
   };
 
   void Append(const nlohmann::json &audio,
               const nlohmann::json &preview_refresh,
               const nlohmann::json &speech_epoch, bool pause_hint_received);
-  void DiscardDeferredPauseHint(const char *reason);
+  void DiscardDeferredPauseHint(PauseHintDisposition disposition);
+  void RecordPauseHintDisposition(
+      PauseHintDisposition disposition,
+      std::optional<PauseRefreshHint> hint = std::nullopt, int segment_id = -1,
+      long submitted_refresh_end_sample = -1,
+      long completed_refresh_end_sample = -1);
   void LogAttribution(nlohmann::ordered_json event) const;
+  template <typename EventFactory>
+  void LogAttributionLazy(EventFactory &&make_event) const {
+    if (!preview_refresh_attribution_enabled_.load()) {
+      return;
+    }
+    LogAttribution(std::forward<EventFactory>(make_event)());
+  }
   void LogAttributionSummary();
   // The Final starts at this sample of the session's audio, not at the first:
   // the windows prefilled for it are dropped, its prompt's head kept.
@@ -217,6 +229,16 @@ private:
   MaybeStartRefresh(std::optional<PauseRefreshHint> pause_hint = std::nullopt,
                     bool pause_hint_received = false,
                     bool pause_hint_malformed = false);
+  void SubmitRefresh(std::unique_lock<std::mutex> &lock,
+                     std::vector<float> samples, TranscriptionOptions options,
+                     std::shared_ptr<RefreshReuse> reuse, int segment_id,
+                     long end_sample, long speech_end_sample,
+                     RefreshSource source);
+  void CompleteRefresh(int segment_id, long end_sample, long speech_end_sample,
+                       RefreshSource source,
+                       std::shared_ptr<RefreshTiming> timing,
+                       std::optional<omni_common::TranscriptionResult> result,
+                       std::exception_ptr error);
   void MaybeStartFinalPrefill();
   // Note (XXXXRT666): a preview keeps its early text as a prefix decided on
   // less audio, so on recordings over 24 s the Final differs from it after a
@@ -247,6 +269,8 @@ private:
   int next_refresh_decode_index_ = 1;
   bool attribution_summary_logged_ = false;
   bool pause_refresh_final_handoff_ = false;
+  // A synchronization seam used only by the rollover race regression.
+  std::function<void()> before_rollover_finalize_for_test_;
   // A Final with the context final_context_ is to be prefilled, until one is
   // taken.
   bool should_prefill_final_ = false;

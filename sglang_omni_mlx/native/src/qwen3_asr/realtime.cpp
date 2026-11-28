@@ -12,6 +12,7 @@
 #include <optional>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "common/audio.h"
@@ -57,9 +58,95 @@ constexpr int kShadowAnchorTokens = 3;
 // queued would otherwise wait behind one queued meanwhile.
 constexpr std::chrono::seconds kShadowQuietTime{2};
 
+std::mutex attribution_output_mutex;
+
+std::string_view PauseHintDispositionName(PauseHintDisposition disposition) {
+  switch (disposition) {
+  case PauseHintDisposition::kInvalid:
+    return "invalid";
+  case PauseHintDisposition::kDuplicate:
+    return "duplicate";
+  case PauseHintDisposition::kDisabled:
+    return "disabled";
+  case PauseHintDisposition::kInvalidDeferredMetadata:
+    return "invalid_deferred_metadata";
+  case PauseHintDisposition::kRefreshBusy:
+    return "refresh_busy";
+  case PauseHintDisposition::kCovered:
+    return "covered_by_submitted_refresh";
+  case PauseHintDisposition::kInsufficientNewSpeech:
+    return "insufficient_new_speech";
+  case PauseHintDisposition::kSupersededByCadence:
+    return "superseded_by_cadence";
+  case PauseHintDisposition::kSilent:
+    return "silent";
+  case PauseHintDisposition::kFinalHandoff:
+    return "final_handoff";
+  case PauseHintDisposition::kSegmentFinalization:
+    return "segment_finalization";
+  case PauseHintDisposition::kCancelled:
+    return "cancelled";
+  case PauseHintDisposition::kSpeechResumption:
+    return "speech_resumption";
+  case PauseHintDisposition::kSegmentRollover:
+    return "segment_rollover";
+  case PauseHintDisposition::kDeferred:
+    return "deferred";
+  case PauseHintDisposition::kSuperseded:
+    return "superseded";
+  case PauseHintDisposition::kAdmittedImmediate:
+    return "admitted_immediate";
+  case PauseHintDisposition::kAdmittedDeferred:
+    return "admitted_deferred";
+  case PauseHintDisposition::kSessionClose:
+    return "session_close";
+  case PauseHintDisposition::kNone:
+  case PauseHintDisposition::kCount:
+    return "none";
+  }
+  return "none";
+}
+
+constexpr std::array<PauseHintDisposition, kPauseHintDispositionCount - 2>
+    kTerminalPauseHintDispositions = {
+        PauseHintDisposition::kInvalid,
+        PauseHintDisposition::kDuplicate,
+        PauseHintDisposition::kDisabled,
+        PauseHintDisposition::kInvalidDeferredMetadata,
+        PauseHintDisposition::kRefreshBusy,
+        PauseHintDisposition::kCovered,
+        PauseHintDisposition::kInsufficientNewSpeech,
+        PauseHintDisposition::kSupersededByCadence,
+        PauseHintDisposition::kSilent,
+        PauseHintDisposition::kFinalHandoff,
+        PauseHintDisposition::kSegmentFinalization,
+        PauseHintDisposition::kCancelled,
+        PauseHintDisposition::kSpeechResumption,
+        PauseHintDisposition::kSegmentRollover,
+        PauseHintDisposition::kSuperseded,
+        PauseHintDisposition::kAdmittedImmediate,
+        PauseHintDisposition::kAdmittedDeferred,
+        PauseHintDisposition::kSessionClose};
+
 int64_t SteadyMicros(std::chrono::steady_clock::time_point point) {
   return std::chrono::duration_cast<std::chrono::microseconds>(
              point.time_since_epoch())
+      .count();
+}
+
+nlohmann::json SteadyMicrosJson(
+    const std::optional<std::chrono::steady_clock::time_point> &point) {
+  return point.has_value() ? nlohmann::json(SteadyMicros(*point))
+                           : nlohmann::json();
+}
+
+nlohmann::json ElapsedMicrosJson(
+    const std::optional<std::chrono::steady_clock::time_point> &start,
+    const std::optional<std::chrono::steady_clock::time_point> &finish) {
+  if (!start.has_value() || !finish.has_value()) {
+    return nlohmann::json();
+  }
+  return std::chrono::duration_cast<std::chrono::microseconds>(*finish - *start)
       .count();
 }
 
@@ -165,7 +252,7 @@ bool RealtimeSession::Handle(const nlohmann::json &message) {
         preview_refresh_attribution_enabled_ =
             attribution_enabled.is_boolean() && attribution_enabled.get<bool>();
         if (was_deferred && !preview_refresh_defer_busy_enabled_) {
-          DiscardDeferredPauseHint("disabled");
+          DiscardDeferredPauseHint(PauseHintDisposition::kDisabled);
           speech_epoch_.reset();
           pause_refresh_metadata_valid_ = true;
         } else {
@@ -179,12 +266,14 @@ bool RealtimeSession::Handle(const nlohmann::json &message) {
         } else {
         }
       }
-      LogAttribution(
-          {{"event", "session"},
-           {"pause_refresh_enabled", preview_refresh_enabled.is_boolean() &&
-                                         preview_refresh_enabled.get<bool>()},
-           {"deferred_busy_enabled", defer_busy_enabled.is_boolean() &&
-                                         defer_busy_enabled.get<bool>()}});
+      LogAttributionLazy([&] {
+        return nlohmann::ordered_json{
+            {"event", "session"},
+            {"pause_refresh_enabled", preview_refresh_enabled.is_boolean() &&
+                                          preview_refresh_enabled.get<bool>()},
+            {"deferred_busy_enabled", defer_busy_enabled.is_boolean() &&
+                                          defer_busy_enabled.get<bool>()}};
+      });
       Send({{"type", "transcription_session.updated"},
             {"session_id", session_id()}});
     } else {
@@ -226,52 +315,64 @@ bool RealtimeSession::Handle(const nlohmann::json &message) {
 void RealtimeSession::Close() {
   omni_server::RealtimeConnection::Close();
   std::lock_guard<std::mutex> lock(mutex_);
-  DiscardDeferredPauseHint("session_close");
+  DiscardDeferredPauseHint(PauseHintDisposition::kSessionClose);
   LogAttributionSummary();
 }
 
-void RealtimeSession::DiscardDeferredPauseHint(const char *reason) {
+void RealtimeSession::DiscardDeferredPauseHint(
+    PauseHintDisposition disposition) {
   if (!deferred_pause_hint_.has_value()) {
     return;
-  } else {
   }
-  if (std::string(reason) == "speech_resumption") {
-    pause_refresh_stats_.deferred_invalidated_resume++;
-  } else if (std::string(reason) == "segment_rollover") {
-    pause_refresh_stats_.deferred_invalidated_rollover++;
-  } else if (std::string(reason) == "final_handoff") {
-    pause_refresh_stats_.deferred_invalidated_final++;
-  } else if (std::string(reason) == "malformed_metadata") {
-    pause_refresh_stats_.deferred_invalidated_malformed++;
-  } else if (std::string(reason) == "session_close" ||
-             std::string(reason) == "cancelled") {
-    pause_refresh_stats_.deferred_invalidated_close++;
-  } else if (std::string(reason) == "covered") {
-    pause_refresh_stats_.deferred_invalidated_covered++;
-  } else if (std::string(reason) == "insufficient_new_speech") {
-    pause_refresh_stats_.deferred_invalidated_insufficient++;
-  } else if (std::string(reason) == "disabled") {
-    pause_refresh_stats_.deferred_invalidated_disabled++;
-  } else if (std::string(reason) == "superseded_by_cadence") {
-    pause_refresh_stats_.hints_superseded_by_cadence++;
-  } else if (std::string(reason) == "superseded") {
-    pause_refresh_stats_.deferred_superseded++;
-  } else {
-  }
-  LogAttribution(
-      {{"event", "pause_hint"},
-       {"disposition", reason},
-       {"segment_id", deferred_pause_hint_->segment_id},
-       {"speech_end_sample", deferred_pause_hint_->hint.speech_end_sample}});
+  RecordPauseHintDisposition(
+      disposition, deferred_pause_hint_->hint, deferred_pause_hint_->segment_id,
+      segment_.has_value() ? segment_->last_submitted_refresh_end_sample : -1,
+      segment_.has_value() ? segment_->last_completed_refresh_end_sample : -1);
   deferred_pause_hint_.reset();
+}
+
+void RealtimeSession::RecordPauseHintDisposition(
+    PauseHintDisposition disposition, std::optional<PauseRefreshHint> hint,
+    int segment_id, long submitted_refresh_end_sample,
+    long completed_refresh_end_sample) {
+  if (disposition == PauseHintDisposition::kNone) {
+    return;
+  }
+  if (preview_refresh_attribution_enabled_.load()) {
+    if (disposition == PauseHintDisposition::kDeferred) {
+      ++pause_refresh_stats_.hints_deferred;
+    } else {
+      ++pause_refresh_stats_
+            .terminal_dispositions[static_cast<size_t>(disposition)];
+    }
+  }
+  LogAttributionLazy([&] {
+    nlohmann::ordered_json event = {
+        {"event", "pause_hint"},
+        {"disposition", PauseHintDispositionName(disposition)}};
+    if (segment_id >= 0) {
+      event["segment_id"] = segment_id;
+    }
+    if (hint.has_value()) {
+      event["speech_start_sample"] = hint->speech_start_sample;
+      event["speech_end_sample"] = hint->speech_end_sample;
+    }
+    if (submitted_refresh_end_sample >= 0) {
+      event["last_submitted_refresh_end_sample"] = submitted_refresh_end_sample;
+    }
+    if (completed_refresh_end_sample >= 0) {
+      event["last_completed_refresh_end_sample"] = completed_refresh_end_sample;
+    }
+    return event;
+  });
 }
 
 void RealtimeSession::LogAttribution(nlohmann::ordered_json event) const {
   if (!preview_refresh_attribution_enabled_.load()) {
     return;
-  } else {
   }
   event["session_id"] = session_id();
+  std::lock_guard<std::mutex> lock(attribution_output_mutex);
   std::clog << "qwen3_asr_pause_refresh " << event.dump() << '\n';
 }
 
@@ -282,49 +383,27 @@ void RealtimeSession::LogAttributionSummary() {
   } else {
   }
   attribution_summary_logged_ = true;
-  LogAttribution(
-      {{"event", "summary"},
-       {"hints_received", pause_refresh_stats_.hints_received},
-       {"hints_valid", pause_refresh_stats_.hints_valid},
-       {"hints_invalid", pause_refresh_stats_.hints_invalid},
-       {"hints_duplicate", pause_refresh_stats_.hints_duplicate},
-       {"hints_rejected_busy", pause_refresh_stats_.hints_rejected_busy},
-       {"hints_rejected_covered", pause_refresh_stats_.hints_rejected_covered},
-       {"hints_rejected_insufficient",
-        pause_refresh_stats_.hints_rejected_insufficient},
-       {"hints_rejected_final", pause_refresh_stats_.hints_rejected_final},
-       {"hints_rejected_cancelled",
-        pause_refresh_stats_.hints_rejected_cancelled},
-       {"hints_rejected_finalizing",
-        pause_refresh_stats_.hints_rejected_finalizing},
-       {"hints_superseded_by_cadence",
-        pause_refresh_stats_.hints_superseded_by_cadence},
-       {"hints_deferred", pause_refresh_stats_.hints_deferred},
-       {"deferred_superseded", pause_refresh_stats_.deferred_superseded},
-       {"deferred_invalidated_resume",
-        pause_refresh_stats_.deferred_invalidated_resume},
-       {"deferred_invalidated_rollover",
-        pause_refresh_stats_.deferred_invalidated_rollover},
-       {"deferred_invalidated_final",
-        pause_refresh_stats_.deferred_invalidated_final},
-       {"deferred_invalidated_malformed",
-        pause_refresh_stats_.deferred_invalidated_malformed},
-       {"deferred_invalidated_close",
-        pause_refresh_stats_.deferred_invalidated_close},
-       {"deferred_invalidated_disabled",
-        pause_refresh_stats_.deferred_invalidated_disabled},
-       {"deferred_invalidated_covered",
-        pause_refresh_stats_.deferred_invalidated_covered},
-       {"deferred_invalidated_insufficient",
-        pause_refresh_stats_.deferred_invalidated_insufficient},
-       {"speech_metadata_invalid",
-        pause_refresh_stats_.speech_metadata_invalid},
-       {"deferred_admitted", pause_refresh_stats_.deferred_admitted},
-       {"cadence_submissions", pause_refresh_stats_.cadence_submissions},
-       {"immediate_pause_submissions",
-        pause_refresh_stats_.immediate_pause_submissions},
-       {"deferred_pause_submissions",
-        pause_refresh_stats_.deferred_pause_submissions}});
+  LogAttributionLazy([&] {
+    nlohmann::ordered_json dispositions = nlohmann::ordered_json::object();
+    for (PauseHintDisposition disposition : kTerminalPauseHintDispositions) {
+      dispositions[PauseHintDispositionName(disposition)] =
+          pause_refresh_stats_
+              .terminal_dispositions[static_cast<size_t>(disposition)];
+    }
+    return nlohmann::ordered_json{
+        {"event", "summary"},
+        {"hints_received", pause_refresh_stats_.hints_received},
+        {"hint_terminal_dispositions", std::move(dispositions)},
+        {"hints_deferred", pause_refresh_stats_.hints_deferred},
+        {"deferred_pending_at_close", deferred_pause_hint_.has_value()},
+        {"speech_metadata_invalid",
+         pause_refresh_stats_.speech_metadata_invalid},
+        {"cadence_submissions", pause_refresh_stats_.cadence_submissions},
+        {"immediate_pause_submissions",
+         pause_refresh_stats_.immediate_pause_submissions},
+        {"deferred_pause_submissions",
+         pause_refresh_stats_.deferred_pause_submissions}};
+  });
 }
 
 long RealtimeSession::LockedEndSample() {
@@ -397,6 +476,7 @@ void RealtimeSession::Append(const nlohmann::json &audio,
   }
   long cut_sample = -1;
   bool moved_final_start = false;
+  bool segment_overflow = false;
   {
     std::lock_guard<std::mutex> lock(mutex_);
     const long start_sample = EndSample();
@@ -407,20 +487,23 @@ void RealtimeSession::Append(const nlohmann::json &audio,
            *parsed_speech_epoch >= *speech_epoch_)) {
         if (speech_epoch_.has_value() &&
             *parsed_speech_epoch > *speech_epoch_) {
-          DiscardDeferredPauseHint("speech_resumption");
+          DiscardDeferredPauseHint(PauseHintDisposition::kSpeechResumption);
         } else {
         }
         speech_epoch_ = parsed_speech_epoch;
       } else {
         pause_refresh_metadata_valid_ = false;
-        DiscardDeferredPauseHint("malformed_metadata");
+        DiscardDeferredPauseHint(
+            PauseHintDisposition::kInvalidDeferredMetadata);
         if (preview_refresh_attribution_enabled_.load()) {
           pause_refresh_stats_.speech_metadata_invalid++;
         } else {
         }
-        LogAttribution({{"event", "pause_metadata"},
-                        {"status", "invalid"},
-                        {"audio_end_sample", EndSample()}});
+        LogAttributionLazy([&] {
+          return nlohmann::ordered_json{{"event", "pause_metadata"},
+                                        {"status", "invalid"},
+                                        {"audio_end_sample", EndSample()}};
+        });
       }
     } else {
     }
@@ -449,10 +532,29 @@ void RealtimeSession::Append(const nlohmann::json &audio,
     if (overflow > 0) {
       cut_sample =
           segment_->start_sample + overflow * settings_.max_segment_samples;
+      segment_overflow = true;
+      finalizing_ = true;
+      DiscardDeferredPauseHint(PauseHintDisposition::kSegmentRollover);
+      if (pause_hint_received) {
+        if (preview_refresh_attribution_enabled_.load()) {
+          ++pause_refresh_stats_.hints_received;
+        } else {
+        }
+        RecordPauseHintDisposition(pause_hint_malformed
+                                       ? PauseHintDisposition::kInvalid
+                                       : PauseHintDisposition::kSegmentRollover,
+                                   pause_hint, segment_->segment_id,
+                                   segment_->last_submitted_refresh_end_sample,
+                                   segment_->last_completed_refresh_end_sample);
+      }
     } else {
     }
   }
   if (cut_sample >= 0) {
+    if (before_rollover_finalize_for_test_) {
+      before_rollover_finalize_for_test_();
+    } else {
+    }
     FinalizeThrough(cut_sample);
     std::lock_guard<std::mutex> lock(mutex_);
     StartSegment(cut_sample);
@@ -462,11 +564,13 @@ void RealtimeSession::Append(const nlohmann::json &audio,
     MaybeStartFinalPrefill();
   } else {
   }
-  MaybeStartRefresh(pause_hint, pause_hint_received, pause_hint_malformed);
+  MaybeStartRefresh(segment_overflow ? std::nullopt : pause_hint,
+                    segment_overflow ? false : pause_hint_received,
+                    segment_overflow ? false : pause_hint_malformed);
 }
 
 void RealtimeSession::StartSegment(long start_sample) {
-  DiscardDeferredPauseHint("segment_rollover");
+  DiscardDeferredPauseHint(PauseHintDisposition::kSegmentRollover);
   speech_epoch_.reset();
   pause_refresh_metadata_valid_ = true;
   Segment segment;
@@ -474,6 +578,7 @@ void RealtimeSession::StartSegment(long start_sample) {
   segment.start_sample = start_sample;
   segment.next_refresh_sample = start_sample + settings_.first_decode_samples;
   segment.last_submitted_refresh_end_sample = start_sample;
+  segment.last_completed_refresh_end_sample = start_sample;
   segment.last_pause_speech_end_sample = start_sample;
   segment.language = language_;
   segment.reuse = std::make_shared<RefreshReuse>();
@@ -534,20 +639,22 @@ FinalReuse RealtimeSession::TakeFinalReuse(
   shadow_cancel_->store(true);
   if (final_handoff) {
     pause_refresh_final_handoff_ = true;
-    DiscardDeferredPauseHint("final_handoff");
+    DiscardDeferredPauseHint(PauseHintDisposition::kFinalHandoff);
     if (preview_refresh_attribution_enabled_.load()) {
       const std::map<std::string, int> request_states = worker_.RequestStates();
-      LogAttribution(
-          {{"event", "final_handoff"},
-           {"handoff_at_us", SteadyMicros(std::chrono::steady_clock::now())},
-           {"segment_id", segment_.has_value() ? segment_->segment_id : -1},
-           {"audio_end_sample", EndSample()},
-           {"worker_queued", request_states.contains("queued")
-                                 ? request_states.at("queued")
-                                 : 0},
-           {"worker_running", request_states.contains("running")
-                                  ? request_states.at("running")
-                                  : 0}});
+      LogAttributionLazy([&] {
+        return nlohmann::ordered_json{
+            {"event", "final_handoff"},
+            {"handoff_at_us", SteadyMicros(std::chrono::steady_clock::now())},
+            {"segment_id", segment_.has_value() ? segment_->segment_id : -1},
+            {"audio_end_sample", EndSample()},
+            {"worker_queued", request_states.contains("queued")
+                                  ? request_states.at("queued")
+                                  : 0},
+            {"worker_running", request_states.contains("running")
+                                   ? request_states.at("running")
+                                   : 0}};
+      });
     } else {
     }
   } else {
@@ -658,89 +765,123 @@ void RealtimeSession::MaybeStartFinalPrefill() {
   }
   const auto has_more = std::make_shared<bool>(false);
   const bool trace_enabled = preview_refresh_attribution_enabled_.load();
-  std::shared_ptr<std::chrono::steady_clock::time_point> started_at;
-  std::chrono::steady_clock::time_point submitted_at;
+  std::shared_ptr<WorkerTiming> timing;
   if (trace_enabled) {
-    started_at = std::make_shared<std::chrono::steady_clock::time_point>();
-    submitted_at = std::chrono::steady_clock::now();
+    timing = std::make_shared<WorkerTiming>();
   } else {
   }
   std::weak_ptr<RealtimeSession> weak_self =
       std::static_pointer_cast<RealtimeSession>(shared_from_this());
   const Qwen3ASRTranscriber *transcriber = transcriber_;
-  worker_.Submit(
-      [transcriber, weak_self, final_reuse, options = std::move(options),
-       has_more, started_at](const std::atomic<bool> &cancel) {
-        if (started_at != nullptr) {
-          *started_at = std::chrono::steady_clock::now();
-        } else {
-        }
-        // Windows a refresh finished since the job was queued count too.
-        RefreshReuse recording_reuse;
-        std::vector<float> recording_samples;
-        long recording_start_sample = 0;
-        if (const std::shared_ptr<RealtimeSession> self = weak_self.lock()) {
-          std::lock_guard<std::mutex> lock(self->mutex_);
-          recording_start_sample = self->final_start_sample_;
-          // The previews' windows are those of the recording's first segment.
-          if (self->recording_reuse_ != nullptr &&
-              recording_start_sample == 0) {
-            recording_reuse = *self->recording_reuse_;
-          } else {
-          }
-          recording_samples.assign(self->recording_samples_.begin(),
-                                   self->recording_samples_.begin() +
-                                       std::min(self->recording_samples_.size(),
-                                                kMaxFinalPrefillSamples));
-        } else {
-        }
-        if (transcriber == nullptr) {
-          throw std::logic_error("Final prefill requires the Qwen transcriber");
-        } else {
-        }
-        *has_more = transcriber->ExtendFinalPrefill(
-            recording_reuse, recording_samples, recording_start_sample, options,
-            cancel, *final_reuse);
-        return TranscriptionResult();
-      },
-      cancel_,
-      [weak_self, has_more, started_at, submitted_at, prefill_end_sample](
-          std::optional<TranscriptionResult>, std::exception_ptr error) {
-        const std::shared_ptr<RealtimeSession> self = weak_self.lock();
-        if (!self) {
-          return;
-        } else {
-        }
-        {
-          std::lock_guard<std::mutex> lock(self->mutex_);
-          self->is_prefilling_final_ = false;
-        }
-        // A failed prefill leaves the rest to the Final.
-        if (error == nullptr && *has_more) {
-          self->MaybeStartFinalPrefill();
-        } else {
-        }
-        if (started_at != nullptr) {
-          self->LogAttribution(
-              {{"event", "final_prefill"},
-               {"status", error == nullptr ? "success" : "error"},
-               {"snapshot_end_sample", prefill_end_sample},
-               {"submitted_at_us", SteadyMicros(submitted_at)},
-               {"worker_started_at_us",
-                started_at->time_since_epoch().count() == 0
-                    ? nlohmann::json()
-                    : nlohmann::json(SteadyMicros(*started_at))},
-               {"completed_at_us",
-                SteadyMicros(std::chrono::steady_clock::now())},
-               {"has_more", *has_more}});
-        } else {
-        }
+  Transcription transcribe = [transcriber, weak_self, final_reuse,
+                              options = std::move(options), has_more,
+                              timing](const std::atomic<bool> &cancel) {
+    if (timing != nullptr) {
+      timing->worker_started_at = std::chrono::steady_clock::now();
+    } else {
+    }
+    // Windows a refresh finished since the job was queued count too.
+    RefreshReuse recording_reuse;
+    std::vector<float> recording_samples;
+    long recording_start_sample = 0;
+    if (const std::shared_ptr<RealtimeSession> self = weak_self.lock()) {
+      std::lock_guard<std::mutex> lock(self->mutex_);
+      recording_start_sample = self->final_start_sample_;
+      // The previews' windows are those of the recording's first segment.
+      if (self->recording_reuse_ != nullptr && recording_start_sample == 0) {
+        recording_reuse = *self->recording_reuse_;
+      } else {
+      }
+      recording_samples.assign(self->recording_samples_.begin(),
+                               self->recording_samples_.begin() +
+                                   std::min(self->recording_samples_.size(),
+                                            kMaxFinalPrefillSamples));
+    } else {
+    }
+    if (transcriber == nullptr) {
+      throw std::logic_error("Final prefill requires the Qwen transcriber");
+    } else {
+    }
+    if (timing != nullptr) {
+      timing->execution_started_at = std::chrono::steady_clock::now();
+    } else {
+    }
+    try {
+      *has_more = transcriber->ExtendFinalPrefill(
+          recording_reuse, recording_samples, recording_start_sample, options,
+          cancel, *final_reuse);
+      if (timing != nullptr) {
+        timing->decode_finished_at = std::chrono::steady_clock::now();
+      } else {
+      }
+    } catch (...) {
+      if (timing != nullptr) {
+        timing->decode_finished_at = std::chrono::steady_clock::now();
+      } else {
+      }
+      throw;
+    }
+    return TranscriptionResult();
+  };
+  Completion completion = [weak_self, has_more, timing, prefill_end_sample](
+                              std::optional<TranscriptionResult>,
+                              std::exception_ptr error) {
+    const std::shared_ptr<RealtimeSession> self = weak_self.lock();
+    if (!self) {
+      return;
+    } else {
+    }
+    {
+      std::lock_guard<std::mutex> lock(self->mutex_);
+      self->is_prefilling_final_ = false;
+    }
+    // A failed prefill leaves the rest to the Final.
+    if (error == nullptr && *has_more) {
+      self->MaybeStartFinalPrefill();
+    } else {
+    }
+    if (timing != nullptr) {
+      timing->callback_finished_at = std::chrono::steady_clock::now();
+      self->LogAttributionLazy([&] {
+        return nlohmann::ordered_json{
+            {"event", "final_prefill"},
+            {"status", error == nullptr ? "success" : "error"},
+            {"snapshot_end_sample", prefill_end_sample},
+            {"submitted_at_us", SteadyMicrosJson(timing->submitted_at)},
+            {"worker_started_at_us",
+             SteadyMicrosJson(timing->worker_started_at)},
+            {"decode_started_at_us",
+             SteadyMicrosJson(timing->execution_started_at)},
+            {"decode_finished_at_us",
+             SteadyMicrosJson(timing->decode_finished_at)},
+            {"callback_finished_at_us",
+             SteadyMicrosJson(timing->callback_finished_at)},
+            {"queue_wait_us", ElapsedMicrosJson(timing->submitted_at,
+                                                timing->worker_started_at)},
+            {"decode_execution_wall_us",
+             ElapsedMicrosJson(timing->execution_started_at,
+                               timing->decode_finished_at)},
+            {"completion_overhead_us",
+             ElapsedMicrosJson(timing->decode_finished_at,
+                               timing->callback_finished_at)},
+            {"has_more", *has_more}};
       });
+    } else {
+    }
+  };
+  if (timing != nullptr) {
+    timing->submitted_at = std::chrono::steady_clock::now();
+  } else {
+  }
+  worker_.Submit(std::move(transcribe), cancel_, std::move(completion));
   if (trace_enabled) {
-    LogAttribution({{"event", "final_prefill"},
-                    {"status", "submitted"},
-                    {"snapshot_end_sample", prefill_end_sample},
-                    {"submitted_at_us", SteadyMicros(submitted_at)}});
+    LogAttributionLazy([&] {
+      return nlohmann::ordered_json{
+          {"event", "final_prefill"},
+          {"status", "submitted"},
+          {"snapshot_end_sample", prefill_end_sample},
+          {"submitted_at_us", SteadyMicrosJson(timing->submitted_at)}};
+    });
   } else {
   }
 }
@@ -792,110 +933,146 @@ void RealtimeSession::MaybeStartShadowFinal() {
     cancel = shadow_cancel_;
   }
   const bool trace_enabled = preview_refresh_attribution_enabled_.load();
-  std::shared_ptr<std::chrono::steady_clock::time_point> started_at;
-  std::chrono::steady_clock::time_point submitted_at;
+  std::shared_ptr<WorkerTiming> timing;
   if (trace_enabled) {
-    started_at = std::make_shared<std::chrono::steady_clock::time_point>();
-    submitted_at = std::chrono::steady_clock::now();
+    timing = std::make_shared<WorkerTiming>();
   } else {
   }
   std::weak_ptr<RealtimeSession> weak_self =
       std::static_pointer_cast<RealtimeSession>(shared_from_this());
-  worker_.Submit(
-      [transcriber, weak_self, samples = std::move(samples),
-       options = std::move(options), preview_text = std::move(preview_text),
-       preview_language, shadow_guess,
-       started_at](const std::atomic<bool> &cancel) mutable {
-        if (started_at != nullptr) {
-          *started_at = std::chrono::steady_clock::now();
-        } else {
+  Transcription transcribe = [transcriber, weak_self,
+                              samples = std::move(samples),
+                              options = std::move(options),
+                              preview_text = std::move(preview_text),
+                              preview_language, shadow_guess,
+                              timing](const std::atomic<bool> &cancel) mutable {
+    if (timing != nullptr) {
+      timing->worker_started_at = std::chrono::steady_clock::now();
+    } else {
+    }
+    if (IsShadowQuiet()) {
+      return TranscriptionResult();
+    } else {
+    }
+    const auto guesses = [&](const std::optional<std::string> &language,
+                             const std::string &text) {
+      return options.language.has_value()
+                 ? transcriber->RetainedPrefix(text, 0).prefix_ids
+             : language.has_value()
+                 ? transcriber->AutoLanguageGuesses(*language, text)
+                 : std::vector<int>();
+    };
+    const std::vector<int> preview_ids =
+        guesses(preview_language, preview_text);
+    options.guessed_token_ids =
+        shadow_guess.has_value()
+            ? MergedGuesses(guesses(shadow_guess->language, shadow_guess->text),
+                            preview_ids)
+            : preview_ids;
+    // The reuse the Final will take, copied: the shadow's decode must not
+    // change it.
+    RefreshReuse reuse;
+    if (const std::shared_ptr<RealtimeSession> self = weak_self.lock()) {
+      std::lock_guard<std::mutex> lock(self->mutex_);
+      const std::shared_ptr<RefreshReuse> &source =
+          self->final_reuse_ != nullptr ? self->final_reuse_
+                                        : self->recording_reuse_;
+      if (source == nullptr) {
+        return TranscriptionResult();
+      } else {
+      }
+      reuse = *source;
+    } else {
+      return TranscriptionResult();
+    }
+    if (timing != nullptr) {
+      timing->execution_started_at = std::chrono::steady_clock::now();
+    } else {
+    }
+    try {
+      TranscriptionResult result =
+          transcriber->Transcribe(samples, options, cancel, &reuse);
+      if (timing != nullptr) {
+        timing->decode_finished_at = std::chrono::steady_clock::now();
+      } else {
+      }
+      return result;
+    } catch (...) {
+      if (timing != nullptr) {
+        timing->decode_finished_at = std::chrono::steady_clock::now();
+      } else {
+      }
+      throw;
+    }
+  };
+  Completion completion = [weak_self, timing, shadow_end_sample](
+                              std::optional<TranscriptionResult> result,
+                              std::exception_ptr error) {
+    const std::shared_ptr<RealtimeSession> self = weak_self.lock();
+    if (!self) {
+      return;
+    } else {
+    }
+    {
+      std::lock_guard<std::mutex> lock(self->mutex_);
+      self->is_shadowing_ = false;
+      // A failed or cut-short shadow leaves the last one.
+      if (error == nullptr && result.has_value() &&
+          result->finish_reason == FinishReason::kStop &&
+          !result->text.empty()) {
+        self->shadow_guess_ =
+            FinalPreviewGuess{result->language.value_or(""), result->text};
+      } else {
+      }
+    }
+    if (timing != nullptr) {
+      timing->callback_finished_at = std::chrono::steady_clock::now();
+      self->LogAttributionLazy([&] {
+        nlohmann::ordered_json event = {
+            {"event", "shadow_final"},
+            {"status", error == nullptr ? "success" : "error"},
+            {"snapshot_end_sample", shadow_end_sample},
+            {"submitted_at_us", SteadyMicrosJson(timing->submitted_at)},
+            {"worker_started_at_us",
+             SteadyMicrosJson(timing->worker_started_at)},
+            {"decode_started_at_us",
+             SteadyMicrosJson(timing->execution_started_at)},
+            {"decode_finished_at_us",
+             SteadyMicrosJson(timing->decode_finished_at)},
+            {"callback_finished_at_us",
+             SteadyMicrosJson(timing->callback_finished_at)},
+            {"queue_wait_us", ElapsedMicrosJson(timing->submitted_at,
+                                                timing->worker_started_at)},
+            {"decode_execution_wall_us",
+             ElapsedMicrosJson(timing->execution_started_at,
+                               timing->decode_finished_at)},
+            {"completion_overhead_us",
+             ElapsedMicrosJson(timing->decode_finished_at,
+                               timing->callback_finished_at)}};
+        if (result.has_value()) {
+          event["reused_audio_tokens"] = result->reused_audio_token_count;
+          event["reused_prompt_tokens"] = result->reused_prompt_token_count;
+          event["verified_guess_tokens"] = result->verified_guess_token_count;
+          event["accepted_guess_tokens"] = result->accepted_guess_token_count;
         }
-        if (IsShadowQuiet()) {
-          return TranscriptionResult();
-        } else {
-        }
-        const auto guesses = [&](const std::optional<std::string> &language,
-                                 const std::string &text) {
-          return options.language.has_value()
-                     ? transcriber->RetainedPrefix(text, 0).prefix_ids
-                 : language.has_value()
-                     ? transcriber->AutoLanguageGuesses(*language, text)
-                     : std::vector<int>();
-        };
-        const std::vector<int> preview_ids =
-            guesses(preview_language, preview_text);
-        options.guessed_token_ids =
-            shadow_guess.has_value()
-                ? MergedGuesses(
-                      guesses(shadow_guess->language, shadow_guess->text),
-                      preview_ids)
-                : preview_ids;
-        // The reuse the Final will take, copied: the shadow's decode must not
-        // change it.
-        RefreshReuse reuse;
-        if (const std::shared_ptr<RealtimeSession> self = weak_self.lock()) {
-          std::lock_guard<std::mutex> lock(self->mutex_);
-          const std::shared_ptr<RefreshReuse> &source =
-              self->final_reuse_ != nullptr ? self->final_reuse_
-                                            : self->recording_reuse_;
-          if (source == nullptr) {
-            return TranscriptionResult();
-          } else {
-          }
-          reuse = *source;
-        } else {
-          return TranscriptionResult();
-        }
-        return transcriber->Transcribe(samples, options, cancel, &reuse);
-      },
-      cancel,
-      [weak_self, started_at, submitted_at, shadow_end_sample](
-          std::optional<TranscriptionResult> result, std::exception_ptr error) {
-        const std::shared_ptr<RealtimeSession> self = weak_self.lock();
-        if (!self) {
-          return;
-        } else {
-        }
-        {
-          std::lock_guard<std::mutex> lock(self->mutex_);
-          self->is_shadowing_ = false;
-          // A failed or cut-short shadow leaves the last one.
-          if (error == nullptr && result.has_value() &&
-              result->finish_reason == FinishReason::kStop &&
-              !result->text.empty()) {
-            self->shadow_guess_ =
-                FinalPreviewGuess{result->language.value_or(""), result->text};
-          } else {
-          }
-        }
-        if (started_at != nullptr) {
-          nlohmann::ordered_json event = {
-              {"event", "shadow_final"},
-              {"status", error == nullptr ? "success" : "error"},
-              {"snapshot_end_sample", shadow_end_sample},
-              {"submitted_at_us", SteadyMicros(submitted_at)},
-              {"worker_started_at_us",
-               started_at->time_since_epoch().count() == 0
-                   ? nlohmann::json()
-                   : nlohmann::json(SteadyMicros(*started_at))},
-              {"completed_at_us",
-               SteadyMicros(std::chrono::steady_clock::now())}};
-          if (result.has_value()) {
-            event["reused_audio_tokens"] = result->reused_audio_token_count;
-            event["reused_prompt_tokens"] = result->reused_prompt_token_count;
-            event["verified_guess_tokens"] = result->verified_guess_token_count;
-            event["accepted_guess_tokens"] = result->accepted_guess_token_count;
-          } else {
-          }
-          self->LogAttribution(std::move(event));
-        } else {
-        }
+        return event;
       });
+    } else {
+    }
+  };
+  if (timing != nullptr) {
+    timing->submitted_at = std::chrono::steady_clock::now();
+  } else {
+  }
+  worker_.Submit(std::move(transcribe), cancel, std::move(completion));
   if (trace_enabled) {
-    LogAttribution({{"event", "shadow_final"},
-                    {"status", "submitted"},
-                    {"snapshot_end_sample", shadow_end_sample},
-                    {"submitted_at_us", SteadyMicros(submitted_at)}});
+    LogAttributionLazy([&] {
+      return nlohmann::ordered_json{
+          {"event", "shadow_final"},
+          {"status", "submitted"},
+          {"snapshot_end_sample", shadow_end_sample},
+          {"submitted_at_us", SteadyMicrosJson(timing->submitted_at)}};
+    });
   } else {
   }
 }
@@ -1003,371 +1180,273 @@ void RealtimeSession::MaybeStartRefresh(
   long end_sample = 0;
   long speech_end_sample = 0;
   std::unique_lock<std::mutex> lock(mutex_);
-  if (!segment_.has_value()) {
-    DiscardDeferredPauseHint("segment_rollover");
-    return;
-  } else {
+  if (pause_hint_received && preview_refresh_attribution_enabled_.load()) {
+    ++pause_refresh_stats_.hints_received;
   }
+  if (!segment_.has_value()) {
+    DiscardDeferredPauseHint(PauseHintDisposition::kSegmentRollover);
+    return;
+  }
+
   Segment &segment = *segment_;
   const long audio_end_sample = EndSample();
-  if (pause_hint_received && preview_refresh_attribution_enabled_.load()) {
-    pause_refresh_stats_.hints_received++;
-  } else {
-  }
   PauseHintConsumption consumption;
   if (!preview_refresh_enabled_) {
-    pause_hint.reset();
     if (pause_hint_received) {
-      if (preview_refresh_attribution_enabled_.load()) {
-        pause_refresh_stats_.hints_invalid++;
-      } else {
-      }
-      LogAttribution({{"event", "pause_hint"},
-                      {"disposition", "disabled"},
-                      {"audio_end_sample", audio_end_sample}});
-    } else {
+      RecordPauseHintDisposition(PauseHintDisposition::kDisabled, pause_hint,
+                                 segment.segment_id,
+                                 segment.last_submitted_refresh_end_sample,
+                                 segment.last_completed_refresh_end_sample);
     }
-    DiscardDeferredPauseHint("disabled");
-  } else if (pause_hint_received && pause_hint_malformed) {
     pause_hint.reset();
-    DiscardDeferredPauseHint("malformed_metadata");
-    if (preview_refresh_attribution_enabled_.load()) {
-      pause_refresh_stats_.hints_invalid++;
-    } else {
-    }
-    LogAttribution({{"event", "pause_hint"},
-                    {"disposition", "invalid"},
-                    {"audio_end_sample", audio_end_sample}});
+    DiscardDeferredPauseHint(PauseHintDisposition::kDisabled);
+  } else if (pause_hint_received && pause_hint_malformed) {
+    RecordPauseHintDisposition(PauseHintDisposition::kInvalid, std::nullopt,
+                               segment.segment_id);
+    pause_hint.reset();
+    DiscardDeferredPauseHint(PauseHintDisposition::kInvalidDeferredMetadata);
   } else {
     consumption = ConsumePauseRefreshHint(pause_hint, segment.start_sample,
                                           audio_end_sample,
                                           segment.last_pause_speech_end_sample);
     if (consumption.disposition ==
         PauseHintConsumption::Disposition::kInvalid) {
-      DiscardDeferredPauseHint("malformed_metadata");
-      if (preview_refresh_attribution_enabled_.load()) {
-        pause_refresh_stats_.hints_invalid++;
-      } else {
-      }
-      LogAttribution({{"event", "pause_hint"},
-                      {"disposition", "invalid"},
-                      {"audio_end_sample", audio_end_sample}});
+      RecordPauseHintDisposition(PauseHintDisposition::kInvalid, pause_hint,
+                                 segment.segment_id);
+      DiscardDeferredPauseHint(PauseHintDisposition::kInvalidDeferredMetadata);
     } else if (consumption.disposition ==
                PauseHintConsumption::Disposition::kDuplicate) {
-      if (preview_refresh_attribution_enabled_.load()) {
-        pause_refresh_stats_.hints_duplicate++;
-      } else {
-      }
-      LogAttribution({{"event", "pause_hint"},
-                      {"disposition", "duplicate"},
-                      {"speech_end_sample", pause_hint->speech_end_sample}});
+      RecordPauseHintDisposition(PauseHintDisposition::kDuplicate, pause_hint,
+                                 segment.segment_id);
     } else if (consumption.disposition ==
                PauseHintConsumption::Disposition::kAccepted) {
       segment.last_pause_speech_end_sample = consumption.last_speech_end_sample;
-      if (preview_refresh_attribution_enabled_.load()) {
-        pause_refresh_stats_.hints_valid++;
-      } else {
-      }
-    } else {
     }
   }
 
-  const bool has_new_hint = consumption.hint.has_value();
-  const bool cadence_due = audio_end_sample >= segment.next_refresh_sample;
-  if (cancel_->load()) {
-    DiscardDeferredPauseHint("cancelled");
-    if (has_new_hint && preview_refresh_attribution_enabled_.load()) {
-      pause_refresh_stats_.hints_rejected_cancelled++;
-      LogAttribution(
-          {{"event", "pause_hint"},
-           {"disposition", "cancelled"},
-           {"speech_end_sample", consumption.hint->speech_end_sample}});
-    } else {
-    }
-    return;
-  } else {
-  }
-  if (finalizing_) {
-    DiscardDeferredPauseHint("final_handoff");
-    if (has_new_hint && preview_refresh_attribution_enabled_.load()) {
-      pause_refresh_stats_.hints_rejected_finalizing++;
-      LogAttribution(
-          {{"event", "pause_hint"},
-           {"disposition", "finalizing"},
-           {"speech_end_sample", consumption.hint->speech_end_sample}});
-    } else {
-    }
-    return;
-  } else {
-  }
-  bool hint_rejected_by_final_fence = false;
-  if (pause_refresh_final_handoff_) {
-    DiscardDeferredPauseHint("final_handoff");
-    if (has_new_hint && preview_refresh_attribution_enabled_.load()) {
-      pause_refresh_stats_.hints_rejected_final++;
-      LogAttribution(
-          {{"event", "pause_hint"},
-           {"disposition", "final_handoff"},
-           {"speech_end_sample", consumption.hint->speech_end_sample}});
-    } else {
-    }
-    consumption.hint.reset();
-    hint_rejected_by_final_fence = has_new_hint;
-  } else {
-  }
-
+  const bool has_current_hint = consumption.hint.has_value();
   const long minimum_new_speech_samples = omni_common::kSampleRate / 5;
-  const auto has_enough_uncovered_speech =
-      [&segment](const PauseRefreshHint &hint) {
-        const long first_new_speech_sample = std::max(
-            {segment.start_sample, segment.last_submitted_refresh_end_sample,
-             hint.speech_start_sample});
-        return hint.speech_end_sample - first_new_speech_sample >=
-               minimum_new_speech_samples;
-      };
+  const bool cancelled = cancel_->load();
+  const bool cadence_due = audio_end_sample >= segment.next_refresh_sample;
+  const auto admission_input = [&](std::optional<PauseRefreshHint> hint,
+                                   bool deferred, bool silent) {
+    return RefreshAdmissionInput{
+        .segment_start_sample = segment.start_sample,
+        .audio_end_sample = audio_end_sample,
+        .next_refresh_sample = segment.next_refresh_sample,
+        .last_submitted_refresh_end_sample =
+            segment.last_submitted_refresh_end_sample,
+        .decode_interval_samples = settings_.decode_interval_samples,
+        .minimum_new_speech_samples = minimum_new_speech_samples,
+        .pause_hint = hint,
+        .pause_hint_deferred = deferred,
+        .refreshing = refreshing_,
+        .finalizing = finalizing_,
+        .cancelled = cancelled,
+        .final_handoff = pause_refresh_final_handoff_,
+        .silent = silent,
+        .has_decoded = segment.decode_count > 0};
+  };
 
-  if (refreshing_) {
-    bool hint_discarded = hint_rejected_by_final_fence;
-    if (consumption.hint.has_value() &&
-        consumption.hint->speech_end_sample <=
-            segment.last_submitted_refresh_end_sample) {
-      if (preview_refresh_attribution_enabled_.load()) {
-        pause_refresh_stats_.hints_rejected_covered++;
-      } else {
-      }
-      LogAttribution(
-          {{"event", "pause_hint"},
-           {"disposition", "covered"},
-           {"speech_end_sample", consumption.hint->speech_end_sample},
-           {"submitted_refresh_end_sample",
-            segment.last_submitted_refresh_end_sample}});
-      consumption.hint.reset();
-      hint_discarded = true;
-    } else if (consumption.hint.has_value() &&
-               !has_enough_uncovered_speech(*consumption.hint)) {
-      if (preview_refresh_attribution_enabled_.load()) {
-        pause_refresh_stats_.hints_rejected_insufficient++;
-      } else {
-      }
-      LogAttribution(
-          {{"event", "pause_hint"},
-           {"disposition", "insufficient_new_speech"},
-           {"speech_end_sample", consumption.hint->speech_end_sample},
-           {"submitted_refresh_end_sample",
-            segment.last_submitted_refresh_end_sample}});
-      consumption.hint.reset();
-      hint_discarded = true;
-    } else {
+  std::optional<PauseRefreshHint> candidate = consumption.hint;
+  bool candidate_is_deferred = false;
+  if (cancelled || finalizing_) {
+    if (!candidate.has_value() && deferred_pause_hint_.has_value()) {
+      candidate = deferred_pause_hint_->hint;
+      candidate_is_deferred = true;
     }
-    if (cadence_due) {
-      if (consumption.hint.has_value()) {
-        if (preview_refresh_attribution_enabled_.load()) {
-          pause_refresh_stats_.hints_superseded_by_cadence++;
-        } else {
-        }
-        LogAttribution(
-            {{"event", "pause_hint"},
-             {"disposition", "superseded_by_cadence"},
-             {"speech_end_sample", consumption.hint->speech_end_sample}});
+    const RefreshAdmission admission = SelectRefreshAdmission(
+        admission_input(candidate, candidate_is_deferred, false));
+    if (admission.disposition != PauseHintDisposition::kNone) {
+      if (candidate_is_deferred) {
+        DiscardDeferredPauseHint(admission.disposition);
       } else {
+        RecordPauseHintDisposition(admission.disposition, candidate,
+                                   segment.segment_id,
+                                   segment.last_submitted_refresh_end_sample,
+                                   segment.last_completed_refresh_end_sample);
       }
-      consumption.hint.reset();
-      DiscardDeferredPauseHint("superseded_by_cadence");
-      return;
-    } else {
-    }
-    if (!consumption.hint.has_value()) {
-      if (has_new_hint && !hint_discarded &&
-          preview_refresh_defer_busy_enabled_ &&
-          !pause_refresh_metadata_valid_) {
-        if (preview_refresh_attribution_enabled_.load()) {
-          pause_refresh_stats_.hints_rejected_busy++;
-        } else {
-        }
-      } else if (has_new_hint && !hint_discarded &&
-                 !preview_refresh_defer_busy_enabled_) {
-        if (preview_refresh_attribution_enabled_.load()) {
-          pause_refresh_stats_.hints_rejected_busy++;
-        } else {
-        }
-        LogAttribution({{"event", "pause_hint"},
-                        {"disposition", "refresh_busy"},
-                        {"speech_end_sample", pause_hint->speech_end_sample}});
-      } else {
-      }
-      return;
-    } else {
-    }
-    if (!preview_refresh_defer_busy_enabled_ ||
-        !pause_refresh_metadata_valid_ || !speech_epoch_.has_value()) {
-      if (preview_refresh_attribution_enabled_.load()) {
-        pause_refresh_stats_.hints_rejected_busy++;
-      } else {
-      }
-      LogAttribution(
-          {{"event", "pause_hint"},
-           {"disposition", "refresh_busy"},
-           {"speech_end_sample", consumption.hint->speech_end_sample}});
-      return;
-    } else {
     }
     if (deferred_pause_hint_.has_value()) {
-      DiscardDeferredPauseHint("superseded");
-    } else {
+      DiscardDeferredPauseHint(admission.disposition);
     }
-    deferred_pause_hint_ = DeferredPauseHint{
-        *consumption.hint, segment.segment_id, *speech_epoch_};
-    if (preview_refresh_attribution_enabled_.load()) {
-      pause_refresh_stats_.hints_deferred++;
-    } else {
-    }
-    LogAttribution({{"event", "pause_hint"},
-                    {"disposition", "deferred"},
-                    {"segment_id", segment.segment_id},
-                    {"speech_end_sample", consumption.hint->speech_end_sample},
-                    {"submitted_refresh_end_sample",
-                     segment.last_submitted_refresh_end_sample}});
     return;
-  } else {
   }
 
-  std::optional<PauseRefreshHint> admission_hint = consumption.hint;
-  bool admission_hint_deferred = false;
-  if (admission_hint.has_value() && deferred_pause_hint_.has_value()) {
-    DiscardDeferredPauseHint("superseded");
-  } else if (!admission_hint.has_value() && deferred_pause_hint_.has_value()) {
+  if (!has_current_hint && deferred_pause_hint_.has_value() &&
+      pause_refresh_final_handoff_ && !refreshing_) {
+    candidate = deferred_pause_hint_->hint;
+    candidate_is_deferred = true;
+  }
+
+  if (refreshing_) {
+    if (!has_current_hint && !cadence_due) {
+      return;
+    }
+    if (cadence_due && !candidate.has_value() &&
+        deferred_pause_hint_.has_value()) {
+      candidate = deferred_pause_hint_->hint;
+      candidate_is_deferred = true;
+    }
+  } else if (has_current_hint && deferred_pause_hint_.has_value() &&
+             !pause_refresh_final_handoff_) {
+    DiscardDeferredPauseHint(PauseHintDisposition::kSuperseded);
+  } else if (!has_current_hint && deferred_pause_hint_.has_value() &&
+             !pause_refresh_final_handoff_) {
     if (!preview_refresh_defer_busy_enabled_) {
-      DiscardDeferredPauseHint("disabled");
+      DiscardDeferredPauseHint(PauseHintDisposition::kDisabled);
     } else if (!pause_refresh_metadata_valid_ || !speech_epoch_.has_value()) {
-      DiscardDeferredPauseHint("malformed_metadata");
+      DiscardDeferredPauseHint(PauseHintDisposition::kInvalidDeferredMetadata);
     } else {
-      const DeferredHintState hint_state = CheckDeferredHintState(
+      const DeferredHintState state = CheckDeferredHintState(
           deferred_pause_hint_->hint, deferred_pause_hint_->segment_id,
           segment.segment_id, deferred_pause_hint_->speech_epoch,
           *speech_epoch_, segment.start_sample,
           segment.last_submitted_refresh_end_sample,
           minimum_new_speech_samples);
-      if (hint_state == DeferredHintState::kSegmentChanged) {
-        DiscardDeferredPauseHint("segment_rollover");
-      } else if (hint_state == DeferredHintState::kSpeechResumed) {
-        DiscardDeferredPauseHint("speech_resumption");
-      } else if (hint_state == DeferredHintState::kInvalid) {
-        DiscardDeferredPauseHint("malformed_metadata");
-      } else if (hint_state == DeferredHintState::kCovered) {
-        DiscardDeferredPauseHint("covered");
-      } else if (hint_state == DeferredHintState::kInsufficientSpeech) {
-        DiscardDeferredPauseHint("insufficient_new_speech");
+      if (state == DeferredHintState::kValid) {
+        candidate = deferred_pause_hint_->hint;
+        candidate_is_deferred = true;
       } else {
-        admission_hint = deferred_pause_hint_->hint;
-        admission_hint_deferred = true;
+        DiscardDeferredPauseHint(DeferredHintDisposition(state));
       }
     }
-  } else {
-  }
-  if (cadence_due && deferred_pause_hint_.has_value()) {
-    DiscardDeferredPauseHint("superseded_by_cadence");
-  } else {
-  }
-  if (cadence_due && admission_hint.has_value() && !admission_hint_deferred) {
-    if (preview_refresh_attribution_enabled_.load()) {
-      pause_refresh_stats_.hints_superseded_by_cadence++;
-    } else {
-    }
-    LogAttribution({{"event", "pause_hint"},
-                    {"disposition", "superseded_by_cadence"},
-                    {"speech_end_sample", admission_hint->speech_end_sample}});
-    admission_hint.reset();
-  } else {
-  }
-  if (pause_refresh_final_handoff_ && admission_hint.has_value()) {
-    if (preview_refresh_attribution_enabled_.load()) {
-      pause_refresh_stats_.hints_rejected_final++;
-    } else {
-    }
-    admission_hint.reset();
-  } else {
-  }
-  if (!cadence_due && !admission_hint.has_value()) {
-    return;
-  } else {
   }
 
-  samples = SegmentSamples(segment, audio_end_sample);
-  RefreshAdmissionInput admission_input{
-      .segment_start_sample = segment.start_sample,
-      .audio_end_sample = audio_end_sample,
-      .next_refresh_sample = segment.next_refresh_sample,
-      .last_submitted_refresh_end_sample =
-          segment.last_submitted_refresh_end_sample,
-      .decode_interval_samples = settings_.decode_interval_samples,
-      .minimum_new_speech_samples = minimum_new_speech_samples,
-      .pause_hint = admission_hint,
-      .pause_hint_deferred = admission_hint_deferred,
-      .refreshing = refreshing_,
-      .finalizing = finalizing_,
-      .cancelled = cancel_->load(),
-      .final_handoff = pause_refresh_final_handoff_,
-      .silent = omni_common::PeakIsSilent(samples.data(), samples.size(),
-                                          kSilentPeak),
-      .has_decoded = segment.decode_count > 0};
-  const RefreshAdmission admission = SelectRefreshAdmission(admission_input);
+  if (refreshing_ && !candidate.has_value() && !cadence_due) {
+    return;
+  }
+  if (!candidate.has_value() && !cadence_due) {
+    return;
+  }
+
+  bool silent = false;
+  if (!refreshing_ && !cancelled && !finalizing_ &&
+      (cadence_due ||
+       (candidate.has_value() && !pause_refresh_final_handoff_))) {
+    samples = SegmentSamples(segment, audio_end_sample);
+    silent =
+        omni_common::PeakIsSilent(samples.data(), samples.size(), kSilentPeak);
+  }
+  RefreshAdmission admission = SelectRefreshAdmission(
+      admission_input(candidate, candidate_is_deferred, silent));
   segment.next_refresh_sample = admission.next_refresh_sample;
-  if (admission.source == RefreshSource::kNone) {
-    if (admission_hint_deferred) {
-      DiscardDeferredPauseHint("insufficient_new_speech");
+
+  const auto record_candidate_disposition =
+      [&](PauseHintDisposition disposition) {
+        if (candidate_is_deferred) {
+          DiscardDeferredPauseHint(disposition);
+        } else if (candidate.has_value()) {
+          RecordPauseHintDisposition(disposition, candidate, segment.segment_id,
+                                     segment.last_submitted_refresh_end_sample,
+                                     segment.last_completed_refresh_end_sample);
+        }
+        candidate.reset();
+      };
+
+  if (refreshing_ && cadence_due && deferred_pause_hint_.has_value() &&
+      !candidate_is_deferred) {
+    DiscardDeferredPauseHint(PauseHintDisposition::kSupersededByCadence);
+  }
+
+  if (admission.disposition == PauseHintDisposition::kRefreshBusy &&
+      has_current_hint) {
+    if (preview_refresh_defer_busy_enabled_) {
+      if (!pause_refresh_metadata_valid_ || !speech_epoch_.has_value()) {
+        RecordPauseHintDisposition(
+            PauseHintDisposition::kInvalidDeferredMetadata, consumption.hint,
+            segment.segment_id, segment.last_submitted_refresh_end_sample,
+            segment.last_completed_refresh_end_sample);
+      } else {
+        if (deferred_pause_hint_.has_value()) {
+          DiscardDeferredPauseHint(PauseHintDisposition::kSuperseded);
+        }
+        deferred_pause_hint_ = DeferredPauseHint{
+            *consumption.hint, segment.segment_id, *speech_epoch_};
+        RecordPauseHintDisposition(PauseHintDisposition::kDeferred,
+                                   consumption.hint, segment.segment_id,
+                                   segment.last_submitted_refresh_end_sample,
+                                   segment.last_completed_refresh_end_sample);
+      }
     } else {
+      RecordPauseHintDisposition(PauseHintDisposition::kRefreshBusy,
+                                 consumption.hint, segment.segment_id,
+                                 segment.last_submitted_refresh_end_sample,
+                                 segment.last_completed_refresh_end_sample);
     }
     return;
-  } else {
+  }
+
+  if (admission.disposition != PauseHintDisposition::kNone &&
+      admission.disposition != PauseHintDisposition::kAdmittedImmediate &&
+      admission.disposition != PauseHintDisposition::kAdmittedDeferred) {
+    record_candidate_disposition(admission.disposition);
+    if (admission.disposition == PauseHintDisposition::kCancelled ||
+        admission.disposition == PauseHintDisposition::kSegmentFinalization ||
+        admission.disposition == PauseHintDisposition::kFinalHandoff) {
+      if (deferred_pause_hint_.has_value()) {
+        DiscardDeferredPauseHint(admission.disposition);
+      }
+    }
+  }
+
+  if (admission.source == RefreshSource::kNone) {
+    return;
   }
   end_sample = admission.end_sample;
-  speech_end_sample = admission_hint.has_value()
-                          ? admission_hint->speech_end_sample
+  speech_end_sample = candidate.has_value()
+                          ? candidate->speech_end_sample
                           : segment.last_pause_speech_end_sample;
   options = DecodeOptions(segment, end_sample);
   reuse = segment.reuse;
   segment_id = segment.segment_id;
   segment.last_submitted_refresh_end_sample = end_sample;
   refreshing_ = true;
-  const bool pause_admission =
-      admission.source == RefreshSource::kPause ||
-      admission.source == RefreshSource::kDeferredPause;
+
   if (admission.source == RefreshSource::kCadence) {
     if (preview_refresh_attribution_enabled_.load()) {
-      pause_refresh_stats_.cadence_submissions++;
-    } else {
+      ++pause_refresh_stats_.cadence_submissions;
     }
   } else if (admission.source == RefreshSource::kPause) {
+    RecordPauseHintDisposition(PauseHintDisposition::kAdmittedImmediate,
+                               candidate, segment_id,
+                               segment.last_submitted_refresh_end_sample,
+                               segment.last_completed_refresh_end_sample);
     if (preview_refresh_attribution_enabled_.load()) {
-      pause_refresh_stats_.immediate_pause_submissions++;
-    } else {
+      ++pause_refresh_stats_.immediate_pause_submissions;
     }
-  } else if (admission.source == RefreshSource::kDeferredPause) {
-    if (preview_refresh_attribution_enabled_.load()) {
-      pause_refresh_stats_.deferred_pause_submissions++;
-      pause_refresh_stats_.deferred_admitted++;
-    } else {
-    }
-    LogAttribution({{"event", "pause_hint"},
-                    {"disposition", "admitted"},
-                    {"segment_id", segment.segment_id},
-                    {"speech_end_sample", speech_end_sample},
-                    {"snapshot_end_sample", end_sample}});
-    deferred_pause_hint_.reset();
   } else {
+    RecordPauseHintDisposition(PauseHintDisposition::kAdmittedDeferred,
+                               candidate, segment_id,
+                               segment.last_submitted_refresh_end_sample,
+                               segment.last_completed_refresh_end_sample);
+    if (preview_refresh_attribution_enabled_.load()) {
+      ++pause_refresh_stats_.deferred_pause_submissions;
+    }
+    deferred_pause_hint_.reset();
   }
 
+  SubmitRefresh(lock, std::move(samples), std::move(options), std::move(reuse),
+                segment_id, end_sample, speech_end_sample, admission.source);
+}
+
+void RealtimeSession::SubmitRefresh(std::unique_lock<std::mutex> &lock,
+                                    std::vector<float> samples,
+                                    TranscriptionOptions options,
+                                    std::shared_ptr<RefreshReuse> reuse,
+                                    int segment_id, long end_sample,
+                                    long speech_end_sample,
+                                    RefreshSource source) {
+  std::shared_ptr<RefreshTiming> timing;
   if (preview_refresh_attribution_enabled_.load()) {
-    const int decode_index = next_refresh_decode_index_++;
     timing = std::make_shared<RefreshTiming>();
-    timing->decode_index = decode_index;
-    timing->source = admission.source;
+    timing->decode_index = next_refresh_decode_index_++;
+    timing->source = source;
     timing->segment_id = segment_id;
     timing->end_sample = end_sample;
     timing->speech_end_sample = speech_end_sample;
-    timing->submitted_at = std::chrono::steady_clock::now();
-  } else {
   }
+
   std::weak_ptr<RealtimeSession> weak_self =
       std::static_pointer_cast<RealtimeSession>(shared_from_this());
   Transcription transcribe =
@@ -1376,119 +1455,148 @@ void RealtimeSession::MaybeStartRefresh(
     Transcription decode = std::move(transcribe);
     transcribe = [decode = std::move(decode),
                   timing](const std::atomic<bool> &cancel) mutable {
-      timing->started_at = std::chrono::steady_clock::now();
-      return decode(cancel);
+      timing->worker.worker_started_at = std::chrono::steady_clock::now();
+      try {
+        TranscriptionResult result = decode(cancel);
+        timing->worker.decode_finished_at = std::chrono::steady_clock::now();
+        return result;
+      } catch (...) {
+        timing->worker.decode_finished_at = std::chrono::steady_clock::now();
+        throw;
+      }
     };
-  } else {
   }
-  Completion completion = [weak_self, segment_id, end_sample, speech_end_sample,
-                           admission_source = admission.source,
-                           timing](std::optional<TranscriptionResult> result,
-                                   std::exception_ptr error) {
-    const std::shared_ptr<RealtimeSession> self = weak_self.lock();
-    if (!self) {
-      return;
-    } else {
-    }
-    std::optional<std::string> preview;
-    bool transcript_changed = false;
-    {
-      std::lock_guard<std::mutex> lock(self->mutex_);
-      self->refreshing_ = false;
-      if (result.has_value() && self->segment_.has_value() &&
-          self->segment_->segment_id == segment_id) {
-        Segment &segment = *self->segment_;
-        self->ApplyResult(segment, *result, end_sample);
-        if (segment.transcript != segment.last_text) {
-          segment.last_text = segment.transcript;
-          preview = segment.transcript;
-          transcript_changed = true;
-          self->has_preview_ = true;
-        } else {
-        }
-      } else {
-      }
-    }
-    self->refresh_done_.notify_all();
-    // note (XXXXRT666): queued before the event, so a Final sent in answer
-    // to it finds the windows this refresh finished.
-    self->MaybeStartFinalPrefill();
-    self->MaybeStartShadowFinal();
-    if (error) {
-      self->ReportDecodeFailure(error);
-    } else if (preview.has_value()) {
-      self->Send({{"type", "transcription.segment"},
-                  {"segment_id", segment_id},
-                  {"text", *preview},
-                  {"is_final", false}});
-    } else {
-    }
-    if (timing != nullptr) {
-      std::string status = result.has_value() ? "success" : "error";
-      bool cancelled = false;
-      if (error) {
-        try {
-          std::rethrow_exception(error);
-        } catch (const GenerationCancelled &) {
-          status = "cancelled";
-          cancelled = true;
-        } catch (...) {
-          status = "error";
-        }
-      } else {
-      }
-      const auto completed_at = std::chrono::steady_clock::now();
-      const auto source_name = [&admission_source]() {
-        if (admission_source == RefreshSource::kCadence) {
-          return "cadence";
-        } else if (admission_source == RefreshSource::kPause) {
-          return "immediate_pause";
-        } else {
-          return "deferred_pause";
+  Completion completion =
+      [weak_self, segment_id, end_sample, speech_end_sample, source, timing](
+          std::optional<TranscriptionResult> result, std::exception_ptr error) {
+        if (const std::shared_ptr<RealtimeSession> self = weak_self.lock()) {
+          self->CompleteRefresh(segment_id, end_sample, speech_end_sample,
+                                source, timing, std::move(result), error);
         }
       };
-      nlohmann::ordered_json event = {
-          {"event", "refresh"},
-          {"decode_index", timing->decode_index},
-          {"source", source_name()},
-          {"segment_id", timing->segment_id},
-          {"snapshot_end_sample", timing->end_sample},
-          {"latest_speech_end_sample", speech_end_sample},
-          {"submitted_at_us", SteadyMicros(timing->submitted_at)},
-          {"worker_started_at_us",
-           timing->started_at.time_since_epoch().count() == 0
-               ? nlohmann::json()
-               : nlohmann::json(SteadyMicros(timing->started_at))},
-          {"completed_at_us", SteadyMicros(completed_at)},
-          {"status", status},
-          {"cancelled", cancelled},
-          {"error", error != nullptr},
-          {"transcript_changed", transcript_changed},
-          {"preview_event_published", preview.has_value()}};
-      if (result.has_value()) {
-        event["reused_audio_tokens"] = result->reused_audio_token_count;
-        event["reused_prompt_tokens"] = result->reused_prompt_token_count;
-        event["verified_guess_tokens"] = result->verified_guess_token_count;
-        event["accepted_guess_tokens"] = result->accepted_guess_token_count;
-        event["draft_proposed_tokens"] = result->proposed_draft_token_count;
-        event["draft_accepted_tokens"] = result->accepted_draft_token_count;
-      } else {
-      }
-      self->LogAttribution(std::move(event));
-    } else {
-    }
-    self->MaybeStartRefresh();
-  };
+
+  const bool pause_admission = source == RefreshSource::kPause ||
+                               source == RefreshSource::kDeferredPause;
   if (pause_admission) {
-    // note (chenye): Queue the pause while Final cannot take this mutex.
+    // note (XXXXRT666): Queue the pause while Final cannot take this mutex.
+    if (timing != nullptr) {
+      timing->worker.submitted_at = std::chrono::steady_clock::now();
+    }
     worker_.Submit(std::move(transcribe), cancel_, std::move(completion));
     return;
-  } else {
-    lock.unlock();
-    worker_.Submit(std::move(transcribe), cancel_, std::move(completion));
   }
+  lock.unlock();
+  if (timing != nullptr) {
+    timing->worker.submitted_at = std::chrono::steady_clock::now();
+  }
+  worker_.Submit(std::move(transcribe), cancel_, std::move(completion));
 }
 
+void RealtimeSession::CompleteRefresh(int segment_id, long end_sample,
+                                      long speech_end_sample,
+                                      RefreshSource source,
+                                      std::shared_ptr<RefreshTiming> timing,
+                                      std::optional<TranscriptionResult> result,
+                                      std::exception_ptr error) {
+  std::optional<std::string> preview;
+  bool transcript_changed = false;
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    refreshing_ = false;
+    if (result.has_value() && segment_.has_value() &&
+        segment_->segment_id == segment_id) {
+      Segment &segment = *segment_;
+      segment.last_completed_refresh_end_sample =
+          std::max(segment.last_completed_refresh_end_sample, end_sample);
+      ApplyResult(segment, *result, end_sample);
+      if (segment.transcript != segment.last_text) {
+        segment.last_text = segment.transcript;
+        preview = segment.transcript;
+        transcript_changed = true;
+        has_preview_ = true;
+      }
+    }
+  }
+  refresh_done_.notify_all();
+  // note (XXXXRT666): queued before the event, so a Final sent in answer to it
+  // finds the windows this refresh finished.
+  MaybeStartFinalPrefill();
+  MaybeStartShadowFinal();
+  if (error) {
+    ReportDecodeFailure(error);
+  } else if (preview.has_value()) {
+    if (timing != nullptr) {
+      timing->preview_send_attempt_at = std::chrono::steady_clock::now();
+    }
+    Send({{"type", "transcription.segment"},
+          {"segment_id", segment_id},
+          {"text", *preview},
+          {"is_final", false}});
+  }
+  MaybeStartRefresh();
+
+  if (timing == nullptr) {
+    return;
+  }
+  timing->worker.callback_finished_at = std::chrono::steady_clock::now();
+  const std::string_view source_name =
+      source == RefreshSource::kCadence ? "cadence"
+      : source == RefreshSource::kPause ? "immediate_pause"
+                                        : "deferred_pause";
+  std::string status = result.has_value() ? "success" : "error";
+  bool cancelled = false;
+  if (error != nullptr) {
+    try {
+      std::rethrow_exception(error);
+    } catch (const GenerationCancelled &) {
+      status = "cancelled";
+      cancelled = true;
+    } catch (...) {
+    }
+  }
+  LogAttributionLazy([&] {
+    nlohmann::ordered_json event = {
+        {"event", "refresh"},
+        {"decode_index", timing->decode_index},
+        {"source", source_name},
+        {"segment_id", timing->segment_id},
+        {"snapshot_end_sample", timing->end_sample},
+        {"latest_speech_end_sample", speech_end_sample},
+        {"completed_refresh_end_sample",
+         result.has_value() ? nlohmann::json(end_sample) : nlohmann::json()},
+        {"submitted_at_us", SteadyMicrosJson(timing->worker.submitted_at)},
+        {"worker_started_at_us",
+         SteadyMicrosJson(timing->worker.worker_started_at)},
+        {"decode_finished_at_us",
+         SteadyMicrosJson(timing->worker.decode_finished_at)},
+        {"callback_finished_at_us",
+         SteadyMicrosJson(timing->worker.callback_finished_at)},
+        {"preview_send_attempt_at_us",
+         SteadyMicrosJson(timing->preview_send_attempt_at)},
+        {"queue_wait_us", ElapsedMicrosJson(timing->worker.submitted_at,
+                                            timing->worker.worker_started_at)},
+        {"decode_execution_wall_us",
+         ElapsedMicrosJson(timing->worker.worker_started_at,
+                           timing->worker.decode_finished_at)},
+        {"completion_overhead_us",
+         ElapsedMicrosJson(timing->worker.decode_finished_at,
+                           timing->worker.callback_finished_at)},
+        {"status", status},
+        {"cancelled", cancelled},
+        {"error", error != nullptr},
+        {"transcript_changed", transcript_changed},
+        {"preview_send_attempted", preview.has_value()}};
+    if (result.has_value()) {
+      event["reused_audio_tokens"] = result->reused_audio_token_count;
+      event["reused_prompt_tokens"] = result->reused_prompt_token_count;
+      event["verified_guess_tokens"] = result->verified_guess_token_count;
+      event["accepted_guess_tokens"] = result->accepted_guess_token_count;
+      event["draft_proposed_tokens"] = result->proposed_draft_token_count;
+      event["draft_accepted_tokens"] = result->accepted_draft_token_count;
+    }
+    return event;
+  });
+}
 void RealtimeSession::FinalizeThrough(long end_sample) {
   while (true) {
     Segment segment;
@@ -1504,8 +1612,12 @@ void RealtimeSession::FinalizeThrough(long end_sample) {
       // Note (Jiaxin Deng): wait out an in-flight preview and start no new one,
       // as the Python server's FIFO decode lock does.
       finalizing_ = true;
-      DiscardDeferredPauseHint(end_sample < EndSample() ? "segment_rollover"
-                                                        : "final_handoff");
+      const PauseHintDisposition finalization_disposition =
+          end_sample < EndSample() ? PauseHintDisposition::kSegmentRollover
+          : pause_refresh_final_handoff_
+              ? PauseHintDisposition::kFinalHandoff
+              : PauseHintDisposition::kSegmentFinalization;
+      DiscardDeferredPauseHint(finalization_disposition);
       refresh_done_.wait(lock, [&] { return !refreshing_; });
       if (!segment_.has_value() || end_sample <= segment_->start_sample) {
         finalizing_ = false;

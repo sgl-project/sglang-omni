@@ -2,6 +2,7 @@
 #pragma once
 
 #include <algorithm>
+#include <cstddef>
 #include <optional>
 
 namespace qwen3_asr {
@@ -82,6 +83,51 @@ ConsumePauseRefreshHint(const std::optional<PauseRefreshHint> &hint,
 
 enum class RefreshSource { kNone, kCadence, kPause, kDeferredPause };
 
+enum class PauseHintDisposition {
+  kNone,
+  kInvalid,
+  kDuplicate,
+  kDisabled,
+  kInvalidDeferredMetadata,
+  kRefreshBusy,
+  kCovered,
+  kInsufficientNewSpeech,
+  kSupersededByCadence,
+  kSilent,
+  kFinalHandoff,
+  kSegmentFinalization,
+  kCancelled,
+  kSpeechResumption,
+  kSegmentRollover,
+  kDeferred,
+  kSuperseded,
+  kAdmittedImmediate,
+  kAdmittedDeferred,
+  kSessionClose,
+  kCount,
+};
+
+inline constexpr size_t kPauseHintDispositionCount =
+    static_cast<size_t>(PauseHintDisposition::kCount);
+
+inline PauseHintDisposition DeferredHintDisposition(DeferredHintState state) {
+  switch (state) {
+  case DeferredHintState::kInvalid:
+    return PauseHintDisposition::kInvalidDeferredMetadata;
+  case DeferredHintState::kSegmentChanged:
+    return PauseHintDisposition::kSegmentRollover;
+  case DeferredHintState::kSpeechResumed:
+    return PauseHintDisposition::kSpeechResumption;
+  case DeferredHintState::kCovered:
+    return PauseHintDisposition::kCovered;
+  case DeferredHintState::kInsufficientSpeech:
+    return PauseHintDisposition::kInsufficientNewSpeech;
+  case DeferredHintState::kValid:
+    return PauseHintDisposition::kNone;
+  }
+  return PauseHintDisposition::kInvalidDeferredMetadata;
+}
+
 struct RefreshAdmissionInput {
   long segment_start_sample = 0;
   long audio_end_sample = 0;
@@ -101,6 +147,7 @@ struct RefreshAdmissionInput {
 
 struct RefreshAdmission {
   RefreshSource source = RefreshSource::kNone;
+  PauseHintDisposition disposition = PauseHintDisposition::kNone;
   long end_sample = 0;
   long next_refresh_sample = 0;
 };
@@ -109,12 +156,45 @@ inline RefreshAdmission
 SelectRefreshAdmission(const RefreshAdmissionInput &input) {
   RefreshAdmission admission;
   admission.next_refresh_sample = input.next_refresh_sample;
-  if (input.refreshing || input.finalizing) {
+  if (input.finalizing) {
+    admission.disposition = input.pause_hint.has_value()
+                                ? PauseHintDisposition::kSegmentFinalization
+                                : PauseHintDisposition::kNone;
     return admission;
-  } else {
+  }
+  if (input.refreshing) {
+    if (!input.pause_hint.has_value()) {
+      return admission;
+    }
+    if (input.cancelled) {
+      admission.disposition = PauseHintDisposition::kCancelled;
+    } else if (input.final_handoff) {
+      admission.disposition = PauseHintDisposition::kFinalHandoff;
+    } else if (input.pause_hint->speech_end_sample <=
+               input.last_submitted_refresh_end_sample) {
+      admission.disposition = PauseHintDisposition::kCovered;
+    } else if (input.pause_hint->speech_end_sample -
+                   std::max({input.segment_start_sample,
+                             input.last_submitted_refresh_end_sample,
+                             input.pause_hint->speech_start_sample}) <
+               input.minimum_new_speech_samples) {
+      admission.disposition = PauseHintDisposition::kInsufficientNewSpeech;
+    } else if (input.audio_end_sample >= input.next_refresh_sample) {
+      admission.disposition = PauseHintDisposition::kSupersededByCadence;
+    } else {
+      admission.disposition = PauseHintDisposition::kRefreshBusy;
+    }
+    return admission;
   }
 
-  if (input.audio_end_sample >= input.next_refresh_sample) {
+  const bool cadence_due = input.audio_end_sample >= input.next_refresh_sample;
+  if (cadence_due) {
+    if (input.pause_hint.has_value()) {
+      admission.disposition = input.cancelled ? PauseHintDisposition::kCancelled
+                              : input.final_handoff
+                                  ? PauseHintDisposition::kFinalHandoff
+                                  : PauseHintDisposition::kSupersededByCadence;
+    }
     if (!input.silent) {
       admission.source = RefreshSource::kCadence;
       admission.end_sample = input.audio_end_sample;
@@ -123,30 +203,42 @@ SelectRefreshAdmission(const RefreshAdmissionInput &input) {
     } else if (input.has_decoded) {
       admission.next_refresh_sample =
           input.audio_end_sample + input.decode_interval_samples;
-    } else {
     }
     return admission;
-  } else {
   }
-
-  if (!input.pause_hint.has_value() || input.silent || input.cancelled ||
-      input.final_handoff ||
-      input.audio_end_sample <= input.last_submitted_refresh_end_sample) {
+  if (!input.pause_hint.has_value()) {
     return admission;
-  } else {
   }
-
+  if (input.cancelled) {
+    admission.disposition = PauseHintDisposition::kCancelled;
+    return admission;
+  }
+  if (input.final_handoff) {
+    admission.disposition = PauseHintDisposition::kFinalHandoff;
+    return admission;
+  }
+  if (input.silent) {
+    admission.disposition = PauseHintDisposition::kSilent;
+    return admission;
+  }
+  if (input.pause_hint->speech_end_sample <=
+      input.last_submitted_refresh_end_sample) {
+    admission.disposition = PauseHintDisposition::kCovered;
+    return admission;
+  }
   const long first_new_speech_sample = std::max(
       {input.segment_start_sample, input.last_submitted_refresh_end_sample,
        input.pause_hint->speech_start_sample});
   if (input.pause_hint->speech_end_sample - first_new_speech_sample <
       input.minimum_new_speech_samples) {
+    admission.disposition = PauseHintDisposition::kInsufficientNewSpeech;
     return admission;
-  } else {
   }
-
   admission.source = input.pause_hint_deferred ? RefreshSource::kDeferredPause
                                                : RefreshSource::kPause;
+  admission.disposition = input.pause_hint_deferred
+                              ? PauseHintDisposition::kAdmittedDeferred
+                              : PauseHintDisposition::kAdmittedImmediate;
   admission.end_sample = input.audio_end_sample;
   admission.next_refresh_sample =
       input.audio_end_sample + input.decode_interval_samples;

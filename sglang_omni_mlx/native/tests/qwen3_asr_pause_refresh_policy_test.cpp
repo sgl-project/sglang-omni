@@ -78,10 +78,32 @@ void TestAdmissionPolicy() {
       400 * kSampleRate / kMillisecondsPerSecond;
   input.pause_hint =
       PauseRefreshHint{300 * kSampleRate / 1000, 590 * kSampleRate / 1000};
-  expect_source(RefreshSource::kNone,
-                "insufficient novel speech refreshed early");
+  admission = SelectRefreshAdmission(input);
+  Require(admission.source == RefreshSource::kNone &&
+              admission.disposition ==
+                  PauseHintDisposition::kInsufficientNewSpeech,
+          "idle insufficient-speech hint was not attributed by the selector");
 
   input.pause_hint = PauseRefreshHint{0, 600 * kSampleRate / 1000};
+  input.last_submitted_refresh_end_sample = 600 * kSampleRate / 1000;
+  admission = SelectRefreshAdmission(input);
+  Require(admission.source == RefreshSource::kNone &&
+              admission.disposition == PauseHintDisposition::kCovered,
+          "idle covered hint was not attributed by the selector");
+
+  input = AdmissionInput();
+  input.next_refresh_sample = 1400 * kSampleRate / 1000;
+  input.audio_end_sample = 800 * kSampleRate / 1000;
+  input.last_submitted_refresh_end_sample = 100 * kSampleRate / 1000;
+  input.pause_hint =
+      PauseRefreshHint{100 * kSampleRate / 1000, 600 * kSampleRate / 1000};
+  input.refreshing = true;
+  admission = SelectRefreshAdmission(input);
+  Require(admission.source == RefreshSource::kNone &&
+              admission.disposition == PauseHintDisposition::kRefreshBusy,
+          "busy useful hint was not attributed by the selector");
+
+  input.refreshing = false;
   input.cancelled = true;
   expect_source(RefreshSource::kNone,
                 "cancelled session admitted a pause refresh");

@@ -20,6 +20,15 @@
 #include "pause_refresh_test_support.h"
 #include "qwen3_asr/realtime.h"
 
+namespace qwen3_asr::tests {
+struct RealtimeSessionTestAccess {
+  static void SetBeforeRolloverFinalize(RealtimeSession &session,
+                                        std::function<void()> callback) {
+    session.before_rollover_finalize_for_test_ = std::move(callback);
+  }
+};
+} // namespace qwen3_asr::tests
+
 namespace {
 
 using omni_common::FinishReason;
@@ -55,6 +64,11 @@ public:
     });
   }
 
+  bool Contains(const std::string &needle) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return output_.find(needle) != std::string::npos;
+  }
+
 protected:
   int_type overflow(int_type character) override {
     if (traits_type::eq_int_type(character, traits_type::eof())) {
@@ -83,6 +97,16 @@ private:
   std::condition_variable changed_;
   std::mutex mutex_;
   std::string output_;
+};
+
+struct ReleaseGatesOnExit {
+  TestGate &first;
+  TestGate &second;
+
+  ~ReleaseGatesOnExit() {
+    first.Release();
+    second.Release();
+  }
 };
 
 std::string AudioBase64(int sample_count) {
@@ -162,11 +186,28 @@ PauseDecoder(TestSignal &started, std::shared_future<void> release,
 }
 
 void DrainWorker(TranscriptionWorker &worker, TestSignal &drained) {
+  // Marker one is queued after the active request. If that request's completion
+  // admits one follow-up, FIFO puts it behind marker one. Marker one's callback
+  // queues marker two behind that follow-up, so marker two cannot complete
+  // until the follow-up and its completion callback have run. Each negative
+  // scenario uses a cadence deadline beyond this boundary, so that callback
+  // cannot admit a third request.
   worker.Submit(
       [](const std::atomic<bool> &) { return TranscriptionResult{}; },
       NewCancelFlag(),
-      [&drained](std::optional<TranscriptionResult>, std::exception_ptr error) {
-        drained.Notify(error);
+      [&worker, &drained](std::optional<TranscriptionResult>,
+                          std::exception_ptr error) {
+        if (error != nullptr) {
+          drained.Notify(error);
+          return;
+        }
+        worker.Submit(
+            [](const std::atomic<bool> &) { return TranscriptionResult{}; },
+            NewCancelFlag(),
+            [&drained](std::optional<TranscriptionResult>,
+                       std::exception_ptr marker_error) {
+              drained.Notify(marker_error);
+            });
       });
   drained.Wait("worker did not drain after the pause-refresh scenario");
 }
@@ -254,25 +295,20 @@ void TestRepeatedPauseHintIsNotAdmitted() {
   Require(session->Handle(AppendMessage(
               100 * static_cast<int>(kSampleRate) / 1000, repeated_hint)),
           "repeated pause append was rejected");
-  worker.Submit([](const std::atomic<bool> &) { return TranscriptionResult{}; },
-                NewCancelFlag(),
-                [&worker_drained](std::optional<TranscriptionResult>,
-                                  std::exception_ptr error) {
-                  worker_drained.Notify(error);
-                });
-  worker_drained.Wait("worker did not drain after the repeated hint");
+  DrainWorker(worker, worker_drained);
   Require(decode_count.load() == 1,
           "the same pause hint admitted more than one refresh");
 }
 
 void TestBusyPauseHintDeferredAdmission(bool enable_deferred) {
+  TestLogCapture log_capture;
   TestSignal first_started;
   TestSignal second_started;
   TestSignal worker_drained;
-  TestGate release_first;
   std::atomic<int> decode_count = 0;
   std::vector<int> decoded_samples;
   TranscriptionWorker worker([] {}, [] {});
+  TestGate release_first;
   auto session = std::make_shared<RealtimeSession>(
       worker,
       [&first_started, &second_started, release = release_first.Future(),
@@ -298,7 +334,7 @@ void TestBusyPauseHintDeferredAdmission(bool enable_deferred) {
       },
       qwen3_asr::MakeRealtimeSettings(1000, 100, 30.0),
       [](const std::string &) { return true; });
-  UpdateSession(session, true, enable_deferred);
+  UpdateSession(session, true, enable_deferred, true);
   Require(session->Handle(AppendMessage(
               100 * static_cast<int>(kSampleRate) / 1000, std::nullopt, 0)),
           "initial cadence append was rejected");
@@ -315,6 +351,10 @@ void TestBusyPauseHintDeferredAdmission(bool enable_deferred) {
   Require(session->Handle(AppendMessage(
               100 * static_cast<int>(kSampleRate) / 1000, hint, 1)),
           "duplicate busy pause append was rejected");
+  Require(log_capture.WaitFor(enable_deferred
+                                  ? "\"disposition\":\"deferred\""
+                                  : "\"disposition\":\"refresh_busy\""),
+          "busy pause outcome was not attributed");
   release_first.Release();
   if (enable_deferred) {
     second_started.Wait("useful busy pause was not admitted after completion");
@@ -324,6 +364,8 @@ void TestBusyPauseHintDeferredAdmission(bool enable_deferred) {
   Require(decode_count.load() == (enable_deferred ? 2 : 1),
           "busy-pause arm submitted the wrong number of refreshes");
   if (enable_deferred) {
+    Require(log_capture.WaitFor("\"disposition\":\"admitted_deferred\""),
+            "deferred admission had no terminal attribution");
     Require(decoded_samples.size() == 2 &&
                 decoded_samples[1] ==
                     900 * kSampleRate / kMillisecondsPerSecond,
@@ -336,11 +378,12 @@ void TestBusyPauseCoveredAndInsufficientHintsAreNotDeferred() {
   for (const auto &[name, initial_ms, hint_start_ms, hint_end_ms] :
        std::vector<std::tuple<std::string, int, int, int>>{
            {"covered", 800, 0, 600}, {"insufficient", 400, 300, 450}}) {
+    TestLogCapture log_capture;
     TestSignal first_started;
     TestSignal worker_drained;
-    TestGate release_first;
     std::atomic<int> decode_count = 0;
     TranscriptionWorker worker([] {}, [] {});
+    TestGate release_first;
     auto session = std::make_shared<RealtimeSession>(
         worker,
         [&first_started, release = release_first.Future(),
@@ -353,7 +396,7 @@ void TestBusyPauseCoveredAndInsufficientHintsAreNotDeferred() {
         },
         qwen3_asr::MakeRealtimeSettings(1000, 100, 30.0),
         [](const std::string &) { return true; });
-    UpdateSession(session, true, true);
+    UpdateSession(session, true, true, true);
     Require(session->Handle(
                 AppendMessage(initial_ms * static_cast<int>(kSampleRate) / 1000,
                               std::nullopt, 0)),
@@ -370,16 +413,74 @@ void TestBusyPauseCoveredAndInsufficientHintsAreNotDeferred() {
     DrainWorker(worker, worker_drained);
     Require(decode_count.load() == 1,
             name + " busy pause admitted a second refresh");
+    const std::string disposition = name == "covered"
+                                        ? "covered_by_submitted_refresh"
+                                        : "insufficient_new_speech";
+    Require(log_capture.WaitFor("\"disposition\":\"" + disposition + "\""),
+            name + " busy rejection had no terminal attribution");
+    Require(log_capture.WaitFor("\"last_completed_refresh_end_sample\":0"),
+            name + " busy hint treated an in-flight decode as completed");
+  }
+}
+
+void TestIdlePauseRejectionsHaveExactAttribution() {
+  for (const auto &[name, speech_start_ms, speech_end_ms, disposition] :
+       std::vector<std::tuple<std::string, int, int, std::string>>{
+           {"covered", 0, 600, "covered_by_submitted_refresh"},
+           {"insufficient", 650, 950, "insufficient_new_speech"}}) {
+    TestLogCapture log_capture;
+    TestSignal worker_drained;
+    std::atomic<int> decode_count = 0;
+    TranscriptionWorker worker([] {}, [] {});
+    auto session = std::make_shared<RealtimeSession>(
+        worker,
+        [&decode_count](const std::vector<float> &, const std::atomic<bool> &,
+                        RefreshReuse *) -> TranscriptionResult {
+          decode_count.fetch_add(1);
+          return PreviewResult();
+        },
+        qwen3_asr::MakeRealtimeSettings(1000, 100, 30.0),
+        [](const std::string &) { return true; });
+    UpdateSession(session, true, false, true);
+    Require(session->Handle(AppendMessage(
+                800 * static_cast<int>(kSampleRate) / 1000, std::nullopt)),
+            name + " initial cadence append was rejected");
+    DrainWorker(worker, worker_drained);
+    Require(decode_count.load() == 1,
+            name + " initial cadence refresh did not complete");
+
+    const nlohmann::json hint = {
+        {"speech_start_sample", speech_start_ms * kSampleRate / 1000},
+        {"speech_end_sample", speech_end_ms * kSampleRate / 1000}};
+    Require(session->Handle(AppendMessage(
+                200 * static_cast<int>(kSampleRate) / 1000, hint)),
+            name + " pause append was rejected");
+    Require(log_capture.WaitFor("\"disposition\":\"" + disposition + "\""),
+            name + " pause rejection had no terminal attribution");
+    if (name == "covered") {
+      Require(log_capture.WaitFor("\"last_submitted_refresh_end_sample\":" +
+                                  std::to_string(800 * kSampleRate / 1000)),
+              "covered attribution omitted submitted audio coverage");
+      Require(log_capture.WaitFor("\"last_completed_refresh_end_sample\":" +
+                                  std::to_string(800 * kSampleRate / 1000)),
+              "covered attribution omitted completed audio coverage");
+    } else {
+    }
+    TestSignal rejection_drained;
+    DrainWorker(worker, rejection_drained);
+    Require(decode_count.load() == 1,
+            name + " idle rejection unexpectedly submitted a refresh");
   }
 }
 
 void TestDeferredPauseIsInvalidatedBySpeechResumeOrMalformedEpoch() {
   for (const bool malformed_epoch : {false, true}) {
+    TestLogCapture log_capture;
     TestSignal first_started;
     TestSignal worker_drained;
-    TestGate release_first;
     std::atomic<int> decode_count = 0;
     TranscriptionWorker worker([] {}, [] {});
+    TestGate release_first;
     auto session = std::make_shared<RealtimeSession>(
         worker,
         [&first_started, release = release_first.Future(),
@@ -392,7 +493,7 @@ void TestDeferredPauseIsInvalidatedBySpeechResumeOrMalformedEpoch() {
         },
         qwen3_asr::MakeRealtimeSettings(1000, 100, 30.0),
         [](const std::string &) { return true; });
-    UpdateSession(session, true, true);
+    UpdateSession(session, true, true, true);
     Require(session->Handle(AppendMessage(
                 100 * static_cast<int>(kSampleRate) / 1000, std::nullopt, 0)),
             "resume-test initial append was rejected");
@@ -413,6 +514,10 @@ void TestDeferredPauseIsInvalidatedBySpeechResumeOrMalformedEpoch() {
     DrainWorker(worker, worker_drained);
     Require(decode_count.load() == 1,
             "invalidated pending pause admitted a stale refresh");
+    const std::string disposition =
+        malformed_epoch ? "invalid_deferred_metadata" : "speech_resumption";
+    Require(log_capture.WaitFor("\"disposition\":\"" + disposition + "\""),
+            "deferred invalidation had no terminal attribution");
   }
 }
 
@@ -420,10 +525,10 @@ void TestLaterValidPauseReplacesResumedHint() {
   TestSignal first_started;
   TestSignal second_started;
   TestSignal worker_drained;
-  TestGate release_first;
   std::atomic<int> decode_count = 0;
   std::vector<int> decoded_samples;
   TranscriptionWorker worker([] {}, [] {});
+  TestGate release_first;
   auto session = std::make_shared<RealtimeSession>(
       worker,
       [&first_started, &second_started, release = release_first.Future(),
@@ -479,12 +584,13 @@ void TestLaterValidPauseReplacesResumedHint() {
 
 void TestCadenceAndFinalHandoffSupersedePendingPause() {
   for (const bool final_handoff : {false, true}) {
+    TestLogCapture log_capture;
     TestSignal first_started;
     TestSignal second_started;
     TestSignal worker_drained;
-    TestGate release_first;
     std::atomic<int> decode_count = 0;
     TranscriptionWorker worker([] {}, [] {});
+    TestGate release_first;
     auto session = std::make_shared<RealtimeSession>(
         worker,
         [&first_started, &second_started, release = release_first.Future(),
@@ -502,7 +608,7 @@ void TestCadenceAndFinalHandoffSupersedePendingPause() {
         },
         qwen3_asr::MakeRealtimeSettings(1000, 100, 30.0),
         [](const std::string &) { return true; });
-    UpdateSession(session, true, true);
+    UpdateSession(session, true, true, true);
     Require(session->Handle(AppendMessage(
                 100 * static_cast<int>(kSampleRate) / 1000, std::nullopt, 0)),
             "cadence/final initial append was rejected");
@@ -524,11 +630,15 @@ void TestCadenceAndFinalHandoffSupersedePendingPause() {
       DrainWorker(worker, worker_drained);
       Require(decode_count.load() == 1,
               "Final handoff did not fence deferred pause admission");
+      Require(log_capture.WaitFor("\"disposition\":\"final_handoff\""),
+              "Final handoff did not terminally attribute the deferred hint");
     } else {
       second_started.Wait("due cadence refresh did not start");
       DrainWorker(worker, worker_drained);
       Require(decode_count.load() == 2,
               "cadence and pending pause caused multiple refreshes");
+      Require(log_capture.WaitFor("\"disposition\":\"superseded_by_cadence\""),
+              "cadence did not terminally attribute the busy hint");
     }
   }
 }
@@ -537,9 +647,9 @@ void TestIntermediatePieceDoesNotFenceDeferredPause() {
   TestSignal first_started;
   TestSignal second_started;
   TestSignal worker_drained;
-  TestGate release_first;
   std::atomic<int> decode_count = 0;
   TranscriptionWorker worker([] {}, [] {});
+  TestGate release_first;
   auto session = std::make_shared<RealtimeSession>(
       worker,
       [&first_started, &second_started, release = release_first.Future(),
@@ -578,11 +688,12 @@ void TestIntermediatePieceDoesNotFenceDeferredPause() {
 }
 
 void TestCloseCancelsDeferredPause() {
+  TestLogCapture log_capture;
   TestSignal first_started;
   TestSignal worker_drained;
-  TestGate release_first;
   std::atomic<int> decode_count = 0;
   TranscriptionWorker worker([] {}, [] {});
+  TestGate release_first;
   auto session = std::make_shared<RealtimeSession>(
       worker,
       [&first_started, release = release_first.Future(), &decode_count](
@@ -599,7 +710,7 @@ void TestCloseCancelsDeferredPause() {
       },
       qwen3_asr::MakeRealtimeSettings(1000, 100, 30.0),
       [](const std::string &) { return true; });
-  UpdateSession(session, true, true);
+  UpdateSession(session, true, true, true);
   Require(session->Handle(AppendMessage(
               100 * static_cast<int>(kSampleRate) / 1000, std::nullopt, 0)),
           "close-test initial append was rejected");
@@ -611,6 +722,10 @@ void TestCloseCancelsDeferredPause() {
               700 * static_cast<int>(kSampleRate) / 1000, hint, 1)),
           "close-test pause append was rejected");
   session->Close();
+  Require(log_capture.WaitFor("\"disposition\":\"session_close\""),
+          "session close did not terminally attribute its pending hint");
+  Require(log_capture.WaitFor("\"deferred_pending_at_close\":false"),
+          "session summary omitted its deferred-hint close state");
   release_first.Release();
   DrainWorker(worker, worker_drained);
   Require(decode_count.load() == 1,
@@ -620,10 +735,12 @@ void TestCloseCancelsDeferredPause() {
 void TestDeferredPauseClearedOnSegmentRollover() {
   TestLogCapture log_capture;
   TestSignal first_started;
+  TestSignal overflow_detected;
   TestSignal worker_drained;
-  TestGate release_first;
   std::vector<int> decoded_samples;
   TranscriptionWorker worker([] {}, [] {});
+  TestGate release_first;
+  TestGate release_overflow;
   auto session = std::make_shared<RealtimeSession>(
       worker,
       [&first_started, release = release_first.Future(), &decoded_samples](
@@ -643,6 +760,12 @@ void TestDeferredPauseClearedOnSegmentRollover() {
       },
       qwen3_asr::MakeRealtimeSettings(1000, 100, 1.0),
       [](const std::string &) { return true; });
+  qwen3_asr::tests::RealtimeSessionTestAccess::SetBeforeRolloverFinalize(
+      *session, [&] {
+        overflow_detected.Notify();
+        WaitFor(release_overflow.Future(),
+                "rollover finalization gate release timed out");
+      });
   UpdateSession(session, true, true, true);
   Require(session->Handle(AppendMessage(
               100 * static_cast<int>(kSampleRate) / 1000, std::nullopt, 0)),
@@ -659,29 +782,34 @@ void TestDeferredPauseClearedOnSegmentRollover() {
   std::future<void> append_started_future = append_started.get_future();
   auto rollover = std::async(std::launch::async, [&] {
     append_started.set_value();
-    return session->Handle(AppendMessage(
-        201 * static_cast<int>(kSampleRate) / 1000, std::nullopt, 1));
+    return session->Handle(
+        AppendMessage(201 * static_cast<int>(kSampleRate) / 1000, hint, 1));
   });
-  const bool append_started_on_time =
-      append_started_future.wait_for(std::chrono::seconds(2)) ==
-      std::future_status::ready;
+  ReleaseGatesOnExit release_gates{release_first, release_overflow};
+  WaitFor(append_started_future, "rollover append thread did not start");
+  overflow_detected.Wait(
+      "rollover was not detected while holding the session lock");
   const bool rollover_logged =
       log_capture.WaitFor("\"disposition\":\"segment_rollover\"");
-  const bool still_waiting_for_refresh =
-      rollover.wait_for(std::chrono::milliseconds(0)) ==
-      std::future_status::timeout;
   release_first.Release();
-  Require(append_started_on_time,
-          "rollover append thread did not start in time");
+  try {
+    DrainWorker(worker, worker_drained);
+  } catch (...) {
+    release_overflow.Release();
+    throw;
+  }
+  const size_t refreshes_before_finalize = decoded_samples.size();
+  release_overflow.Release();
   Require(rollover_logged,
           "segment rollover did not invalidate the pending pause hint");
-  Require(still_waiting_for_refresh,
-          "rollover did not wait for the in-flight preview barrier");
+  Require(!log_capture.Contains("\"disposition\":\"invalid\""),
+          "overflow append hint was reprocessed against the new segment");
+  Require(refreshes_before_finalize == 1,
+          "completion in the rollover gap admitted the stale deferred pause");
   Require(rollover.wait_for(std::chrono::seconds(2)) ==
               std::future_status::ready,
           "segment rollover did not finish after releasing the preview");
   Require(rollover.get(), "segment rollover append was rejected");
-  DrainWorker(worker, worker_drained);
   Require(decoded_samples.size() == 2 &&
               decoded_samples[0] ==
                   100 * static_cast<int>(kSampleRate) / 1000 &&
@@ -691,6 +819,7 @@ void TestDeferredPauseClearedOnSegmentRollover() {
 
 void TestPauseRefreshFinalOrdering(bool queue_behind_blocker,
                                    bool close_during_pause) {
+  TestLogCapture log_capture;
   TestSignal blocker_started;
   TestSignal pause_started;
   TestSignal final_finished;
@@ -727,7 +856,7 @@ void TestPauseRefreshFinalOrdering(bool queue_behind_blocker,
         }
         return true;
       });
-  UpdateSession(session, true);
+  UpdateSession(session, true, false, true);
   Require(session->Handle(AppendMessage(
               800 * static_cast<int>(kSampleRate) / 1000,
               nlohmann::json{{"speech_start_sample", 0},
@@ -779,6 +908,8 @@ void TestPauseRefreshFinalOrdering(bool queue_behind_blocker,
                     800 * kSampleRate / kMillisecondsPerSecond &&
                 segment_events.load() == 0,
             "close did not cancel the running pause refresh");
+    Require(log_capture.WaitFor("\"status\":\"cancelled\""),
+            "cancelled refresh had no terminal timing record");
   } else {
     final_finished.Wait("Final decode did not finish");
     Require(saw_pause_reuse.load(),
@@ -787,6 +918,53 @@ void TestPauseRefreshFinalOrdering(bool queue_behind_blocker,
                 800 * kSampleRate / kMillisecondsPerSecond,
             "pause refresh decoded the wrong audio endpoint");
   }
+}
+
+void TestQueuedCancellationLeavesExecutionTimesAbsent() {
+  TestLogCapture log_capture;
+  TestSignal blocker_started;
+  TestSignal worker_drained;
+  std::atomic<int> decode_count = 0;
+  TranscriptionWorker worker([] {}, [] {});
+  TestGate release_blocker;
+  const std::shared_future<void> blocker_release = release_blocker.Future();
+  worker.Submit(
+      [&blocker_started, blocker_release](const std::atomic<bool> &) {
+        blocker_started.Notify();
+        WaitFor(blocker_release, "queued-cancel blocker release timed out");
+        return TranscriptionResult{};
+      },
+      NewCancelFlag(),
+      [](std::optional<TranscriptionResult>, std::exception_ptr) {});
+  blocker_started.Wait("queued-cancel blocker did not start");
+
+  auto session = std::make_shared<RealtimeSession>(
+      worker,
+      [&decode_count](const std::vector<float> &, const std::atomic<bool> &,
+                      RefreshReuse *) -> TranscriptionResult {
+        decode_count.fetch_add(1);
+        return PreviewResult();
+      },
+      qwen3_asr::MakeRealtimeSettings(1000, 100, 30.0),
+      [](const std::string &) { return true; });
+  UpdateSession(session, true, false, true);
+  Require(session->Handle(AppendMessage(
+              100 * static_cast<int>(kSampleRate) / 1000, std::nullopt)),
+          "queued-cancel cadence append was rejected");
+  const std::map<std::string, int> request_states = worker.RequestStates();
+  Require(request_states.contains("queued"),
+          "queued-cancel test did not queue a refresh behind the blocker");
+  session->Close();
+  release_blocker.Release();
+  DrainWorker(worker, worker_drained);
+  Require(decode_count.load() == 0,
+          "cancelled queued refresh executed its transcription callable");
+  Require(log_capture.WaitFor("\"status\":\"cancelled\""),
+          "queued cancellation had no terminal refresh record");
+  Require(log_capture.WaitFor("\"worker_started_at_us\":null"),
+          "queued cancellation invented a worker-start timestamp");
+  Require(log_capture.WaitFor("\"decode_finished_at_us\":null"),
+          "queued cancellation invented a decode-finished timestamp");
 }
 
 void TestFinalFenceBlocksPauseAndPreservesCadence() {
@@ -847,6 +1025,7 @@ int main() {
     TestBusyPauseHintDeferredAdmission(false);
     TestBusyPauseHintDeferredAdmission(true);
     TestBusyPauseCoveredAndInsufficientHintsAreNotDeferred();
+    TestIdlePauseRejectionsHaveExactAttribution();
     TestDeferredPauseIsInvalidatedBySpeechResumeOrMalformedEpoch();
     TestLaterValidPauseReplacesResumedHint();
     TestCadenceAndFinalHandoffSupersedePendingPause();
@@ -857,6 +1036,7 @@ int main() {
     TestPauseRefreshFinalOrdering(true, false);
     TestPauseRefreshFinalOrdering(false, false);
     TestPauseRefreshFinalOrdering(false, true);
+    TestQueuedCancellationLeavesExecutionTimesAbsent();
     TestFinalFenceBlocksPauseAndPreservesCadence();
   } catch (const std::exception &error) {
     std::cerr << error.what() << '\n';

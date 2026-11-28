@@ -95,14 +95,14 @@ func TestPauseRefreshDetectorUsesSocketSamplesAcrossChunkBoundaries(t *testing.T
 			}
 
 			pcm := append(tone(600*time.Millisecond, 0.3), pause...)
-			expectHint(newDetector().observe(pcm), 0, 600)
+			expectHint(newDetector().observe(pcm, false), 0, 600)
 			detector := newDetector()
 			// Direct detector writes can split bytes; the websocket test below uses PCM16-aligned chunks.
 			chunkSizes := []int{1, 317, 2049, 71, 5201}
 			var hints []*pauseRefreshHint
 			for offset, chunk := 0, 0; offset < len(pcm); chunk++ {
 				end := min(offset+chunkSizes[chunk%len(chunkSizes)], len(pcm))
-				if hint := detector.observe(pcm[offset:end]); hint != nil {
+				if hint := detector.observe(pcm[offset:end], false); hint != nil {
 					hints = append(hints, hint)
 				}
 				offset = end
@@ -111,26 +111,26 @@ func TestPauseRefreshDetectorUsesSocketSamplesAcrossChunkBoundaries(t *testing.T
 				t.Fatalf("arbitrarily chunked speech-pause produced %d hints", len(hints))
 			}
 			expectHint(hints[0], 0, 600)
-			if hint := detector.observe(pause); hint != nil {
+			if hint := detector.observe(pause, false); hint != nil {
 				t.Fatalf("silence re-emitted a consumed hint: %+v", hint)
 			}
 
 			leading := append(silence(500*time.Millisecond), tone(600*time.Millisecond, 0.3)...)
 			leading = append(leading, pause...)
-			expectHint(newDetector().observe(leading), 500, 1100)
+			expectHint(newDetector().observe(leading, false), 500, 1100)
 
 			split := newDetector()
 			first := append(tone(600*time.Millisecond, 0.3), pause...)
-			expectHint(split.observe(first), 0, 600)
-			if hint := split.observe(tone(120*time.Millisecond, 0.3)); hint != nil || !split.detector.Speaking() {
+			expectHint(split.observe(first, false), 0, 600)
+			if hint := split.observe(tone(120*time.Millisecond, 0.3), false); hint != nil || !split.detector.Speaking() {
 				t.Fatalf("resumed speech state: speaking=%v hint=%+v", split.detector.Speaking(), hint)
 			}
-			if hint := split.observe(tone(40*time.Millisecond, 0.3)); hint != nil {
+			if hint := split.observe(tone(40*time.Millisecond, 0.3), false); hint != nil {
 				t.Fatalf("suppressed pause hint was re-emitted while speech continued: %+v", hint)
 			}
 			resumedStart := 600 + pauseMS
-			expectHint(split.observe(pause), resumedStart, resumedStart+160)
-			if hint := split.observe(pause); hint != nil {
+			expectHint(split.observe(pause, false), resumedStart, resumedStart+160)
+			if hint := split.observe(pause, false); hint != nil {
 				t.Fatalf("resumed pause was re-emitted: %+v", hint)
 			}
 		})
@@ -147,7 +147,7 @@ func TestPauseRefreshConsumesOnlyLatestHintAcrossMultipleTransitions(t *testing.
 			pcm = append(pcm, silence(time.Duration(pauseMS)*time.Millisecond)...)
 
 			detector := &pauseRefreshDetector{detector: vad.NewDetector(sampleRate, vad.Params{HangoverMS: pauseMS})}
-			hint := detector.observe(pcm)
+			hint := detector.observe(pcm, false)
 			lastSpeechStart := 600 + pauseMS + 300 + pauseMS
 			want := &pauseRefreshHint{
 				SpeechStartSample: lastSpeechStart * sampleRate / 1000,
@@ -156,7 +156,7 @@ func TestPauseRefreshConsumesOnlyLatestHintAcrossMultipleTransitions(t *testing.
 			if hint == nil || *hint != *want {
 				t.Fatalf("latest hint %+v, want %+v", hint, want)
 			}
-			if hint := detector.observe(silence(time.Duration(pauseMS) * time.Millisecond)); hint != nil {
+			if hint := detector.observe(silence(time.Duration(pauseMS)*time.Millisecond), false); hint != nil {
 				t.Fatalf("consumed transitions were emitted again: %+v", hint)
 			}
 		})
@@ -174,18 +174,71 @@ func TestPauseRefreshSpeechEpochTracksBufferedAndSplitResumption(t *testing.T) {
 			pcm := append(tone(600*time.Millisecond, 0.3), pause...)
 			pcm = append(pcm, tone(300*time.Millisecond, 0.3)...)
 			pcm = append(pcm, pause...)
-			hint := buffered.observe(pcm)
+			hint := buffered.observe(pcm, true)
 			if hint == nil || buffered.detector.Speaking() || buffered.speechEpoch != 2 {
 				t.Fatalf("buffered speech-pause-speech state: hint=%+v speaking=%v epoch=%d", hint, buffered.detector.Speaking(), buffered.speechEpoch)
 			}
 
 			split := newDetector()
-			hint = split.observe(append(tone(600*time.Millisecond, 0.3), pause...))
+			hint = split.observe(append(tone(600*time.Millisecond, 0.3), pause...), true)
 			if hint == nil || split.speechEpoch != 1 {
 				t.Fatalf("first pause state: hint=%+v epoch=%d", hint, split.speechEpoch)
 			}
-			if split.observe(tone(120*time.Millisecond, 0.3)) != nil || split.speechEpoch != 2 {
+			if split.observe(tone(120*time.Millisecond, 0.3), true) != nil || split.speechEpoch != 2 {
 				t.Fatalf("split resumption did not advance the epoch: epoch=%d", split.speechEpoch)
+			}
+		})
+	}
+}
+
+func TestPauseRefreshEpochMatchesPreviousSegmentHistorySemantics(t *testing.T) {
+	for _, pauseMS := range []int{200, 300} {
+		t.Run(strconv.Itoa(pauseMS)+"ms", func(t *testing.T) {
+			pause := silence(time.Duration(pauseMS) * time.Millisecond)
+			transitions := append(tone(600*time.Millisecond, 0.3), pause...)
+			transitions = append(transitions, tone(300*time.Millisecond, 0.3)...)
+			transitions = append(transitions, pause...)
+			transitions = append(transitions, tone(240*time.Millisecond, 0.3)...)
+			transitions = append(transitions, pause...)
+
+			irregular := make([][]byte, 0)
+			chunkSamples := []int{17, 83, 141, 6, 257, 39, 412}
+			for offset, chunk := 0, 0; offset < len(transitions); chunk++ {
+				end := min(offset+2*chunkSamples[chunk%len(chunkSamples)], len(transitions))
+				irregular = append(irregular, transitions[offset:end])
+				offset = end
+			}
+			cases := []struct {
+				name   string
+				chunks [][]byte
+			}{
+				{name: "buffered transitions", chunks: [][]byte{transitions}},
+				{name: "arbitrary PCM-aligned chunks", chunks: irregular},
+				{name: "several transitions in each append", chunks: [][]byte{
+					transitions[:2*(600+pauseMS+300+pauseMS)*sampleRate/1000],
+					transitions[2*(600+pauseMS+300+pauseMS)*sampleRate/1000:],
+				}},
+			}
+			for _, test := range cases {
+				t.Run(test.name, func(t *testing.T) {
+					params := vad.Params{HangoverMS: pauseMS}
+					current := &pauseRefreshDetector{detector: vad.NewDetector(sampleRate, params)}
+					previous := vad.NewDetector(sampleRate, params)
+					observedSegments := 0
+					previousEpoch := 0
+					for appendIndex, pcm := range test.chunks {
+						previous.Write(pcm)
+						segments := previous.Segments()
+						if len(segments) > observedSegments {
+							previousEpoch += len(segments) - observedSegments
+							observedSegments = len(segments)
+						}
+						current.observe(pcm, true)
+						if current.speechEpoch != previousEpoch {
+							t.Fatalf("append %d: simplified epoch %d, previous history epoch %d", appendIndex, current.speechEpoch, previousEpoch)
+						}
+					}
+				})
 			}
 		})
 	}
@@ -198,18 +251,18 @@ func TestPauseRefreshRejectsStaleHintAfterResumedSpeech(t *testing.T) {
 			pcm = append(pcm, silence(time.Duration(pauseMS)*time.Millisecond)...)
 			pcm = append(pcm, tone(120*time.Millisecond, 0.3)...)
 			detector := &pauseRefreshDetector{detector: vad.NewDetector(sampleRate, vad.Params{HangoverMS: pauseMS})}
-			hint := detector.observe(pcm)
+			hint := detector.observe(pcm, false)
 			if !detector.detector.Speaking() {
 				t.Fatal("test audio did not reach the resumed-speaking detector state")
 			}
 			if hint != nil {
 				t.Errorf("stale pause hint %+v emitted while speech had resumed", hint)
 			}
-			if hint := detector.observe(tone(40*time.Millisecond, 0.3)); hint != nil {
+			if hint := detector.observe(tone(40*time.Millisecond, 0.3), false); hint != nil {
 				t.Errorf("suppressed stale hint was re-emitted: %+v", hint)
 			}
 			resumedStart := (600 + pauseMS) * sampleRate / 1000
-			hint = detector.observe(silence(time.Duration(pauseMS) * time.Millisecond))
+			hint = detector.observe(silence(time.Duration(pauseMS)*time.Millisecond), false)
 			if hint == nil || hint.SpeechStartSample != resumedStart ||
 				hint.SpeechEndSample != resumedStart+160*sampleRate/1000 {
 				t.Errorf("new pause hint %+v, want resumed speech [%d, %d)", hint, resumedStart, resumedStart+160*sampleRate/1000)
