@@ -42,21 +42,39 @@ func (a *app) meetingMTDInstalled() bool {
 	return false
 }
 
-func (a *app) meetingDiarizer(ctx context.Context) (asr.Diarizer, error) {
-	if !a.meetingMTDInstalled() {
-		return nil, nil
+// meetingDiarizerLanguageOK says the meeting's language is one MTD
+// knows: MTD knows only zh and en, so a meeting in another language
+// keeps the selected model's transcription instead of a wrong-language
+// one. An empty hint means the language is unknown (SpeechLang stays
+// empty on purpose, #3398), so the same call.
+func (a *app) meetingDiarizerLanguageOK() bool {
+	l := a.meetingLang()
+	if l == "" {
+		return false
 	}
-	// MTD knows only zh and en: a meeting in another language keeps the
-	// selected model's transcription instead of a wrong-language one. An
-	// empty hint means the language is unknown (SpeechLang stays empty on
-	// purpose, #3398), so the same call.
-	if l := cmp.Or(a.prefs.Features.Meeting.Lang, session.SpeechLang(a.prefs, i18n.Locale())); l != "" {
-		if spec, ok := omni.Lookup(models.ASRMoss); ok {
-			if _, fit := lang.Match(spec.Languages, l); !fit {
-				return nil, nil
-			}
-		}
-	} else {
+	if spec, ok := omni.Lookup(models.ASRMoss); ok {
+		_, fit := lang.Match(spec.Languages, l)
+		return fit
+	}
+	return true
+}
+
+// meetingDiarizerGates says the automatic MTD diarizer would run for a
+// meeting with the current settings, without opening a model: the final
+// pass is on, the mode diarizes, MTD is installed and the meeting's
+// language is one MTD knows (#4067).
+func (a *app) meetingDiarizerGates() bool {
+	if a.prefs.Features.Meeting.NoFinalPass {
+		return false
+	}
+	if !meetingModeFrom(a.prefs.Features.Meeting).Diarize() {
+		return false
+	}
+	return a.meetingMTDInstalled() && a.meetingDiarizerLanguageOK()
+}
+
+func (a *app) meetingDiarizer(ctx context.Context) (asr.Diarizer, error) {
+	if !a.meetingMTDInstalled() || !a.meetingDiarizerLanguageOK() {
 		return nil, nil
 	}
 	p, opened, err := a.local.ASR(ctx, models.ASRMoss)
@@ -77,6 +95,17 @@ func (a *app) meetingDiarizer(ctx context.Context) (asr.Diarizer, error) {
 // else the main language's hint (#3387).
 func (a *app) meetingLang() string {
 	return cmp.Or(a.prefs.Features.Meeting.Lang, session.SpeechLang(a.prefs, i18n.Locale()))
+}
+
+// meetingASRModel is the speech model a meeting uses: its own choice,
+// resolved as meetingTrackASR opens it (a deleted selection falls back
+// to an installed model), else Automatic's language-gated pick for the
+// meeting's language (meetingTrackASR's rule), without opening it.
+func (a *app) meetingASRModel() (local.Model, bool) {
+	if id := strings.TrimSpace(a.prefs.Features.Meeting.ASR); id != "" {
+		return local.Choose(a.installed(local.ASR), id)
+	}
+	return local.Choose(automaticSpeechFor(a.meetingLang(), a.installed(local.ASR)), "")
 }
 
 func (a *app) meetingTrackASR(ctx context.Context, src meeting.Source) (meeting.TrackASR, error) {
