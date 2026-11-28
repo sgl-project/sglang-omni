@@ -295,3 +295,113 @@ jobs:
           set -o pipefail
           go test -count=1 -run 'TestMacE2ESessionLocal' -v . | tee "$RUNNER_TEMP/mac-e2e-session.txt"
           ! grep -- '--- SKIP' "$RUNNER_TEMP/mac-e2e-session.txt"
+
+  # Temporary: reports what the donated mlx-pr Mac mini is before jobs move to it; drop before merging.
+  mlx-pr-probe:
+    name: mlx-pr runner probe
+    if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch'
+    runs-on: [mlx-pr]
+    timeout-minutes: 20
+    steps:
+      # Each step reports everything it can, and a failed step does not hide the ones after it.
+      - name: Host, VM, disk and toolchain
+        run: |
+          set +e
+          echo "runner=${RUNNER_NAME} os=${RUNNER_OS} arch=${RUNNER_ARCH} user=$(id -un) home=${HOME} temp=${RUNNER_TEMP}"
+          sw_vers
+          uname -a
+          for name in hw.model machdep.cpu.brand_string hw.ncpu hw.perflevel0.physicalcpu hw.perflevel1.physicalcpu hw.memsize kern.hv_vmm_present kern.boottime; do
+            echo "${name}: $(sysctl -n "${name}" 2>&1)"
+          done
+          uptime
+          # A fresh VM per job has no record of an earlier probe run.
+          marker="${HOME}/.mlx-pr-probe-runs"
+          echo "earlier probe runs in this home: $(cat "${marker}" 2>/dev/null || echo none)"
+          echo "${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT} $(date -u +%FT%TZ)" >> "${marker}"
+          df -h
+          echo "MLX_CI_CACHE_ROOT=${MLX_CI_CACHE_ROOT:-<unset>}"
+          ls -la "${HOME}" "${HOME}/.cache" 2>&1
+          system_profiler SPDisplaysDataType SPHardwareDataType 2>&1 | grep -v -i -E "serial|uuid|udid"
+          echo "workflow DEVELOPER_DIR=${DEVELOPER_DIR} exists=$(test -d "${DEVELOPER_DIR}" && echo yes || echo no)"
+          unset DEVELOPER_DIR
+          ls -d /Applications/Xcode*.app 2>&1
+          xcode-select -p
+          xcodebuild -version 2>&1
+          xcrun --sdk macosx --show-sdk-version 2>&1
+          xcrun -sdk macosx metal --version 2>&1
+          for tool in brew uv ccache cmake python3 swift go git git-lfs; do
+            echo "${tool}: $(command -v "${tool}" || echo missing)"
+          done
+
+      - name: Metal device
+        continue-on-error: true
+        run: |
+          unset DEVELOPER_DIR
+          cat > "${RUNNER_TEMP}/metal_probe.swift" <<'EOF'
+          import Metal
+
+          guard let device = MTLCreateSystemDefaultDevice() else {
+              print("no Metal device")
+              exit(1)
+          }
+          print("name: \(device.name)")
+          if #available(macOS 14.0, *) {
+              print("architecture: \(device.architecture.name)")
+          }
+          print("unified memory: \(device.hasUnifiedMemory)")
+          print("recommended working set GB: \(Double(device.recommendedMaxWorkingSetSize) / 1e9)")
+          print("max buffer GB: \(Double(device.maxBufferLength) / 1e9)")
+          let families: [(String, MTLGPUFamily)] = [("apple7", .apple7), ("apple8", .apple8), ("apple9", .apple9), ("metal3", .metal3)]
+          for (familyName, family) in families {
+              print("\(familyName): \(device.supportsFamily(family))")
+          }
+          EOF
+          xcrun swift "${RUNNER_TEMP}/metal_probe.swift"
+
+      - uses: astral-sh/setup-uv@v6
+
+      - name: MLX on this GPU
+        continue-on-error: true
+        run: |
+          uv venv -q -p 3.12 "${RUNNER_TEMP}/probe-venv"
+          VIRTUAL_ENV="${RUNNER_TEMP}/probe-venv" uv pip install -q mlx==0.32.5
+          "${RUNNER_TEMP}/probe-venv/bin/python" - <<'EOF'
+          import time
+
+          import mlx.core as mx
+
+          MATRIX_SIZE = 4096
+          REPEATS = 20
+          print(f"MLX {mx.__version__}, default device {mx.default_device()}")
+          print(mx.device_info())
+          for dtype in (mx.float16, mx.bfloat16):
+              left = mx.random.normal((MATRIX_SIZE, MATRIX_SIZE)).astype(dtype)
+              right = mx.random.normal((MATRIX_SIZE, MATRIX_SIZE)).astype(dtype)
+              mx.eval(left @ right)
+              start_seconds = time.perf_counter()
+              for _ in range(REPEATS):
+                  mx.eval(left @ right)
+              elapsed_seconds = time.perf_counter() - start_seconds
+              teraflops = 2 * MATRIX_SIZE**3 * REPEATS / elapsed_seconds / 1e12
+              print(f"{dtype} {MATRIX_SIZE} matmul: {teraflops:.2f} TFLOPS")
+          kernel = mx.fast.metal_kernel(
+              name="probe_add_one",
+              input_names=["values"],
+              output_names=["result"],
+              source="uint index = thread_position_in_grid.x; result[index] = values[index] + 1;",
+          )
+          result = kernel(
+              inputs=[mx.arange(8, dtype=mx.float32)],
+              grid=(8, 1, 1),
+              threadgroup=(8, 1, 1),
+              output_shapes=[(8,)],
+              output_dtypes=[mx.float32],
+          )[0]
+          print(f"metal_kernel: {result.tolist()}")
+          EOF
+
+      - name: Download speed from Hugging Face
+        run: |
+          # Qwen3-ASR-0.6B-4bit's weights (0.7 GB) at the revision models.json pins.
+          url=https://huggingface.co/mlx-community/Qwen3-ASR-0.6B-4bit/resolve/313d850181767edf09f00a9c289becca70e58cd0/model.safetensors
+          curl -L -s -o /dev/null --max-time 90 -w '%{size_download} %{time_total}\n' "${url}" | awk '{printf "%.0f MB in %.1f s: %.1f MB/s\n", $1 / 1e6, $2, $1 / 1e6 / $2}'
