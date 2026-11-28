@@ -28,6 +28,8 @@ class RequestInfo:
     terminal_stages: set[str] | None = None
     # Note (Junnan Li): A session's close and its persistent read bypass admission and hold no in-flight slot.
     counts_toward_admission: bool = True
+    # note (Xuanfei): under least_in_flight, replicated Process name to the replica the request's bindings put it on, for the in-flight count.
+    replica_by_process: dict[str, int] = field(default_factory=dict)
     result: object = None
     error: str | None = None
 

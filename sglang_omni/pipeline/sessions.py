@@ -404,7 +404,7 @@ class CoordinatorSessions:
             pass
         bindings = (
             assign_replica_bindings(
-                self.logical_process_plan, self.binding_policy, session_id
+                self.logical_process_plan, self.session_binding_policy, session_id
             )
             or {}
         )

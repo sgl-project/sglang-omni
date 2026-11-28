@@ -1,19 +1,20 @@
 # Process Topology, Replicas, and GPU Sharing
 
-Four mechanisms decide how an SGLang-Omni pipeline occupies its GPUs. They
-compose, and each answers a different question:
+Six mechanisms decide how an SGLang-Omni pipeline occupies its GPUs. They compose, and each answers a different question:
 
 1. **Process topology** defines which stages run together.
 2. **Process replicas** define how many copies run.
 3. **Placement** defines where they run.
-4. **CUDA MPS** improves kernel scheduling between processes on one GPU.
-5. **CUDA IPC weight sharing** removes duplicate weight copies on one GPU.
+4. **Replica binding** defines which replica a new request goes to.
+5. **CUDA MPS** improves kernel scheduling between processes on one GPU.
+6. **CUDA IPC weight sharing** removes duplicate weight copies on one GPU.
 
 | Mechanism | Configured per | What it changes | What it does not do |
 |---|---|---|---|
 | Process topology | `StageConfig.process` | non-TP logical Process membership; TP materializes per rank | replica count, placement |
 | Process replica | `PipelineConfig.processes[<name>]` | copies a whole logical Process, sticky per request | model parallelism for one request, MPS |
 | Placement | `replica_devices` | the GPU each replica or rank lands on | GPU context scheduling |
+| Replica binding | `PipelineConfig.replica_binding` | which replica a new request goes to: `round_robin` (default) or `least_in_flight` | Session placement, which stays round robin |
 | CUDA MPS | `mps` | kernel overlap between colocated CUDA contexts | routing, weight or KV sharing |
 | CUDA IPC weight sharing | `weight_share` | followers alias the leader's immutable weights | KV, CUDA graphs, sampler, request state |
 
@@ -24,6 +25,7 @@ Which one you want:
 | Which stages share one OS process and its local state? | Process topology | replica count and GPU placement |
 | Which bottleneck Process needs more capacity? | Process replica | model parallelism for a single request |
 | Which GPU does each replica run on? | `replica_devices` | CUDA context scheduling |
+| Which replica gets a new request? | `replica_binding` | Session placement, which stays round robin |
 | How do colocated processes use idle compute? | CUDA MPS | replica creation and request routing |
 | Full replicas on one GPU do not fit in VRAM? | CUDA IPC weight sharing | KV, CUDA graph, and request-state sharing |
 
@@ -59,11 +61,7 @@ Process are copied together under the same replica index. The runtime names
 physical instances `<name>@rN`, while models and routes keep referring to
 logical names.
 
-At admission the coordinator picks one replica per replicated Process the
-request touches. That binding rides the message and stays fixed for the whole
-request lifetime, across payload, stream, completion, and abort paths. The
-default policy is per-Process thread-safe round robin, chosen independently for
-each Process.
+At admission the coordinator picks one replica for every replicated Process. That binding rides the message and stays fixed for the whole request lifetime, across payload, stream, completion, and abort paths. The default policy is per-Process thread-safe round robin, chosen independently for each Process.
 
 ```yaml
 processes:
@@ -74,6 +72,12 @@ processes:
     num_replicas: 2
     replica_devices: [1, 2]
 ```
+
+Set the top-level `replica_binding: least_in_flight` (default `round_robin`; `--replica-binding least_in_flight` on the command line) to bind each new request to the replica with the fewest requests the coordinator still tracks. A tie goes to the first tied replica at or after the Process's round-robin position, so with no tracked requests the order is exactly round robin. Round robin binds every n-th new request to each replica even while one of them has fallen behind, which can fill that replica's `max_queued_requests` queue and reject new requests while other replicas still have room.
+
+A request counts toward its replica from admission until its computation completes, its abort is delivered, or its submit fails; a stream whose computation is done no longer counts while the client is still reading it, and a request whose abort was not delivered keeps counting. This release point differs from the Omni Router's `least_requests`, which holds a request until its response ends. The binding policy binds a request on every replicated Process, including one its route does not reach, and the request counts on each of them, so two replicated Processes of equal size stay paired on one replica index as long as every request binds both. A caller's bindings that put them on different indexes, or leave one unbound (the request then does not count there), can unpair later requests. Requests submitted with explicit replica bindings, such as Session operations, are counted on the replica they name; a Session's close and read bypass admission and are not counted. A new Session's own replica choice stays round robin, because a Session outlives its requests. Each choice is one pass over the tracked requests per replicated Process.
+
+A replica that fails requests quickly holds few requests and so receives most new ones: there is no replica health tracking, so under this binding a replica that keeps failing while its process stays up attracts traffic, where round robin sends it one request in n. Measure before enabling it. On Qwen3-ASR-1.7B with five replicas on one B200 it raised throughput by 11–18% at 16 and 40 concurrent requests; at 64 it raised non-stream throughput by 10% and stream throughput by 3%, with latency p95 up to 8% and time-to-first-token p95 up to 9% higher. On two replicas at 32 and 64 requests it raised mean time to first token by 8–12% without a throughput gain.
 
 ## Placement
 

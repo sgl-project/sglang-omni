@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import multiprocessing
+import os
 import threading
 import time
 from collections.abc import AsyncIterator, Mapping
@@ -27,6 +28,7 @@ from sglang_omni.config.schema import (
     REPLICA_SEPARATOR,
     PipelineConfig,
     ProcessConfig,
+    ReplicaBinding,
     StageConfig,
 )
 from sglang_omni.config.topology import compile_logical_processes
@@ -77,6 +79,8 @@ class HookState:
     cadence: int
     should_ignore_cancel: bool
     delay_s: float
+    # note (Xuanfei): a file the test creates to finish the append, so it stays in flight exactly as long as the test needs.
+    release_path: str | None
     fail_close_once_stage: str | None
     emit_format: str | None
     emit_control: str | None
@@ -130,6 +134,7 @@ def read_hook_state(
         cadence=integer_param(params, "cadence", 1),
         should_ignore_cancel=should_ignore_cancel,
         delay_s=number_param(params, "delay", 0),
+        release_path=text_param(params, "release_path"),
         fail_close_once_stage=text_param(params, "fail_close_once"),
         emit_format=text_param(params, "emit_format"),
         emit_control=text_param(params, "emit_control"),
@@ -227,12 +232,25 @@ class Hooks(SessionHooks):
                 payload.data = {"count": state.count}
                 return payload
             for index in range(state.cadence):
-                if state.should_ignore_cancel:
+                if state.release_path is not None:
+                    while not (
+                        os.path.exists(state.release_path)
+                        or context.cancelled.wait(0.01)
+                    ):
+                        pass
+                    if context.cancelled.is_set():
+                        self.events.put(("cancelled", self.name, state.session_id))
+                        break
+                    else:
+                        pass
+                elif state.should_ignore_cancel:
                     time.sleep(state.delay_s)
                     self.events.put(("finished", self.name, state.session_id))
                 elif context.cancelled.wait(state.delay_s):
                     self.events.put(("cancelled", self.name, state.session_id))
                     break
+                else:
+                    pass
                 if state.emit_control is not None:
                     emitted = control_chunk(
                         state.emit_control,
@@ -356,6 +374,7 @@ async def pipeline(
     factories: Mapping[str, str] | None = None,
     factory_kwargs: Mapping[str, object] | None = None,
     other_terminals: tuple[str, ...] = (),
+    replica_binding: ReplicaBinding = "round_robin",
 ) -> AsyncIterator[tuple[Coordinator, Queue[StageEvent], list[SpawnProcess]]]:
     """A linear route of synthetic stages, or with `names`, unchained terminal stages.
 
@@ -405,6 +424,7 @@ async def pipeline(
         logical_process_plan=plan,
         replica_topology=topology,
         session_route=(lambda: names) if is_chained else None,
+        replica_binding=replica_binding,
     )
     events = ctx.Queue()
     processes = []

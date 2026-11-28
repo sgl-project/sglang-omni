@@ -407,6 +407,64 @@ async def test_acknowledged_downstream_owner_is_not_quarantined(linear_triple) -
 
 
 @pytest.mark.asyncio
+async def test_least_in_flight_counts_session_input_while_it_runs(
+    tmp_path: Path,
+) -> None:
+    async with pipeline(
+        tmp_path, replicated=True, replica_binding="least_in_flight"
+    ) as (
+        coordinator,
+        _,
+        _,
+    ):
+        release_path = tmp_path / "release-busy-append"
+        busy_ref = await coordinator.open_session(
+            OmniRequest(None, {"release_path": str(release_path)}),
+            stages=["source", "sink"],
+            session_id="busy",
+        )
+        busy_replica = coordinator.sessions["busy"].bindings["sink"]
+        outputs = coordinator.session_outputs(busy_ref)
+        # The open Session and its persistent output read hold no slot.
+        assert coordinator.count_in_flight_by_replica("sink", 2) == [0, 0]
+
+        append = asyncio.create_task(
+            coordinator.append_session(busy_ref, chunk(0, eos=True))
+        )
+        await wait_until(
+            lambda: coordinator.count_in_flight_by_replica("sink", 2)[busy_replica] == 1
+        )
+        # New Sessions stay round robin even while the busy replica is loaded.
+        idle_ref = await coordinator.open_session(
+            OmniRequest(None), stages=["source", "sink"], session_id="idle"
+        )
+        next_ref = await coordinator.open_session(
+            OmniRequest(None), stages=["source", "sink"], session_id="next"
+        )
+        assert [
+            coordinator.sessions[session_id].bindings["sink"]
+            for session_id in ("busy", "idle", "next")
+        ] == [
+            busy_replica,
+            1 - busy_replica,
+            busy_replica,
+        ]
+
+        assert coordinator.count_in_flight_by_replica("sink", 2)[busy_replica] == 1
+
+        release_path.touch()
+        await append
+        output_chunk = await asyncio.wait_for(anext(outputs), 10)
+        assert output_chunk.kind == "data"
+        await wait_until(
+            lambda: coordinator.count_in_flight_by_replica("sink", 2) == [0, 0]
+        )
+        await outputs.aclose()
+        for session_ref in (idle_ref, next_ref):
+            await coordinator.close_session(session_ref)
+
+
+@pytest.mark.asyncio
 async def test_healthy_replica_accepts_a_new_session_after_unconfirmed_close(
     tmp_path,
 ) -> None:
