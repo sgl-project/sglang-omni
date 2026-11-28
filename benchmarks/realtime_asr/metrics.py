@@ -238,6 +238,14 @@ def wer_metrics(trace: SessionTrace, ref_text: str, *, lang: str) -> SampleOutpu
     if text is None:
         output.error = trace.error or "No transcription.completed event"
         return output
+    else:
+        pass
+    violations = check_invariants(trace)
+    if violations:
+        output.error = "; ".join(violations)
+        return output
+    else:
+        pass
     return apply_wer(output, text, lang)
 
 

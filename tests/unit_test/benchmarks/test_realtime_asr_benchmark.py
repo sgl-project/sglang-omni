@@ -17,7 +17,7 @@ import sys
 import wave
 from pathlib import Path
 from typing import Literal
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import numpy as np
 import pytest
@@ -27,6 +27,8 @@ import websockets
 from pydantic import JsonValue, ValidationError
 
 import sglang_omni.utils.audio as audio_utils
+from benchmarks.dataset.seedtts import SampleInput
+from benchmarks.eval import benchmark_asr_realtime
 from benchmarks.eval.benchmark_asr_realtime import load_pcm16
 from benchmarks.realtime_asr.client import (
     SAMPLE_RATE,
@@ -869,6 +871,78 @@ def test_saved_trace_replays_hand_calculated_metrics(
     assert replay["metrics"]["done_to_completed_s"] == pytest.approx(0.3)
     with pytest.raises(FileExistsError):
         save_trace(path, recorded_trace)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "defect", ["server_error", "duplicate_terminal", "missing_index"]
+)
+async def test_benchmark_excludes_invalid_completed_sessions_from_quality_and_latency(
+    recorded_trace: TraceArtifact,
+    defect: Literal["server_error", "duplicate_terminal", "missing_index"],
+) -> None:
+    """Completed text from protocol-invalid sessions polluted WER and timing summaries."""
+    clean_trace = recorded_trace.trace
+    invalid_trace = recorded_trace.model_copy(deep=True).trace
+    invalid_trace.received[-1].event["text"] = "wrong"
+    if defect == "server_error":
+        invalid_trace.received[-1].event["event_index"] = 5
+        invalid_trace.received.insert(
+            -1,
+            ReceivedEvent(
+                recv_s=101.25,
+                event={
+                    "type": "error",
+                    "error": {"message": "decoding failed"},
+                    "event_index": 4,
+                },
+            ),
+        )
+    elif defect == "duplicate_terminal":
+        invalid_trace.received.append(
+            ReceivedEvent(
+                recv_s=101.4,
+                event={
+                    "type": "transcription.completed",
+                    "text": "wrong",
+                    "event_index": 5,
+                },
+            )
+        )
+    else:
+        invalid_trace.received[0].event.pop("event_index")
+    for record in invalid_trace.received:
+        record.recv_s += 10
+    samples = [
+        SampleInput("clean", "hello", "clean.wav", ""),
+        SampleInput("invalid", "hello", "invalid.wav", ""),
+    ]
+    with patch.object(
+        benchmark_asr_realtime,
+        "run_session",
+        new=AsyncMock(side_effect=[clean_trace, invalid_trace]),
+    ):
+        result = await benchmark_asr_realtime.run_asr_realtime_once(
+            samples,
+            host="127.0.0.1",
+            port=0,
+            mode="manual",
+            pcm_cache={sample.ref_audio: pcm_seconds(1) for sample in samples},
+        )
+
+    summary = result["summary"]
+    assert summary["total"] == 2
+    assert summary["sessions_with_violations"] == 1
+    assert summary["evaluated"] == 1
+    assert summary["corpus_wer"] == 0
+    assert result["per_sample"][1]["wer"] is None
+    assert result["per_sample"][1]["violations"]
+    assert summary["first_partial_latency_s"]["n"] == 1
+    assert summary["first_partial_latency_s"]["mean"] == pytest.approx(0.2)
+    assert summary["final_latency_s"]["n"] == 1
+    assert summary["final_latency_s"]["mean"] == pytest.approx(0.1)
+    assert summary["done_to_completed_s"]["n"] == 1
+    assert summary["done_to_completed_s"]["mean"] == pytest.approx(0.3)
 
 
 @pytest.mark.parametrize("defect", ["missing_index", "duplicate_terminal", "timeout"])
