@@ -293,6 +293,11 @@ func (d *Detector) Segments() []Segment {
 	return s
 }
 
+// ClosedSegmentsSince returns the closed segments after previousClosedSegmentCount.
+func (d *Detector) ClosedSegmentsSince(previousClosedSegmentCount int) []Segment {
+	return slices.Clone(d.segs[previousClosedSegmentCount:])
+}
+
 // FloorDB is the noise floor estimate now.
 func (d *Detector) FloorDB() float64 { return d.floor }
 

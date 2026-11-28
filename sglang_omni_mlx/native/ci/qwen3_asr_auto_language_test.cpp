@@ -264,16 +264,17 @@ void TestRollbackGuessParity(TranscriptionWorker &worker,
                                           {"language", "en"},
                                           {"final_prompt", ""}}}});
   Require(handled, "realtime session closed during its update");
-  AppendAudio(session, first_preview_samples);
+  AppendAudio(*session, first_preview_samples);
   const nlohmann::json first_preview = WaitForSegment(event_log, 0, false);
-  AppendAudio(session, followup_preview_samples);
+  AppendAudio(*session, followup_preview_samples);
   const int first_preview_index = first_preview.at("event_index").get<int>();
   const nlohmann::json last_preview =
       WaitForSegment(event_log, first_preview_index, false);
   const std::string preview_text = last_preview.at("text").get<std::string>();
   Require(!preview_text.empty(), "rollback parity preview was empty");
 
-  const FinalReuse final_reuse = session->TakeFinalReuse(std::string(), false);
+  const FinalReuse final_reuse =
+      session->TakeFinalReuse(std::string(), false, true, true);
   Require(final_reuse.reuse != nullptr && !final_reuse.is_taken,
           "rollback parity did not capture the segment refresh cache");
   // note (chenye): Each decode gets this unchanged cache state by value.
@@ -394,7 +395,7 @@ void TestPositiveEligibilityControl(
   Require(!preview_text.empty(), "positive control produced an empty preview");
 
   const FinalReuse final_reuse =
-      session->TakeFinalReuse(std::string("GLOSSARY"), true);
+      session->TakeFinalReuse(std::string("GLOSSARY"), true, true, true);
   Require(final_reuse.auto_language_guess.has_value(),
           "eligible auto-language preview did not produce a Final guess");
   const qwen3_asr::FinalPreviewGuess &preview_guess =
@@ -442,7 +443,7 @@ void TestNegativeEligibilityControl(
           "negative control's preview did not follow the committed segment");
 
   const FinalReuse final_reuse =
-      session->TakeFinalReuse(std::string("GLOSSARY"), true);
+      session->TakeFinalReuse(std::string("GLOSSARY"), true, true, true);
   Require(!final_reuse.auto_language_guess.has_value(),
           "committed-session preview incorrectly produced a Final guess");
 }
@@ -477,8 +478,11 @@ int main(int argc, char **argv) {
     std::unique_ptr<Qwen3ASRTranscriber> transcriber;
     TranscriptionWorker worker(
         [&transcriber, &model_directory, &draft_directory] {
-          transcriber = std::make_unique<Qwen3ASRTranscriber>(model_directory,
-                                                              draft_directory);
+          omni_common::DraftOptions draft_options;
+          draft_options.directory = draft_directory;
+          transcriber = std::make_unique<Qwen3ASRTranscriber>(
+              model_directory, draft_options,
+              omni_common::DraftPolicy::kAdaptive);
         },
         [] {});
     Require(transcriber != nullptr, "Qwen3-ASR transcriber did not load");

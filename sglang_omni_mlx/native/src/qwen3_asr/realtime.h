@@ -3,6 +3,8 @@
 // then finalized.
 #pragma once
 
+#include <atomic>
+#include <chrono>
 #include <condition_variable>
 #include <cstdint>
 #include <functional>
@@ -19,8 +21,13 @@
 #include "common/worker.h"
 #include "nlohmann/json.hpp"
 #include "qwen3_asr/qwen3_asr_transcriber.h"
+#include "qwen3_asr/realtime_refresh.h"
 
 namespace qwen3_asr {
+
+namespace tests {
+struct RealtimeSessionTestAccess;
+}
 
 struct RealtimeSettings {
   int decode_interval_samples = 0;
@@ -85,19 +92,22 @@ class RealtimeSession : public omni_server::RealtimeConnection {
 public:
   RealtimeSession(omni_server::TranscriptionWorker &worker,
                   const Qwen3ASRTranscriber &transcriber,
-                  RealtimeSettings settings, Sender sender);
+                  RealtimeSettings settings, Sender sender,
+                  bool hold_gpu_clock = true);
 
   bool Handle(const nlohmann::json &message) override;
+  void Close() override;
   // What the session holds for a Final of its recording's start with this
   // prompt: the one prefilled for it, else what its refreshes keep; none is
   // null. With piece_end_sample, the guesses of a piece of the recording from
   // the Final's start to that sample, and the piece to take the reuse of when
-  // it is decoded (TakePieceReuse).
+  // it is decoded (TakePieceReuse). An authoritative Final also fences new
+  // pause refresh admissions.
   //
   // note (chenye): only snapshot a preview guess when the caller opts in.
   FinalReuse
   TakeFinalReuse(const std::optional<std::string> &context,
-                 bool guess_auto_language,
+                 bool guess_auto_language, bool take_reuse, bool final_handoff,
                  std::optional<long> piece_end_sample = std::nullopt);
   // On the worker, as a piece's decode starts: a snapshot of what the session
   // holds for the piece, which the prefill moves on from, as the Final's start
@@ -108,10 +118,20 @@ public:
   void CancelShadowFinal();
 
 private:
+  friend struct tests::RealtimeSessionTestAccess;
+
+  // One segment owns its pending pause, speech epoch and metadata validity.
   struct Segment {
     int segment_id = 0;
     long start_sample = 0;
     long next_refresh_sample = 0;
+    long last_submitted_refresh_end_sample = 0;
+    long last_completed_refresh_end_sample = 0;
+    long last_pause_speech_end_sample = 0;
+    std::optional<long> speech_epoch;
+    // The only retained hint belongs to this segment and dies with it.
+    std::optional<PauseRefreshHint> pending_pause;
+    bool pause_metadata_valid = true;
     std::optional<std::string> language;
     int decode_count = 0;
     std::string transcript;
@@ -125,7 +145,38 @@ private:
     std::shared_ptr<RefreshReuse> reuse;
   };
 
-  void Append(const nlohmann::json &audio);
+  struct RefreshTiming {
+    int decode_index = 0;
+    RefreshSource source = RefreshSource::kNone;
+    int segment_id = 0;
+    long end_sample = 0;
+    long speech_end_sample = 0;
+    std::optional<std::chrono::steady_clock::time_point> submitted_at;
+    std::optional<std::chrono::steady_clock::time_point> worker_started_at;
+    std::optional<std::chrono::steady_clock::time_point> decode_finished_at;
+    std::optional<std::chrono::steady_clock::time_point> callback_finished_at;
+    std::optional<std::chrono::steady_clock::time_point>
+        preview_send_attempt_at;
+  };
+
+  void Append(const nlohmann::json &audio,
+              const nlohmann::json &preview_refresh,
+              const nlohmann::json &speech_epoch, bool pause_hint_received);
+  void DiscardPendingPauseHint(PauseHintDisposition disposition);
+  void RecordPauseHintDisposition(
+      PauseHintDisposition disposition,
+      std::optional<PauseRefreshHint> hint = std::nullopt,
+      long submitted_refresh_end_sample = -1,
+      long completed_refresh_end_sample = -1);
+  void LogAttribution(nlohmann::ordered_json event) const;
+  template <typename EventFactory>
+  void LogAttributionLazy(EventFactory &&make_event) const {
+    if (!preview_refresh_attribution_enabled_.load()) {
+      return;
+    }
+    LogAttribution(std::forward<EventFactory>(make_event)());
+  }
+  void LogAttributionSummary();
   // The Final starts at this sample of the session's audio, not at the first:
   // the windows prefilled for it are dropped, its prompt's head kept.
   void StartFinalAt(const nlohmann::json &start_sample);
@@ -150,7 +201,20 @@ private:
   void ApplyResult(Segment &segment,
                    const omni_common::TranscriptionResult &result,
                    long end_sample);
-  void MaybeStartRefresh();
+  void
+  MaybeStartRefresh(std::optional<PauseRefreshHint> pause_hint = std::nullopt,
+                    bool pause_hint_received = false,
+                    bool pause_hint_malformed = false);
+  void SubmitRefresh(std::unique_lock<std::mutex> &lock,
+                     std::vector<float> samples, TranscriptionOptions options,
+                     std::shared_ptr<RefreshReuse> reuse, int segment_id,
+                     long end_sample, long speech_end_sample,
+                     RefreshSource source);
+  void CompleteRefresh(int segment_id, long end_sample, long speech_end_sample,
+                       RefreshSource source,
+                       std::shared_ptr<RefreshTiming> timing,
+                       std::optional<omni_common::TranscriptionResult> result,
+                       std::exception_ptr error);
   void MaybeStartFinalPrefill();
   // Note (XXXXRT666): a preview keeps its early text as a prefix decided on
   // less audio, so on recordings over 24 s the Final differs from it after a
@@ -166,10 +230,22 @@ private:
   const Qwen3ASRTranscriber &transcriber_;
   const RealtimeSettings settings_;
 
-  // Session state; refreshes finish on the worker thread.
+  // mutex_ protects segment and pause state. Final handoff, speech resumption,
+  // rollover and Close consume a pending hint under this lock. A pending hint
+  // alone never submits work; refreshing_ covers a refresh from before submit
+  // until completion, so at most one is queued or running.
   std::mutex mutex_;
   std::condition_variable refresh_done_;
   std::optional<std::string> language_;
+  bool preview_refresh_enabled_ = false;
+  bool preview_refresh_defer_busy_enabled_ = false;
+  std::atomic<bool> preview_refresh_attribution_enabled_ = false;
+  uint64_t pause_hints_received_ = 0;
+  int next_refresh_decode_index_ = 1;
+  bool attribution_summary_logged_ = false;
+  bool pause_refresh_final_handoff_ = false;
+  // A synchronization seam used only by the rollover race regression.
+  std::function<void()> before_rollover_finalize_for_test_;
   // A Final with the context final_context_ is to be prefilled, until one is
   // taken.
   bool should_prefill_final_ = false;
@@ -204,7 +280,7 @@ private:
   bool is_shadowing_ = false;
   // Cancels a running shadow Final once the Final is taken.
   omni_server::CancelFlag shadow_cancel_ = omni_server::NewCancelFlag();
-  omni_common::GpuClockHold gpu_clock_;
+  std::optional<omni_common::GpuClockHold> gpu_clock_;
 };
 
 } // namespace qwen3_asr

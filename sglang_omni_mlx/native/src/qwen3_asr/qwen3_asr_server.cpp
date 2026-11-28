@@ -55,13 +55,6 @@ public:
     } else {
     }
     const auto guessed_text = asr_service::TextField(form, "guessed_text");
-    if (guessed_text.has_value()) {
-      // note (XXXXRT666): a live preview already has most of the text; only
-      // the part greedy decoding also writes is kept.
-      options.guessed_token_ids =
-          transcriber_.RetainedPrefix(*guessed_text, 0).prefix_ids;
-    } else {
-    }
     options.stop_at_end_of_text = omni_common::FormFlag(
         asr_service::TextField(form, "stop_at_end_of_text"));
     const auto stop_on_token_loop =
@@ -86,27 +79,35 @@ public:
     // note (chenye): the caller opts in when the request covers the whole
     // recording. Other requests retain their existing behavior, including
     // explicit guessed_text.
+    const bool is_preview =
+        omni_common::FormFlag(asr_service::TextField(form, "preview"));
+    if (guessed_text.has_value()) {
+      // note (XXXXRT666): a live preview already has most of the text; only
+      // the part greedy decoding also writes is kept.
+      options.guessed_token_ids =
+          transcriber_.RetainedPrefix(*guessed_text, 0).prefix_ids;
+    } else {
+    }
     const bool guess_auto_language =
         omni_common::FormFlag(
             asr_service::TextField(form, "guess_auto_language")) &&
         !options.language.has_value() && !guessed_text.has_value() &&
-        options.repetition_penalty == 1.0f &&
-        !omni_common::FormFlag(asr_service::TextField(form, "preview"));
+        options.repetition_penalty == 1.0f && !is_preview;
     // note (XXXXRT666): a session holds one prompt's windows, and longer audio
     // is decoded in chunks.
     // A piece of a live session's recording, from the Final's start to this
     // sample: the session's Final then starts there.
     const std::optional<int> piece_end_sample =
         asr_service::IntegerField(form, "realtime_piece_end");
-    const qwen3_asr::FinalReuse final_reuse =
-        samples.size() <= qwen3_asr::kMaxChunkSamples
-            ? TakeFinalReuse(
-                  asr_service::TextField(form, "realtime_session").value_or(""),
-                  options.context, guess_auto_language,
-                  piece_end_sample.has_value()
-                      ? std::optional<long>(*piece_end_sample)
-                      : std::nullopt)
-            : qwen3_asr::FinalReuse();
+    const bool take_reuse = samples.size() <= qwen3_asr::kMaxChunkSamples;
+    const std::optional<long> piece_end =
+        piece_end_sample.has_value() ? std::optional<long>(*piece_end_sample)
+                                     : std::nullopt;
+    const bool final_handoff = !is_preview && !piece_end.has_value();
+    const qwen3_asr::FinalReuse final_reuse = TakeFinalReuse(
+        asr_service::TextField(form, "realtime_session").value_or(""),
+        options.context, guess_auto_language, take_reuse, final_handoff,
+        piece_end);
     if (final_reuse.reuse != nullptr || final_reuse.piece.has_value()) {
       // note (chenye): auto-language decoding generates a language header
       // before the transcript. Propose both from the session's preview and
@@ -185,15 +186,18 @@ private:
 
   // What the live session of this id holds for a Final with this prompt, null
   // when it is not open.
-  qwen3_asr::FinalReuse TakeFinalReuse(
-      const std::string &session_id, const std::optional<std::string> &context,
-      bool guess_auto_language, std::optional<long> piece_end_sample) const {
+  qwen3_asr::FinalReuse
+  TakeFinalReuse(const std::string &session_id,
+                 const std::optional<std::string> &context,
+                 bool guess_auto_language, bool take_reuse, bool final_handoff,
+                 std::optional<long> piece_end_sample) const {
     std::lock_guard<std::mutex> lock(live_sessions_mutex_);
     const auto entry = live_sessions_.find(session_id);
     const std::shared_ptr<qwen3_asr::RealtimeSession> session =
         entry != live_sessions_.end() ? entry->second.lock() : nullptr;
     return session != nullptr
                ? session->TakeFinalReuse(context, guess_auto_language,
+                                         take_reuse, final_handoff,
                                          piece_end_sample)
                : qwen3_asr::FinalReuse();
   }

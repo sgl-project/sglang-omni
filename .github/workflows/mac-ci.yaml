@@ -169,11 +169,17 @@ jobs:
         run: |
           ccache --zero-stats > /dev/null
           sglang_omni_mlx/native/scripts/build_runtime.sh "$RUNNER_TEMP/runtime" "$RUNNER_TEMP/runtime-build"
-          "$RUNNER_TEMP/runtime-build/venv/bin/cmake" --build "$RUNNER_TEMP/runtime-build/cmake" --target stub_server audio_chunk_test ming3_mtp_probe arkasr_probe tokenizer_preference_test moss_model_test moss_realtime_test
+          "$RUNNER_TEMP/runtime-build/venv/bin/cmake" --build "$RUNNER_TEMP/runtime-build/cmake" --target \
+            stub_server audio_chunk_test ming3_mtp_probe arkasr_probe tokenizer_preference_test moss_model_test moss_realtime_test \
+            qwen3_asr_pause_refresh_test qwen3_asr_auto_language_test
           "$RUNNER_TEMP/runtime-build/cmake/audio_chunk_test"
           "$RUNNER_TEMP/runtime-build/cmake/tokenizer_preference_test"
           "$RUNNER_TEMP/runtime-build/cmake/moss_model_test"
           "$RUNNER_TEMP/runtime-build/cmake/moss_realtime_test"
+          for run in $(seq 1 100); do
+            echo "Pause-refresh native regression $run/100"
+            "$RUNNER_TEMP/runtime-build/cmake/qwen3_asr_pause_refresh_test"
+          done
           ccache --show-stats
 
       - name: Set up the test Python

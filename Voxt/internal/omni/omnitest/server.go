@@ -264,12 +264,25 @@ func realtime(o Opts, w http.ResponseWriter, r *http.Request) {
 			Type        string         `json:"type"`
 			Audio       string         `json:"audio"`
 			StartSample int            `json:"start_sample"`
+			SpeechEpoch *int           `json:"speech_epoch"`
 			Session     map[string]any `json:"session"`
 		}
 		_ = json.Unmarshal(b, &ev)
 		switch ev.Type {
 		case "session.update":
 			language, _ = ev.Session["language"].(string)
+			if enabled, ok := ev.Session["preview_refresh_enabled"].(bool); ok && enabled {
+				fields["preview_refresh_enabled"] = "true"
+			} else {
+			}
+			if enabled, ok := ev.Session["preview_refresh_defer_busy_enabled"].(bool); ok && enabled {
+				fields["preview_refresh_defer_busy_enabled"] = "true"
+			} else {
+			}
+			if enabled, ok := ev.Session["preview_refresh_attribution_enabled"].(bool); ok && enabled {
+				fields["preview_refresh_attribution_enabled"] = "true"
+			} else {
+			}
 			for _, k := range []string{"prompt", "final_prompt"} {
 				if v, ok := ev.Session[k].(string); ok {
 					fields[k] = v
@@ -278,6 +291,10 @@ func realtime(o Opts, w http.ResponseWriter, r *http.Request) {
 			send(map[string]any{"type": "transcription_session.updated", "session_id": "fake-session"})
 			stalled = o.LiveStall
 		case "input_audio_buffer.append":
+			if ev.SpeechEpoch != nil {
+				fields["speech_epoch_seen"] = "true"
+			} else {
+			}
 			pcm, err := base64.StdEncoding.DecodeString(ev.Audio)
 			if err != nil {
 				send(map[string]any{"type": "error", "error": map[string]any{"code": "invalid_audio"}})
