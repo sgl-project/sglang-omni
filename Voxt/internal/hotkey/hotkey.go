@@ -418,8 +418,8 @@ type Plan struct {
 // (Transcribe, Translate, Rewrite, PasteLast, Note, Sessions), and
 // Features.Cancel into the plan's cancel shortcut (a
 // tap, judged only while active). Hotkeys that do not parse are left out
-// (Check reports them); so is a later duplicate of the same keys and
-// behaviour.
+// (Check reports them), and so are Refused ones (a key alone); so is a
+// later duplicate of the same keys and behaviour.
 func Build(f settings.Features, enabled []string) Plan {
 	var p Plan
 	type seen struct {
@@ -430,7 +430,7 @@ func Build(f settings.Features, enabled []string) Plan {
 	var taken []seen
 	add := func(id string, h settings.Hotkey, behavior string) {
 		c, err := Parse(h.Keys)
-		if err != nil {
+		if err != nil || Refused(c) {
 			return
 		}
 		for _, s := range taken {

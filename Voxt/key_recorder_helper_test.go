@@ -175,3 +175,40 @@ func TestKeyRecorderTapPaused(t *testing.T) {
 		t.Errorf("after the field: listening %v, %d bindings, installed %v, notice %v", a.keysListening, lastBindings(), a.hotkeys.Installed, has(tt, notice))
 	}
 }
+
+// A key alone is not saved, in the window's recorder and in the helper's,
+// and the field says why; the same key with a modifier is. Cancel's row
+// takes a key alone (11-24: Delete, pressed to clear the field, was saved
+// and started a dictation in every app).
+func TestKeyRecorderRefusesAKeyAlone(t *testing.T) {
+	a, _, _ := newTestApp(t)
+	var saved []string
+	save := func(keys string) { saved = append(saved, keys) }
+	var row keyRow
+	a.recordFeatureKeys(&row, ui.InputEvent{Kind: ui.InputKeyDown, Key: ui.KeyBackspace, PhysicalKey: ui.KeyBackspace}, save)
+	a.saveShortcutRecorderKeys("Space", &row, save)
+	if len(saved) != 0 || !row.refused {
+		t.Fatalf("a key alone: saved %q, refused %v", saved, row.refused)
+	}
+	a.recordFeatureKeys(&row, ui.InputEvent{Kind: ui.InputKeyDown, Key: ui.KeyBackspace, PhysicalKey: ui.KeyBackspace, Mods: ui.Alt}, save)
+	if len(saved) != 1 || saved[0] != "Option+Delete" || row.refused {
+		t.Fatalf("with a modifier: saved %q, refused %v", saved, row.refused)
+	}
+	cancel := keyRow{allowBare: true}
+	a.saveShortcutRecorderKeys("Delete", &cancel, save)
+	if len(saved) != 2 || saved[1] != "Delete" {
+		t.Fatalf("Cancel's row: saved %q", saved)
+	}
+
+	b, tt := trHelperTester(t, func(fs *fakeSupervisor) {
+		fs.handlers[proto.MethodHotkeyRecord] = func(json.RawMessage) (any, error) {
+			return proto.HotkeyRecordResult{Keys: "Delete"}, nil
+		}
+	})
+	var helperRow keyRow
+	b.beginHotkeyRecord(&helperRow, save)
+	frames(tt)
+	if len(saved) != 2 || !helperRow.refused {
+		t.Fatalf("the helper's Delete: saved %q, refused %v", saved, helperRow.refused)
+	}
+}

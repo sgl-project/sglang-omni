@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"slices"
 	"testing"
 
 	"github.com/sgl-project/sglang-omni/Voxt/internal/helper/proto"
@@ -557,35 +558,64 @@ func TestRouteStrict(t *testing.T) {
 	}
 }
 
-// TestBuildFinishDedup: an existing Return chord covers Finish only when
-// it stops the recording as routed: Paste last (Route stops it there),
-// any feature's with Strict shortcuts off, only Transcribe's own with
-// them on (Route filters the rest, so Finish is bound and leads).
+// TestBuildFinishDedup: a bare Return on Paste last or a feature is never
+// bound (Refused), so Return finishes the recording through Finish, which
+// leads.
 func TestBuildFinishDedup(t *testing.T) {
 	hk := func(keys string) settings.Hotkey { return settings.Hotkey{Keys: keys} }
+	bound := func(p Plan, id string) bool {
+		return slices.ContainsFunc(p.Bindings, func(b proto.HotkeyBinding) bool { return b.ID == id })
+	}
 	f := settings.Defaults().Features
 	f.PasteLast = hk("Return")
-	if p := Build(f, []string{"finish", PasteLast}); p.Finish != nil {
-		t.Errorf("paste-last on Return did not cover: %+v", p.Finish)
+	if p := Build(f, []string{"finish", PasteLast}); p.Finish == nil || bound(p, PasteLast) {
+		t.Errorf("paste-last on Return: finish %+v, bound %v", p.Finish, bound(p, PasteLast))
 	}
-	f = settings.Defaults().Features
-	f.Translate.Hotkeys = []settings.Hotkey{hk("Return")}
-	if p := Build(f, []string{"finish", Translate}); p.Finish != nil {
-		t.Errorf("translate on Return did not cover: %+v", p.Finish)
+	for _, strict := range []bool{false, true} {
+		f = settings.Defaults().Features
+		f.StrictShortcuts = strict
+		f.Translate.Hotkeys = []settings.Hotkey{hk("Return")}
+		p := Build(f, []string{"finish", Translate})
+		if p.Finish == nil || bound(p, ID(Translate, 0)) {
+			t.Fatalf("strict %v, translate on Return: finish %+v", strict, p.Finish)
+		}
+		if cfg := p.Configure(true); len(cfg.Bindings) == 0 || cfg.Bindings[0].ID != "finish" {
+			t.Errorf("strict %v: finish does not lead: %+v", strict, cfg.Bindings)
+		}
 	}
-	f.StrictShortcuts = true
-	p := Build(f, []string{"finish", Translate})
-	if p.Finish == nil {
-		t.Fatal("strict: no finish beside a filtered Return")
+}
+
+// A key alone is no shortcut (11-24: Delete, pressed to clear the field,
+// was saved and then started a dictation in every app): Check says so and
+// Build leaves it out. A modifier alone, an F-key, a mouse button and
+// Cancel's Escape stay.
+func TestBuildRefusesAKeyAlone(t *testing.T) {
+	for keys, want := range map[string]bool{
+		"Delete": true, "Space": true, "A": true, "Return": true, "ForwardDelete": true,
+		"RightOption": false, "Fn": false, "F5": false, "Mouse4": false, "Option+Space": false, "Fn+Delete": false,
+	} {
+		c, err := Parse(keys)
+		if err != nil {
+			t.Fatalf("%s: %v", keys, err)
+		}
+		if Refused(c) != want {
+			t.Errorf("Refused(%s) = %v, want %v", keys, !want, want)
+		}
 	}
-	if cfg := p.Configure(true); len(cfg.Bindings) == 0 || cfg.Bindings[0].ID != "finish" {
-		t.Errorf("strict: finish does not lead: %+v", cfg.Bindings)
+	f := settings.Defaults().Features
+	f.Transcribe.Hotkeys = []settings.Hotkey{{Keys: "Delete"}, {Keys: "RightOption"}}
+	f.Cancel = settings.Hotkey{Keys: "Escape"}
+	p := Build(f, []string{Transcribe})
+	for _, b := range p.Bindings {
+		if b.ID == ID(Transcribe, 0) {
+			t.Errorf("a bare Delete is bound: %+v", b)
+		}
 	}
-	f = settings.Defaults().Features
-	f.StrictShortcuts = true
-	f.Transcribe.Hotkeys = []settings.Hotkey{hk("Return")}
-	if p := Build(f, []string{"finish", Transcribe}); p.Finish != nil {
-		t.Errorf("strict: transcribe's own Return did not cover: %+v", p.Finish)
+	if !slices.ContainsFunc(p.Bindings, func(b proto.HotkeyBinding) bool { return b.ID == ID(Transcribe, 1) }) || p.Cancel == nil {
+		t.Errorf("Right Option or Cancel's Escape went: %+v, cancel %+v", p.Bindings, p.Cancel)
+	}
+	if got := ProblemsOf(Check(f), Transcribe)[0]; len(got) != 1 || got[0].Code != ProblemBareKey {
+		t.Errorf("Check on a bare Delete: %+v", got)
 	}
 }
 

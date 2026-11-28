@@ -168,6 +168,8 @@ func keyRecorder(c *ui.Context, r *keyRow, label string, save func(keys string),
 				actions.openShortcutPermissions()
 			}
 		})
+	case r.refused:
+		warnLine(c, i18n.T("A single key would be taken from every app. Add ⌃, ⌥, ⇧, ⌘ or fn."))
 	case r.unknown:
 		warnLine(c, i18n.T("Voxt cannot use that key. Press another, or type the keys instead."))
 	case focused:
