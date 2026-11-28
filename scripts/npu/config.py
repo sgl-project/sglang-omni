@@ -35,6 +35,7 @@ def read_config(root: Path = ROOT) -> tuple[dict, list[dict]]:
         matrix.append({"device": device, "cann": match[1]})
     if matrix[0]["cann"] != matrix[1]["cann"]:
         raise ValueError("A3 and 950 must use the same CANN release")
+    matrix.append({"device": "910b", "cann": matrix[0]["cann"]})
     return config, matrix
 
 
