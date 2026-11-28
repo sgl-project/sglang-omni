@@ -465,7 +465,10 @@ def mount_profiler_routes(
 
     @router.post("/start_request_profile")
     async def start_request(req: StartRequestProfileReq):
-        """Start request-level (JSONL) event profiling only (no torch trace)."""
+        """Start request-level (JSONL) event profiling only (no torch trace).
+
+        Returns coordinator plus one entry per started stage writer (including TP follower ranks).
+        """
         run_id = req.run_id or default_run_id()
         event_dir = req.event_dir
         if event_dir is None:
@@ -501,14 +504,18 @@ def mount_profiler_routes(
                 exc_info=True,
             )
             raise HTTPException(status_code=500, detail=str(exc)) from exc
-        await profiler_ctl.broadcast_start(
+        stages = await profiler_ctl.broadcast_start(
             run_id=run_id,
             trace_path_template="",
             event_dir=event_dir,
             enable_torch=False,
             event_buffer_capacity=req.event_buffer_capacity,
         )
-        return {"run_id": run_id, "event_dir": event_dir}
+        return {
+            "run_id": run_id,
+            "event_dir": event_dir,
+            "stages": ["coordinator", *stages],
+        }
 
     @router.post("/stop_profile")
     async def stop(req: StopReq):
@@ -835,7 +842,16 @@ async def run_server(
                 interleaved_output=type(pipeline_config).interleaved_output,
             )
             profiler_dir = os.environ.get("SGLANG_TORCH_PROFILER_DIR")
-            profiler_ctl = ProfilerControlClient(mp_runner.stage_control_endpoints)
+            stage_writer_counts = {
+                stage_name: len(process_names)
+                for stage_name, process_names in (
+                    mp_runner.prep.process_plan.tp_stage_to_processes.items()
+                )
+            }
+            profiler_ctl = ProfilerControlClient(
+                mp_runner.stage_control_endpoints,
+                stage_writer_counts=stage_writer_counts,
+            )
             mount_profiler_routes(app, profiler_ctl, profiler_dir)
             # Added last, and refused where a stage prefix reaches Omni's own routes.
             omni_routes = list(app.router.routes)

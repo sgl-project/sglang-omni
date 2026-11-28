@@ -16,6 +16,7 @@ class ProfilerControlClient:
 
     stage_endpoints: dict[str, str]
     socks: dict[str, PushSocket] | None = None
+    stage_writer_counts: dict[str, int] | None = None
 
     async def start(self) -> None:
         if self.socks is not None:
@@ -47,7 +48,7 @@ class ProfilerControlClient:
         event_dir: str | None = None,
         enable_torch: bool = True,
         event_buffer_capacity: int | None = None,
-    ) -> None:
+    ) -> list[str]:
         await self.start()
         assert self.socks is not None
         targets = stages or list(self.socks.keys())
@@ -58,6 +59,8 @@ class ProfilerControlClient:
             enable_torch=enable_torch,
             event_buffer_capacity=event_buffer_capacity,
         )
+        writer_counts = self.stage_writer_counts or {}
+        sent_stages: list[str] = []
         for s in targets:
             sock = self.socks.get(s)
             if sock is None:
@@ -65,13 +68,12 @@ class ProfilerControlClient:
             else:
                 pass
             await sock.send(msg)
+            sent_stages.extend([s] * writer_counts.get(s, 1))
         logger.info(
-            "Broadcast profiler_start run_id=%s event_dir=%s torch=%s to stages=%s",
-            run_id,
-            event_dir,
-            enable_torch,
-            targets,
+            f"Broadcast profiler_start run_id={run_id} event_dir={event_dir} "
+            f"torch={enable_torch} to stages={sent_stages}"
         )
+        return sent_stages
 
     async def broadcast_stop(
         self, run_id: str | None = None, stages: list[str] | None = None
