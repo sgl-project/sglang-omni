@@ -50,7 +50,7 @@ class TestSignal {
 public:
   TestSignal() = default;
 
-  void Notify(std::exception_ptr error = nullptr) {
+  void Notify(std::exception_ptr error = nullptr) const {
     const std::shared_ptr<State> state = state_;
     std::call_once(state->notify_once, [state, error] {
       if (error != nullptr) {
