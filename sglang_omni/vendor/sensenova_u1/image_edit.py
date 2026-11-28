@@ -284,7 +284,9 @@ def it2i_generate(
     del pixel_values, grid_shape, input_embeddings, indexes, attention_mask
     del prefix_output, reference_embeddings
     batch_size = 1
-    device = prefixes[0].cache.layers[0].keys.device
+    # The latent is subtracted from the flow-matching head output, which a spanned
+    # backbone keeps on its last device rather than on the first cache layer's.
+    device = next(model.fm_modules["fm_head"].parameters()).device
     dtype = prefixes[0].cache.layers[0].keys.dtype
     image_token_rows = image_size[1] // image_patch_size
     image_token_columns = image_size[0] // image_patch_size

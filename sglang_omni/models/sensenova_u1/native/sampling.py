@@ -72,6 +72,7 @@ class SenseNovaGenerationExtra(TypedDict):
     cfg_interval: tuple[float, float]
     t_eps: float
     think_mode: bool
+    cache_dit_enabled_by_request: bool
     img_cfg_scale: NotRequired[float]
 
 
@@ -95,6 +96,7 @@ class SenseNovaU1SamplingParams(SamplingParams):
     t_eps: float = DEFAULT_T_EPS
     think_mode: bool = DEFAULT_THINK_MODE
     img_cfg_scale: float = 1.0
+    cache_dit_enabled_by_request: bool = False
     negative_prompt: None = field(default=None, init=False)
 
     @classmethod
@@ -152,6 +154,7 @@ class SenseNovaU1SamplingParams(SamplingParams):
             )
         else:
             overrides = {}
+        self.cache_dit_enabled_by_request = self.enable_cache_dit is True
         self.enable_cache_dit = resolve_cache_dit_switch(
             self.enable_cache_dit,
             branch_count=guidance_branch_count(
@@ -283,6 +286,7 @@ class SenseNovaU1SamplingParams(SamplingParams):
             "cfg_interval": tuple(self.cfg_interval),
             "t_eps": self.t_eps,
             "think_mode": self.think_mode,
+            "cache_dit_enabled_by_request": self.cache_dit_enabled_by_request,
         }
         if self.image_path:
             generation_extra["img_cfg_scale"] = self.img_cfg_scale

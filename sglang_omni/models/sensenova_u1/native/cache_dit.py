@@ -29,7 +29,10 @@ from transformers.cache_utils import Cache
 from transformers.processing_utils import Unpack
 from transformers.utils import TransformersKwargs
 
-from sglang_omni.models.sensenova_u1.native.options import DEFAULT_CFG_INTERVAL
+from sglang_omni.models.sensenova_u1.native.options import (
+    DEFAULT_CFG_INTERVAL,
+    SENSENOVA_U1_REQUEST_EXTRA_KEY,
+)
 from sglang_omni.vendor.sensenova_u1.image_edit import it2i_guidance_branch_count
 from sglang_omni.vendor.sensenova_u1.modeling_qwen3 import Qwen3Model
 
@@ -268,11 +271,17 @@ def unsupported_guidance(
         return None
 
 
+def spans_multiple_devices(decoder: Qwen3Model) -> bool:
+    return len({next(layer.parameters()).device for layer in decoder.layers}) > 1
+
+
 def resolve_cache_dit_switch(
     request_switch: bool | None,
     *,
     branch_count: int,
     cfg_interval: tuple[float, float],
+    decoder: Qwen3Model | None = None,
+    enabled_by_request: bool | None = None,
 ) -> bool:
     """Return whether a request runs with Cache-DiT.
 
@@ -283,9 +292,25 @@ def resolve_cache_dit_switch(
         envs.SGLANG_CACHE_DIT_ENABLED if request_switch is None else request_switch
     )
     problem = unsupported_guidance(branch_count, cfg_interval) if enabled else None
+    if (
+        problem is None
+        and enabled
+        and decoder is not None
+        and spans_multiple_devices(decoder)
+    ):
+        # cache-dit keeps one residual buffer, so a reuse step adds it to hidden
+        # states that a spanned backbone leaves on another device.
+        problem = "a backbone spanned across devices"
+    else:
+        pass
+    explicit = (
+        (request_switch is not None)
+        if enabled_by_request is None
+        else enabled_by_request
+    )
     if problem is None:
         return enabled
-    elif request_switch is None:
+    elif not explicit:
         logger.info(f"Running a request without Cache-DiT: it uses {problem}")
         return False
     else:
@@ -314,6 +339,11 @@ class SenseNovaCacheDit:
             sampling_params.enable_cache_dit,
             branch_count=branch_count,
             cfg_interval=cfg_interval,
+            decoder=decoder,
+            enabled_by_request=batch.extra.get(SENSENOVA_U1_REQUEST_EXTRA_KEY, {}).get(
+                "cache_dit_enabled_by_request",
+                sampling_params.enable_cache_dit is not None,
+            ),
         )
         if requested:
             overrides = request_cache_dit_overrides(sampling_params.cache_dit_params)

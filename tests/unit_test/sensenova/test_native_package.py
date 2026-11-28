@@ -14,16 +14,32 @@ import pytest
 pytest.importorskip("sglang")
 
 import torch
+from accelerate import dispatch_model
+from safetensors.torch import save_file
 from sglang.multimodal_gen.registry import get_model_info
 from sglang.multimodal_gen.runtime.pipelines_core.schedule_batch import Req
 from sglang.multimodal_gen.runtime.pipelines_core.stages import base as stage_base
 from sglang.multimodal_gen.runtime.platforms import current_platform
+from tokenizers import Tokenizer
+from tokenizers.models import WordLevel
+from tokenizers.pre_tokenizers import WhitespaceSplit
+from transformers import PreTrainedTokenizerFast
 
 from sglang_omni.models.sensenova_u1.config import SenseNovaU1PipelineConfig
+from sglang_omni.models.sensenova_u1.native import cache_dit as sensenova_cache_dit
+from sglang_omni.models.sensenova_u1.native import loader
+from sglang_omni.models.sensenova_u1.native import options as loader_options
+from sglang_omni.models.sensenova_u1.native import pipeline
+from sglang_omni.models.sensenova_u1.native import sampling as sampling_module
 from sglang_omni.models.sensenova_u1.native.generation import SenseNovaU1GenerationStage
 from sglang_omni.models.sensenova_u1.native.pipeline import SenseNovaU1Pipeline
 from sglang_omni.models.sensenova_u1.native.sampling import SenseNovaU1SamplingParams
 from sglang_omni.vendor.sensenova_u1 import modeling_neo_chat
+from sglang_omni.vendor.sensenova_u1.configuration_neo_chat import (
+    NEOChatConfig,
+    NEOMoELLMConfig,
+)
+from sglang_omni.vendor.sensenova_u1.modeling_neo_chat import NEOChatModel
 
 
 def test_external_package_in_fresh_process(tmp_path: Path) -> None:
@@ -219,15 +235,19 @@ def test_offload_default_is_reset_but_explicit_request_is_rejected(
 
 
 @pytest.mark.parametrize(
-    ("configured", "expected"),
+    ("configured", "is_xpu_device", "expected"),
     [
-        ({}, ["expandable_segments:True"]),
-        ({"PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:False"}, []),
-        ({"PYTORCH_ALLOC_CONF": "expandable_segments:False"}, []),
+        ({}, False, ["expandable_segments:True"]),
+        ({}, True, []),
+        ({"PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:False"}, False, []),
+        ({"PYTORCH_ALLOC_CONF": "expandable_segments:False"}, False, []),
     ],
 )
 def test_worker_enables_expandable_segments_unless_configured(
-    monkeypatch: pytest.MonkeyPatch, configured: dict[str, str], expected: list[str]
+    monkeypatch: pytest.MonkeyPatch,
+    configured: dict[str, str],
+    is_xpu_device: bool,
+    expected: list[str],
 ) -> None:
     environment = {
         name: value
@@ -235,6 +255,7 @@ def test_worker_enables_expandable_segments_unless_configured(
         if name not in ("PYTORCH_CUDA_ALLOC_CONF", "PYTORCH_ALLOC_CONF")
     } | configured
     monkeypatch.setattr(os, "environ", environment)
+    monkeypatch.setattr(pipeline, "is_xpu", lambda: is_xpu_device)
     set_allocator_settings = Mock()
     monkeypatch.setattr(
         torch._C,  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
@@ -326,3 +347,420 @@ def test_warmup_generation_uses_native_extra_defaults(
     assert generation_arguments["t_eps"] == 0.02
     assert generation_arguments["think_mode"] is False
     assert output.usage is None
+
+
+@pytest.mark.parametrize(
+    ("free_gib_by_device", "has_index", "expected_device_indexes"),
+    [
+        ((96, 96, 96, 96, 96), True, None),
+        ((24, 24, 24, 24, 24), True, (1, 2)),
+        ((12, 12, 12, 12, 12), True, (1, 2, 3, 4)),
+        ((24, 24, 24, 24, 24), False, None),
+        ((0, 40, 1, 24, 24), True, None),
+        ((0, 1, 24, 24, 24), True, (2, 3)),
+        ((0, 24, 1, 24, 24), True, (1, 3)),
+        ((0, 36, 1, 1, 1), True, None),
+    ],
+)
+def test_backbone_spans_only_as_many_devices_as_the_weights_need(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    free_gib_by_device: tuple[int, ...],
+    has_index: bool,
+    expected_device_indexes: tuple[int, ...] | None,
+) -> None:
+    checkpoint = tmp_path / "checkpoint"
+    checkpoint.mkdir()
+    if has_index:
+        (checkpoint / loader.CHECKPOINT_INDEX_FILE_NAME).write_text(
+            json.dumps({"metadata": {"total_size": 33 * 2**30}, "weight_map": {}})
+        )
+    else:
+        pass
+    monkeypatch.setattr(
+        loader.torch,
+        "get_device_module",
+        lambda device: SimpleNamespace(
+            device_count=lambda: len(free_gib_by_device),
+            mem_get_info=lambda device_index: (
+                free_gib_by_device[device_index] * 2**30,
+                0,
+            ),
+        ),
+    )
+
+    device_map = loader.build_spanning_device_map(
+        str(checkpoint),
+        SimpleNamespace(num_hidden_layers=42, vocab_size=151936, hidden_size=4096),
+        torch.bfloat16,
+        torch.bfloat16,
+        torch.device("xpu", 1),
+        None,
+    )
+
+    if expected_device_indexes is None:
+        assert device_map is None
+    else:
+        assert {device.index for device in device_map.values()} == set(
+            expected_device_indexes
+        )
+        last_device = torch.device("xpu", expected_device_indexes[-1])
+        assert device_map["fm_modules"] == last_device
+        assert device_map["language_model.model.norm"] == last_device
+        assert device_map["language_model.model.embed_tokens"] == torch.device(
+            "xpu", expected_device_indexes[0]
+        )
+        placed_layers = [
+            device_map[f"language_model.model.layers.{layer_index}"].index
+            for layer_index in range(42)
+        ]
+        assert placed_layers == sorted(placed_layers)
+        assert set(placed_layers) == set(expected_device_indexes)
+
+
+def test_spanning_refuses_when_no_device_set_holds_the_weights(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    checkpoint = tmp_path / "checkpoint"
+    checkpoint.mkdir()
+    (checkpoint / loader.CHECKPOINT_INDEX_FILE_NAME).write_text(
+        json.dumps({"metadata": {"total_size": 33 * 2**30}, "weight_map": {}})
+    )
+    monkeypatch.setattr(
+        loader.torch,
+        "get_device_module",
+        lambda device: SimpleNamespace(
+            device_count=lambda: 1,
+            mem_get_info=lambda device_index: (24 * 2**30, 0),
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="hold only"):
+        loader.build_spanning_device_map(
+            str(checkpoint),
+            SimpleNamespace(num_hidden_layers=42, vocab_size=151936, hidden_size=4096),
+            torch.bfloat16,
+            torch.bfloat16,
+            torch.device("xpu", 0),
+            None,
+        )
+
+
+def test_spanning_is_refused_for_the_moe_backbone(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    checkpoint = tmp_path / "checkpoint"
+    checkpoint.mkdir()
+    (checkpoint / loader.CHECKPOINT_INDEX_FILE_NAME).write_text(
+        json.dumps({"metadata": {"total_size": 33 * 2**30}, "weight_map": {}})
+    )
+    monkeypatch.setattr(
+        loader.torch,
+        "get_device_module",
+        lambda device: SimpleNamespace(
+            device_count=lambda: 4,
+            mem_get_info=lambda device_index: (24 * 2**30, 0),
+        ),
+    )
+    moe_config = NEOMoELLMConfig(
+        num_hidden_layers=42, vocab_size=151936, hidden_size=4096, num_experts=128
+    )
+
+    with pytest.raises(RuntimeError, match="mixes dense and sparse"):
+        loader.build_spanning_device_map(
+            str(checkpoint),
+            moe_config,
+            torch.bfloat16,
+            torch.bfloat16,
+            torch.device("xpu", 0),
+            None,
+        )
+
+
+def build_small_dense_model() -> tuple[NEOChatModel, PreTrainedTokenizerFast]:
+    torch.manual_seed(0)
+    config = NEOChatConfig(
+        vision_config={
+            "hidden_size": 32,
+            "llm_hidden_size": 32,
+            "patch_size": 16,
+            "max_position_embeddings_vision": 64,
+        },
+        llm_config={
+            "architectures": ["Qwen3ForCausalLM"],
+            "vocab_size": 16,
+            "hidden_size": 32,
+            "intermediate_size": 64,
+            "num_hidden_layers": 2,
+            "num_attention_heads": 4,
+            "num_key_value_heads": 2,
+            "head_dim": 8,
+            "max_position_embeddings": 2048,
+            "max_position_embeddings_hw": 64,
+        },
+        template="neo1_0",
+        use_pixel_head=False,
+        fm_head_layers=2,
+        concat_time_token_num=0,
+        noise_scale=1.0,
+        noise_scale_mode="constant",
+        noise_scale_base_image_seq_len=1,
+        add_noise_scale_embedding=True,
+        noise_scale_max_value=10.0,
+    )
+    vocabulary = {"[PAD]": 0, "[UNK]": 1, "<img>": 2, "</img>": 3, "<IMG_CONTEXT>": 4}
+    tokenizer_backend = Tokenizer(WordLevel(vocabulary, unk_token="[UNK]"))
+    tokenizer_backend.pre_tokenizer = WhitespaceSplit()
+    tokenizer = PreTrainedTokenizerFast(
+        tokenizer_object=tokenizer_backend,
+        unk_token="[UNK]",
+        pad_token="[PAD]",
+        additional_special_tokens=["<img>", "</img>", "<IMG_CONTEXT>"],
+    )
+    return NEOChatModel(config).eval(), tokenizer
+
+
+@pytest.mark.accelerator
+def test_dispatched_denoising_spans_two_devices(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    device_type = current_platform.device_type
+    device_module = torch.get_device_module(device_type)
+    if device_module.device_count() < 2:
+        pytest.skip(f"needs two {device_type} devices")
+    else:
+        pass
+
+    model, tokenizer = build_small_dense_model()
+    checkpoint = tmp_path / "checkpoint"
+    checkpoint.mkdir()
+    (checkpoint / loader.CHECKPOINT_INDEX_FILE_NAME).write_text(
+        json.dumps({"metadata": {"total_size": 4 * 2**30}, "weight_map": {}})
+    )
+    monkeypatch.setattr(
+        loader.torch,
+        "get_device_module",
+        lambda device: SimpleNamespace(
+            device_count=lambda: 2,
+            mem_get_info=lambda device_index: (5 * 2**29, 0),
+        ),
+    )
+    device_map = loader.build_spanning_device_map(
+        str(checkpoint),
+        model.config.llm_config,
+        torch.bfloat16,
+        torch.bfloat16,
+        torch.device(device_type, 0),
+        None,
+    )
+    assert {device.index for device in device_map.values()} == {0, 1}
+
+    model = dispatch_model(
+        model,
+        device_map={
+            name: torch.device(device_type, device.index)
+            for name, device in device_map.items()
+        },
+    )
+    head_device = next(model.fm_modules["fm_head"].parameters()).device
+    assert head_device == model.language_model.model.norm.weight.device
+
+    cache_devices: list[torch.device] = []
+    original_prepare = modeling_neo_chat.prepare_flash_kv_cache
+
+    def recording_prepare(
+        past_key_values, current_len, batch_size, prefix_lengths=None
+    ):
+        cache_devices.extend(
+            layer_cache.keys.device for layer_cache in past_key_values.layers
+        )
+        return original_prepare(
+            past_key_values, current_len, batch_size, prefix_lengths
+        )
+
+    monkeypatch.setattr(modeling_neo_chat, "prepare_flash_kv_cache", recording_prepare)
+
+    decoder = model.language_model.model
+    assert sensenova_cache_dit.spans_multiple_devices(decoder)
+    assert (
+        sensenova_cache_dit.resolve_cache_dit_switch(
+            None, branch_count=2, cfg_interval=(0.0, 1.0), decoder=decoder
+        )
+        is False
+    )
+    with pytest.raises(ValueError, match="spanned across devices"):
+        sensenova_cache_dit.resolve_cache_dit_switch(
+            True, branch_count=2, cfg_interval=(0.0, 1.0), decoder=decoder
+        )
+
+    assert next(decoder.layers[-1].parameters()).device == torch.device(device_type, 1)
+
+    images = model.t2i_generate(
+        tokenizer,
+        "a red apple",
+        image_size=(32, 32),
+        cfg_scale=4.0,
+        num_steps=2,
+        seed=0,
+    )
+    device_module.synchronize()
+
+    assert cache_devices[:2] == [
+        device_map["language_model.model.layers.0"],
+        device_map["language_model.model.layers.1"],
+    ]
+    assert images.shape == (1, 3, 32, 32)
+    assert images.device == head_device
+    assert torch.isfinite(images).all().item()
+
+
+def test_checkpoint_dtype_falls_back_to_the_shard_header(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    checkpoint = tmp_path / "checkpoint"
+    checkpoint.mkdir()
+    save_file(
+        {
+            "language_model.model.layers.0.mlp.gate_proj.weight": torch.zeros(
+                4, 4, dtype=torch.bfloat16
+            )
+        },
+        checkpoint / "model-00001-of-00001.safetensors",
+    )
+    (checkpoint / loader.CHECKPOINT_INDEX_FILE_NAME).write_text(
+        json.dumps(
+            {
+                "metadata": {"total_size": 33 * 2**30},
+                "weight_map": {
+                    "language_model.model.layers.0.mlp.gate_proj.weight": (
+                        "model-00001-of-00001.safetensors"
+                    )
+                },
+            }
+        )
+    )
+    monkeypatch.setattr(
+        loader.torch,
+        "get_device_module",
+        lambda device: SimpleNamespace(
+            device_count=lambda: 4,
+            mem_get_info=lambda device_index: (24 * 2**30, 0),
+        ),
+    )
+
+    device_map = loader.build_spanning_device_map(
+        str(checkpoint),
+        SimpleNamespace(num_hidden_layers=42, vocab_size=151936, hidden_size=4096),
+        None,
+        torch.float32,
+        torch.device("xpu", 0),
+        None,
+    )
+
+    assert {device.index for device in device_map.values()} == {0, 1, 2, 3}
+
+
+@pytest.mark.parametrize(
+    ("request_switch", "expected_enabled", "expected_enabled_by_request"),
+    [(None, True, False), (True, True, True), (False, False, False)],
+)
+def test_server_switch_records_whether_the_request_asked_for_cache_dit(
+    monkeypatch: pytest.MonkeyPatch,
+    request_switch: bool | None,
+    expected_enabled: bool,
+    expected_enabled_by_request: bool,
+) -> None:
+    monkeypatch.setenv("SGLANG_CACHE_DIT_ENABLED", "true")
+    sampling = SenseNovaU1SamplingParams(
+        prompt="a red apple",
+        width=64,
+        height=64,
+        num_inference_steps=2,
+        guidance_scale=4.0,
+        enable_cache_dit=request_switch,
+    )
+    monkeypatch.setattr(
+        sampling_module,
+        "checkpoint_decoder_layer_count",
+        lambda model_path, revision: 2,
+    )
+
+    sampling.resolve_cache_dit("checkpoint", None)
+
+    assert sampling.enable_cache_dit is expected_enabled
+    assert sampling.cache_dit_enabled_by_request is expected_enabled_by_request
+    extra = sampling.build_request_extra()[
+        loader_options.SENSENOVA_U1_REQUEST_EXTRA_KEY
+    ]
+    assert extra["cache_dit_enabled_by_request"] is expected_enabled_by_request
+
+
+@pytest.mark.parametrize(
+    ("request_switch", "is_rejected"),
+    [(None, False), (True, True), (False, False)],
+)
+def test_spanned_model_rejects_only_an_explicit_cache_dit_request(
+    monkeypatch: pytest.MonkeyPatch, request_switch: bool | None, is_rejected: bool
+) -> None:
+    monkeypatch.setenv("SGLANG_CACHE_DIT_ENABLED", "true")
+    monkeypatch.setattr(
+        sampling_module,
+        "checkpoint_decoder_layer_count",
+        lambda model_path, revision: 2,
+    )
+    sampling = SenseNovaU1SamplingParams(
+        prompt="a red apple",
+        width=64,
+        height=64,
+        num_inference_steps=2,
+        guidance_scale=4.0,
+        enable_cache_dit=request_switch,
+    )
+    sampling.resolve_cache_dit("checkpoint", None)
+    request = Req(sampling_params=sampling)
+    sampling.apply_request_extra(request)
+    decoder = SimpleNamespace(
+        layers=[
+            SimpleNamespace(parameters=lambda: iter([torch.zeros(1, device="cpu")])),
+            SimpleNamespace(parameters=lambda: iter([torch.zeros(1, device="meta")])),
+        ]
+    )
+    cache_dit = sensenova_cache_dit.SenseNovaCacheDit()
+
+    if is_rejected:
+        with pytest.raises(ValueError, match="spanned across devices"):
+            cache_dit.prepare(decoder, request, branch_count=2, cfg_interval=(0.0, 1.0))
+    else:
+        cache_dit.prepare(decoder, request, branch_count=2, cfg_interval=(0.0, 1.0))
+    assert cache_dit.active_key is None
+
+
+def test_devices_drawing_on_host_memory_keep_single_device_loading(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    checkpoint = tmp_path / "checkpoint"
+    checkpoint.mkdir()
+    (checkpoint / loader.CHECKPOINT_INDEX_FILE_NAME).write_text(
+        json.dumps({"metadata": {"total_size": 33 * 2**30}, "weight_map": {}})
+    )
+    monkeypatch.setattr(current_platform, "device_shares_host_memory", lambda: True)
+    monkeypatch.setattr(
+        loader.torch,
+        "get_device_module",
+        lambda device: SimpleNamespace(
+            device_count=lambda: 4,
+            mem_get_info=lambda device_index: (1 * 2**30, 0),
+        ),
+    )
+
+    assert (
+        loader.build_spanning_device_map(
+            str(checkpoint),
+            SimpleNamespace(num_hidden_layers=42, vocab_size=151936, hidden_size=4096),
+            torch.bfloat16,
+            torch.bfloat16,
+            torch.device("xpu", 0),
+            None,
+        )
+        is None
+    )

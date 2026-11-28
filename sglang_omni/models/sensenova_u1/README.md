@@ -116,3 +116,9 @@ With Cache-DiT on, a request is rejected with status 400 when its settings use a
 The cache stays mounted between requests. A request with the same settings and guidance branches refreshes it, a request with different ones mounts it again, and a request with Cache-DiT off removes it.
 
 With dynamic batching on (`--batching-max-size` above 1), text-to-image requests with the same Cache-DiT switch and settings can share a batch, as in SGLang's other image pipelines. The cache then decides for the whole batch at each step whether to reuse the middle layers, so a request's output can depend on the requests batched with it.
+
+## Devices smaller than the checkpoint
+
+The bf16 checkpoint needs 32.7 GiB because the MoT backbone carries a second expert branch for image tokens. A device whose free memory covers the checkpoint loads it alone. Otherwise the loader walks the visible devices from the launch one upwards and places the backbone on as many of them as the weights need, skipping any whose free memory cannot hold a layer, so the devices it selects rise in index but need not be adjacent; the rest stay free. It sizes that placement from the dense backbone's uniform layers and refuses to split the MoE backbone, whose layers vary. On Intel XPU with 24 GiB Arc Pro B60 cards the checkpoint needs two cards, so the launcher needs at least two visible devices with that much free. Devices that draw on host memory keep single-device loading, because their free device memory omits page cache the kernel can reclaim.
+
+A span gives up Cache-DiT, because its one residual buffer would be added to hidden states another device holds. A request that sets `enable_cache_dit` to true is refused in the worker rather than with the 400 the section above describes, while the server switch alone runs uncached. Editing is CUDA-only, spanned or not: it sizes its prefix budget through `torch.cuda` entry points, which fail on an Intel XPU device.

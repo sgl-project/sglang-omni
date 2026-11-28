@@ -11,6 +11,7 @@ from sglang.multimodal_gen.runtime.pipelines_core.composed_pipeline_base import 
     ComposedPipelineBase,
 )
 from sglang.multimodal_gen.runtime.server_args import ServerArgs
+from sglang.srt.utils import is_xpu
 from transformers import PreTrainedTokenizerBase
 
 from sglang_omni.models.sensenova_u1.native.cache_dit import check_compute_blocks
@@ -32,7 +33,11 @@ class SenseNovaU1Pipeline(ComposedPipelineBase):
             dict[str, torch.nn.Module | PreTrainedTokenizerBase] | None
         ) = None,
     ) -> dict[str, torch.nn.Module | PreTrainedTokenizerBase]:
-        if not {"PYTORCH_CUDA_ALLOC_CONF", "PYTORCH_ALLOC_CONF"} & os.environ.keys():
+        # Expandable segments lose the XPU device once a spanned backbone is resident.
+        if (
+            not {"PYTORCH_CUDA_ALLOC_CONF", "PYTORCH_ALLOC_CONF"} & os.environ.keys()
+            and not is_xpu()
+        ):
             # note (Richard Wang): Edit prefix attention buffers change size per query and fragment fixed segments.
             torch._C._accelerator_setAllocatorSettings(  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
                 "expandable_segments:True"
