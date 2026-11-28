@@ -70,7 +70,7 @@ enum Permissions {
             // starts; there is no call that asks or reads it.
             let tap = try SystemTap(ownPIDs: [getpid(), getppid()]) {}
             defer { tap.stop() }
-            try tap.start { _ in }
+            try tap.start { _, _ in }
             try? await Task.sleep(for: .milliseconds(500))
         default:
             throw RPCError(Code.badRequest, "Unknown permission \(permission)")

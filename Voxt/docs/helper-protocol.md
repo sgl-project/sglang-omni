@@ -91,7 +91,7 @@ Errors are `{"code": "…", "message": "…", "data"?: {…}}` with a string cod
 |---|---|
 | `capture.started` | `{job, device, deviceName, fellBack, fallbackReason?, deviceSampleRate, deviceChannels, sampleRate, startMs}` |
 | `capture.level` | `{job, seconds, rms, peak}` (dBFS, -120 is silence; ~20 Hz) |
-| `capture.pcm` | `{job, seq, offset, data}` (`data`: base64 of mono PCM16 LE at the started rate; `seq` from 0 and `offset` in samples, without gaps; ~100 ms each, the last one shorter) |
+| `capture.pcm` | `{job, seq, offset, data, hostMs?}` (`data`: base64 of mono PCM16 LE at the started rate; `seq` from 0 and `offset` in samples, without gaps; ~100 ms each, shorter at the end and before a break in the device's time stamps (a restart, a dropout), so the samples before it keep their times; `hostMs`: when the frame's first sample was in the air (the device's time stamp less the input's latency, or plus the output's for `capture.system`), in ms of the Mac's host clock, so a meeting's two tracks line up by it; absent for the test-only file inputs) |
 | `capture.restarted` | `{job, reason: "noCallback"\|"configurationChange"\|"deviceLost", attempt, device, deviceName?}` |
 | `hotkey.event` | `{binding, phase: "trigger"\|"down"\|"up", behavior: "tap"\|"doubleTap"\|"longPress", heldMs?, t, front?{pid, bundleId?, name?}, generation?}` |
 | `hotkey.state` | the hotkey status, when the tap was installed (Accessibility granted) or removed (taken away) |

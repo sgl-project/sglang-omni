@@ -195,7 +195,9 @@ func (m *Manager) Pause(_ context.Context, id string) error {
 	if m.state != StateRecording {
 		return fmt.Errorf("meeting: not recording")
 	}
-	m.stopAllTracksLocked()
+	// Dropped, not only stopped: a track whose stop timed out must not write
+	// its audio from before the pause into the period Resume starts.
+	m.dropTracksLocked(m.openSourcesLocked())
 	m.timeline.NotePause()
 	// A pause is not evidence that the system track stayed silent.
 	m.problems.systemQuietSince = time.Time{}
@@ -217,6 +219,12 @@ func (m *Manager) Resume(ctx context.Context, id string) error {
 		return fmt.Errorf("meeting: not paused")
 	}
 	m.timeline.NoteResume()
+	if m.archive != nil {
+		// The tracks from before the pause have stopped: the files line up again here.
+		if err := m.archive.NewPeriod(); err != nil && m.cfg.Warn != nil {
+			m.cfg.Warn("meeting: aligning the recordings after a pause: " + err.Error())
+		}
+	}
 	m.state = StateRecording
 	m.snap.State = StateRecording
 	sources := m.mode.Sources()
@@ -506,11 +514,15 @@ func (m *Manager) stopAllTracks() {
 }
 
 func (m *Manager) stopAllTracksLocked() {
+	m.stopTracksLocked(m.openSourcesLocked())
+}
+
+func (m *Manager) openSourcesLocked() []Source {
 	sources := make([]Source, 0, len(m.tracks))
 	for src := range m.tracks {
 		sources = append(sources, src)
 	}
-	m.stopTracksLocked(sources)
+	return sources
 }
 
 // stopTracksLocked stops the tracks of sources that are open. It lets go

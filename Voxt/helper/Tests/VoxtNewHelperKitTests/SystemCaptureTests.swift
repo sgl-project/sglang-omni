@@ -66,6 +66,28 @@ final class SystemCaptureTests: XCTestCase {
         XCTAssertEqual(clock.silenceWhileIdle(at: 3720, written: 35520), 4800)
     }
 
+    func testShortGapIsNotPaddedLater() {
+        var clock = SystemCaptureClock(sampleRate: 16000, startedAt: 0)
+        XCTAssertEqual(clock.silenceBeforeBuffer(at: 100, samples: 1600, written: 0), 0)
+        // 150 ms later: under the grace, left alone (the archive places it by its time stamp).
+        XCTAssertEqual(clock.silenceBeforeBuffer(at: 250, samples: 1600, written: 1600), 0)
+        // After a 300 ms gap only that gap is padded (less the buffer), not
+        // the 50 ms left alone before it as well.
+        XCTAssertEqual(clock.silenceBeforeBuffer(at: 550, samples: 1600, written: 3200), 3200)
+        XCTAssertEqual(clock.silenceWhileIdle(at: 1050, written: 8000), 4800)
+    }
+
+    func testCappedPaddingIsNotPaddedLater() {
+        var clock = SystemCaptureClock(sampleRate: 16000, startedAt: 0)
+        XCTAssertEqual(clock.silenceBeforeBuffer(at: 100, samples: 1600, written: 0), 0)
+        // 400 ms after the last buffer, a 100 ms buffer: 300 ms missing, but
+        // its time stamp leaves room for 100 ms (the output's latency fell,
+        // AirPods to the speakers).
+        XCTAssertEqual(clock.silenceBeforeBuffer(at: 500, samples: 1600, written: 1600, limit: 1600), 1600)
+        // Idle after it: only what the idle time adds, not the 200 ms held back.
+        XCTAssertEqual(clock.silenceWhileIdle(at: 1000, written: 4800), 4800)
+    }
+
     func testIdleOutputFillsToStopWithoutOverwritingAudio() {
         let clock = SystemCaptureClock(sampleRate: 16000, startedAt: 500)
         XCTAssertEqual(clock.silenceWhileIdle(at: 1500, written: 9600, stopping: true), 6400)

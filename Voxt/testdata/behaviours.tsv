@@ -43,6 +43,7 @@ Meeting speakers and clean-up	L	TestDiarizeTrackChunksAndCarriesSpeakers	none
 Meeting speakers and clean-up	L	TestCorrectTranscript	none
 Meeting speakers and clean-up	E	TestEvalMTDSpeakers	none
 Meeting permissions	manual	docs/manual-test.md	System permission state can only be checked on a Mac
+Meeting recordings line up	L	TestArchivePlacesFramesByCaptureTime	The devices' latencies and the speakers-to-microphone lag are measured by hand on a Mac
 History	L	TestHistoryTabs	No real-app check that each session leaves one entry
 History	L	TestHistoryAllTab	none
 Reopen a card from the menu bar, history for other programs	L	TestHistoryAccessOff	none

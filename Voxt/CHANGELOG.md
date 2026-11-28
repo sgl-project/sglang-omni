@@ -13,6 +13,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 ### Fixed
 - **The transcription preview stays where you drag it** (#4701): dragged while new words came in, the preview jumped back toward where the drag started, and the screen's edge pulled it back before you let go. It now grows where you have it; dragged past the screen's edge, it returns to the screen once you let go.
+- **A meeting's microphone and system audio recordings line up**: played back, a meeting no longer echoes. Even after switching to another capture mode (Subtitles, Recording) and back to Meeting, the final transcript has both tracks' speech at the right times.
 
 ### 中文
 
@@ -25,6 +26,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 #### 修复
 - **拖动转录预览时不再跳回去**（#4701）：边说边拖时，每来一批新字，预览会朝拖动开始的位置跳一下；拖到屏幕边缘，还没松手就被拉回来。现在它在拖到的位置上变大；拖出屏幕边缘的，松手后才回到屏幕内。
+- **会议的麦克风和系统声音录音对齐了**：回放会议不再有回音。即使中间切换到其他采集模式（字幕、录音）再切回会议模式，会后的转录稿里两个音轨的说话时间也正确。
 
 ## [2.1.4] - 2026-11-26
 

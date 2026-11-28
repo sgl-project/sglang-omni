@@ -4,7 +4,7 @@
 {"to":"app","msg":{"method":"log","params":{"level":"warning","message":"capture: AirPods Pro did not start (-10868): recording from the default input","job":"01JB0C1000000000000000000A"}}}
 {"to":"app","msg":{"method":"capture.started","params":{"job":"01JB0C1000000000000000000A","device":"BuiltInMicrophoneDevice","deviceName":"MacBook Air Microphone","fellBack":true,"fallbackReason":"AirPods Pro did not start (-10868)","deviceSampleRate":48000,"deviceChannels":1,"sampleRate":16000,"startMs":118.4}}}
 {"to":"app","msg":{"method":"capture.level","params":{"job":"01JB0C1000000000000000000A","seconds":0.05,"rms":-52.3,"peak":-40.1}}}
-{"to":"app","msg":{"method":"capture.pcm","params":{"job":"01JB0C1000000000000000000A","seq":0,"offset":0,"data":"AQAHAAEABwABAAcAAQAHAA=="}}}
+{"to":"app","msg":{"method":"capture.pcm","params":{"job":"01JB0C1000000000000000000A","seq":0,"offset":0,"data":"AQAHAAEABwABAAcAAQAHAA==","hostMs":523456789.25}}}
 {"to":"app","msg":{"method":"capture.level","params":{"job":"01JB0C1000000000000000000A","seconds":0.1,"rms":-21.7,"peak":-0.1}}}
 {"to":"app","msg":{"method":"capture.restarted","params":{"job":"01JB0C1000000000000000000A","reason":"configurationChange","attempt":1,"device":"BuiltInMicrophoneDevice"}}}
 {"to":"app","msg":{"method":"capture.pcm","params":{"job":"01JB0C1000000000000000000A","seq":1,"offset":8,"data":"AgAOAAIADgACAA4AAgAOAA=="}}}

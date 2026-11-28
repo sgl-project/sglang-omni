@@ -177,12 +177,17 @@ public struct PCMParams: Codable, Sendable {
     public var offset: Int
     /// Mono PCM16 little endian; base64 on the wire.
     public var data: Data
+    /// When the frame's first sample was in the air (the device's time stamp
+    /// less its latency, or plus it for the system tap), in ms of the host
+    /// clock every capture shares; nil for the test-only file inputs.
+    public var hostMs: Double?
 
-    public init(job: String, seq: Int, offset: Int, data: Data) {
+    public init(job: String, seq: Int, offset: Int, data: Data, hostMs: Double? = nil) {
         self.job = job
         self.seq = seq
         self.offset = offset
         self.data = data
+        self.hostMs = hostMs
     }
 }
 
