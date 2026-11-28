@@ -28,7 +28,8 @@ type Archive struct {
 	// the period's first timed frame.
 	origin float64
 	base   int64
-	timed  bool // a frame had a time
+	timed  bool  // a frame had a time
+	maxGap int64 // archiveMaxGap; tests shorten it
 }
 
 // archiveSlack is the misplacement left alone (time-stamp jitter, clock
@@ -39,11 +40,11 @@ const archiveSlack = asr.SampleRate / 50
 // before where its own file ends: further is a clock that went wrong, and
 // the frame is appended as it comes. Past the longest file, not past its
 // own: a track that starts late (Recording switched to Meeting after an
-// hour) still lines up. A var so tests can shorten it.
-var archiveMaxGap int64 = 30 * 60 * asr.SampleRate
+// hour) still lines up.
+const archiveMaxGap = 30 * 60 * asr.SampleRate
 
 func newArchive(dir string) *Archive {
-	return &Archive{dir: dir, w: map[Source]*wavWriter{}}
+	return &Archive{dir: dir, w: map[Source]*wavWriter{}, maxGap: archiveMaxGap}
 }
 
 func (a *Archive) path(src Source) string {
@@ -69,7 +70,7 @@ func (a *Archive) WriteAt(src Source, pcm []byte, hostMS float64) error {
 		}
 		want := a.base + int64(math.Round((hostMS-a.origin)*asr.SampleRate/1000))
 		// Out of these bounds is a clock gone wrong: appended as it comes.
-		if want-w.samples >= -archiveMaxGap && want-a.longest() <= archiveMaxGap {
+		if want-w.samples >= -a.maxGap && want-a.longest() <= a.maxGap {
 			if want < a.base {
 				// Before the period's first frame (the other track's): that
 				// part is cut, so a period never runs into the one before.

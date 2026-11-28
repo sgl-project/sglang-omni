@@ -42,6 +42,9 @@ type fakeAudio struct {
 	// onStop runs once, at the next Stop, before the capture stops: a
 	// test acts on the meeting while the manager waits for it.
 	onStop func()
+	// hostMS is the capture time of each Record's audio, in turn (0 past
+	// the end: no time).
+	hostMS []float64
 }
 
 func newFakeAudio(pcm []byte) *fakeAudio {
@@ -71,13 +74,17 @@ func (f *fakeAudio) Record(ctx context.Context, id string, _ proto.CaptureParams
 	f.mu.Lock()
 	f.stops[id] = stop
 	f.jobs = append(f.jobs, id)
+	var hostMS float64
+	if n := len(f.jobs) - 1; n < len(f.hostMS) {
+		hostMS = f.hostMS[n]
+	}
 	f.mu.Unlock()
 	fn(session.AudioEvent{Started: &proto.CaptureStartedParams{Job: id, SampleRate: asr.SampleRate}})
 	chunk := f.pcm
 	if len(chunk) == 0 {
 		chunk = make([]byte, asr.BytesPerSecond/10)
 	}
-	fn(session.AudioEvent{PCM: &proto.PCMParams{Job: id, Data: chunk}})
+	fn(session.AudioEvent{PCM: &proto.PCMParams{Job: id, Data: chunk, HostMS: hostMS}})
 	for _, db := range f.levels {
 		fn(session.AudioEvent{Level: &proto.LevelParams{Job: id, RMS: db}})
 	}

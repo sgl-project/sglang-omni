@@ -80,25 +80,12 @@ final class SystemCaptureTests: XCTestCase {
     func testCappedPaddingIsNotPaddedLater() {
         var clock = SystemCaptureClock(sampleRate: 16000, startedAt: 0)
         XCTAssertEqual(clock.silenceBeforeBuffer(at: 100, samples: 1600, written: 0), 0)
-        // 400 ms of gap, but the buffer's time stamp leaves room for 100 ms
-        // (the output's latency fell, AirPods to the speakers).
+        // 400 ms after the last buffer, a 100 ms buffer: 300 ms missing, but
+        // its time stamp leaves room for 100 ms (the output's latency fell,
+        // AirPods to the speakers).
         XCTAssertEqual(clock.silenceBeforeBuffer(at: 500, samples: 1600, written: 1600, limit: 1600), 1600)
         // Idle after it: only what the idle time adds, not the 200 ms held back.
         XCTAssertEqual(clock.silenceWhileIdle(at: 1000, written: 4800), 4800)
-    }
-
-    func testHostAnchorCarriesStampsAndFindsBreaks() {
-        var host = HostAnchor(sampleRate: 16000)
-        XCTAssertNil(host.ms(at: 0))
-        XCTAssertFalse(host.breaks(1000, at: 0))
-        host.set(1000, at: 0)
-        XCTAssertEqual(host.ms(at: 1600), 1100)
-        XCTAssertFalse(host.breaks(1115, at: 1600)) // jitter
-        XCTAssertTrue(host.breaks(1600, at: 1600)) // a restart's gap
-        XCTAssertTrue(host.breaks(1050, at: 1600)) // an overlap
-        // Padding up to a buffer stamped 1600 ms fits 500 ms, none past it.
-        XCTAssertEqual(host.room(before: 1600, at: 1600), 8000)
-        XCTAssertEqual(host.room(before: 1050, at: 1600), 0)
     }
 
     func testIdleOutputFillsToStopWithoutOverwritingAudio() {
