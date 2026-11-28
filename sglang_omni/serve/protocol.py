@@ -65,20 +65,48 @@ class SpecTokensDetails(BaseModel):
         return data
 
 
+class TranscriptionHypothesis(BaseModel):
+    """One beam search hypothesis; cum_logprob is raw and score is length-normalized."""
+
+    text: str
+    cum_logprob: float
+    score: float
+    finish_reason: str
+
+
 class SglExt(BaseModel):
     """Response-level extension fields outside the OpenAI schema."""
 
-    spec_tokens_details: SpecTokensDetails
+    spec_tokens_details: SpecTokensDetails | None = None
+    n_best: list[TranscriptionHypothesis] | None = None
+
+    @model_serializer(mode="wrap")
+    def drop_unset_fields(
+        self, handler: SerializerFunctionWrapHandler
+    ) -> dict[str, object]:
+        data = handler(self)
+        for field_name in ("spec_tokens_details", "n_best"):
+            if data.get(field_name) is None:
+                data.pop(field_name, None)
+            else:
+                pass
+        return data
 
 
 def build_sglext(
     return_spec_tokens_details: bool,
     spec_tokens_details: SpecTokensDetailsDict | None,
+    n_best: list[TranscriptionHypothesis] | None = None,
 ) -> SglExt | None:
-    if return_spec_tokens_details and spec_tokens_details is not None:
-        return SglExt(spec_tokens_details=SpecTokensDetails(**spec_tokens_details))
-    else:
+    details = (
+        SpecTokensDetails(**spec_tokens_details)
+        if return_spec_tokens_details and spec_tokens_details is not None
+        else None
+    )
+    if details is None and n_best is None:
         return None
+    else:
+        return SglExt(spec_tokens_details=details, n_best=n_best)
 
 
 class ChatMessage(BaseModel):

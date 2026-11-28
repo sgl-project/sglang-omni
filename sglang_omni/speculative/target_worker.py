@@ -38,6 +38,8 @@ class SpeculativeTargetWorker:
         self.tokenizer: None = None
         # An EAGLE draft extends on the embeddings the target prefilled with.
         self.publishes_prefill_input_embeds: bool = speculative_algorithm.is_eagle()
+        # SGLang's EAGLE sampler scales verify rows by acc_scaling_penalties, its relaxed repetition_penalty.
+        self.verify_applies_relaxed_penalty: bool = speculative_algorithm.is_eagle()
         self.omni_runner: ModelRunner | None = None
         # note (0xtoward): the step in flight, in verify-row order; set by the scheduler.
         self.verify_requests: list[SchedulerRequest] = []
@@ -108,6 +110,12 @@ class SpeculativeTargetWorker:
                         forward_batch,
                         requests,
                     )
+                    if self.verify_applies_relaxed_penalty:
+                        # note (wilsonzheng0327): repetition_penalty is SGLang's only scaling penalty and the rows
+                        # above already carry it exactly, so the sampler must not scale them again.
+                        forward_batch.sampling_info.acc_scaling_penalties = None
+                    else:
+                        pass
                 else:
                     pass
             else:

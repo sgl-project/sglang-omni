@@ -28,6 +28,10 @@ class WhisperASRAdapter(WhisperTranscriptionAdapter):
     def supports_segment_timestamps(self) -> bool:
         return True
 
+    @property
+    def supports_beam_search(self) -> bool:
+        return True
+
     def postprocess_text(self, text: str) -> str:
         return _TIMESTAMP_RE.sub("", text).strip()
 

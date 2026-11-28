@@ -305,10 +305,11 @@ def test_base_lookahead_eligible_gates_output_history_sampling():
         params.update(overrides)
         return types.SimpleNamespace(**params)
 
-    def req(*, custom_logit_processor=None, **sampling_overrides):
+    def req(*, custom_logit_processor=None, beam_group=None, **sampling_overrides):
         return types.SimpleNamespace(
             sampling_params=sp(**sampling_overrides),
             custom_logit_processor=custom_logit_processor,
+            beam_group=beam_group,
         )
 
     def batch(*reqs):
@@ -327,6 +328,8 @@ def test_base_lookahead_eligible_gates_output_history_sampling():
     assert runner.lookahead_eligible(batch(req(presence_penalty=0.5))) is False
     assert runner.lookahead_eligible(batch(req(min_new_tokens=4))) is False
     assert runner.lookahead_eligible(batch(history_dependent)) is False
+    # A beam leader's next tokens are selected after its own sample, so it runs sync.
+    assert runner.lookahead_eligible(batch(req(beam_group="group"))) is False
     # A single tainted row taints the whole batch.
     assert runner.lookahead_eligible(batch(req(), req(frequency_penalty=0.1))) is False
     assert runner.lookahead_eligible(batch(history_free, history_dependent)) is False
@@ -710,6 +713,7 @@ class FakeBatch:
                     min_new_tokens=0,
                 ),
                 custom_logit_processor=None,
+                beam_group=None,
             )
             for _ in range(n)
         ]
@@ -1793,10 +1797,34 @@ def test_async_prefill_rejects_partial_or_special_batches(unsupported_state):
         decoding_reqs=[],
         is_prefill_only=False,
         return_logprob=False,
-        reqs=[types.SimpleNamespace(inflight_middle_chunks=0)],
+        reqs=[types.SimpleNamespace(inflight_middle_chunks=0, beam_group=None)],
     )
     assert scheduler.is_async_prefill_batch(batch)
     setattr(batch, unsupported_state, True)
+    assert not scheduler.is_async_prefill_batch(batch)
+
+
+def test_async_prefill_runs_a_beam_leader_synchronously():
+    """A beam leader's first selection spawns its member rows, which the next forward must already see."""
+    scheduler = object.__new__(OmniScheduler)
+    scheduler.async_prefill = True
+    scheduler.session_bridge = None
+    scheduler.chunked_req = None
+    batch = types.SimpleNamespace(
+        forward_mode=types.SimpleNamespace(
+            is_extend=lambda: True,
+            is_target_verify=lambda: False,
+            is_draft_extend_v2=lambda: False,
+        ),
+        chunked_req=None,
+        decoding_reqs=[],
+        is_prefill_only=False,
+        return_logprob=False,
+        reqs=[
+            types.SimpleNamespace(inflight_middle_chunks=0, beam_group=None),
+            types.SimpleNamespace(inflight_middle_chunks=0, beam_group="group"),
+        ],
+    )
     assert not scheduler.is_async_prefill_batch(batch)
 
 
