@@ -208,7 +208,10 @@ def test_fun_asr_threads_generation_batch_and_request_build_policy(
         lambda **kwargs: validations.append(kwargs),
     )
 
-    scheduler = fun_asr_stages.create_sglang_fun_asr_executor("dummy")
+    scheduler = fun_asr_stages.create_sglang_fun_asr_executor(
+        "dummy", total_gpu_memory_fraction=0.85
+    )
+    assert infra_kwargs[-1]["total_gpu_memory_fraction"] == 0.85
 
     assert build_kwargs["cuda_graph_max_bs"] == 64
     assert build_kwargs["cuda_graph_bs"] == [
