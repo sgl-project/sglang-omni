@@ -7,6 +7,7 @@ import json
 import logging
 import math
 from collections.abc import Callable, Mapping, Sequence
+from contextlib import nullcontext
 from dataclasses import dataclass
 from os import PathLike
 from pathlib import Path
@@ -1654,19 +1655,27 @@ class MossAudioTokenizerEncoder(nn.Module):
             lengths,
             lengths_cpu,
         )
+        # Match the source codec: NPU autocast keeps LayerNorm/residuals FP32.
+        # BF16 weights alone change reference codes and generated speech.
         hidden = hidden.to(dtype=self.encoder_dtype)
-        for stage in self.encoder:
-            if isinstance(stage, MossAudioTokenizerProjectedTransformer):
-                hidden, lengths = stage(
-                    hidden,
-                    lengths,
-                    input_lengths_cpu=lengths_cpu,
-                )
-            else:
-                hidden, lengths = stage(hidden, lengths)
-                lengths_cpu = [
-                    length // int(stage.downsample_ratio) for length in lengths_cpu
-                ]
+        encoder_context = (
+            torch.autocast(device_type=hidden.device.type, dtype=self.compute_dtype)
+            if hidden.device.type == "npu" and self.compute_dtype is torch.bfloat16
+            else nullcontext()
+        )
+        with encoder_context:
+            for stage in self.encoder:
+                if isinstance(stage, MossAudioTokenizerProjectedTransformer):
+                    hidden, lengths = stage(
+                        hidden,
+                        lengths,
+                        input_lengths_cpu=lengths_cpu,
+                    )
+                else:
+                    hidden, lengths = stage(hidden, lengths)
+                    lengths_cpu = [
+                        length // int(stage.downsample_ratio) for length in lengths_cpu
+                    ]
         _, codes, code_lengths = self.quantizer(
             hidden.float(),
             lengths,
@@ -2344,7 +2353,7 @@ class MossAudioTokenizerVocoder(MossAudioTokenizerStreamingModule):
         # including FP32 LayerNorm. Casting decoder weights/inputs to BF16
         # alone changes streaming PCM.
         autocast_enabled = (
-            codes.device.type == "cuda"
+            codes.device.type in ("cuda", "npu")
             and self.compute_dtype in (torch.float16, torch.bfloat16)
         ) or (codes.device.type == "cpu" and self.compute_dtype is torch.bfloat16)
         hidden = self.quantizer.decode_codes(codes).to(

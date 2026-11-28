@@ -10,6 +10,8 @@ from sglang.kernels.ops.sampling.murmur_hash import fmix32, murmur3_mix, murmur_
 from sglang.srt.layers.sampler import multinomial_with_seed
 from triton.language.extra import libdevice
 
+from sglang_omni.models.moss_tts.sampling_npu import multinomial_with_seed_npu
+
 _UINT32_MAX_F64 = tl.constexpr(float(torch.iinfo(torch.uint32).max))
 
 
@@ -392,7 +394,10 @@ def sample_seeded_branchless(
 
     probs = torch.softmax(scores, dim=-1)
     probs = torch.nan_to_num(probs, nan=0.0, posinf=0.0, neginf=0.0)
-    sampled = multinomial_with_seed(scores, seeds, positions).view(-1)
+    if scores.device.type == "npu":
+        sampled = multinomial_with_seed_npu(scores, seeds, positions)
+    else:
+        sampled = multinomial_with_seed(scores, seeds, positions).view(-1)
     fallback = (~do_sample) | (probs.sum(dim=-1) <= 0)
     return torch.where(fallback, torch.argmax(logits, dim=-1), sampled)
 
