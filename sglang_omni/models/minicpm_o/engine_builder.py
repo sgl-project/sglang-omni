@@ -26,9 +26,17 @@ from sglang_omni.models.minicpm_o.native_thinker_model_runner import (
     MiniCPMOThinkerModelRunner,
 )
 from sglang_omni.models.minicpm_o.session_adapters import ThinkerAdapter
+from sglang_omni.platforms import current_platform
 from sglang_omni.scheduling.engine_factory import SGLangGenerationEngineBuilder
+from sglang_omni.scheduling.generation_batch_policy import (
+    CudaGraphBackend,
+    build_default_prefill_cuda_graph_bs,
+)
 from sglang_omni.scheduling.omni_scheduler import OmniScheduler
 from sglang_omni.scheduling.sglang_backend.output_processor import SGLangOutputProcessor
+
+# note (Xinhao Tan): the thinker prefills unchunked, so no chunk size bounds the capture. Prefills above this many tokens run eagerly.
+THINKER_PREFILL_CUDA_GRAPH_MAX_TOKENS = 512
 
 
 def check_window_kv_cache(window: MiniCPMODuplexWindow, kv_cache: KVCache) -> None:
@@ -53,6 +61,7 @@ class MiniCPMOThinkerEngineBuilder(SGLangGenerationEngineBuilder):
     model_arch_override: str = "MiniCPMO"
     context_length: int = THINKER_CONTEXT_LENGTH
     supports_context_length_override: ClassVar[bool] = True
+    supports_breakable_prefill_cuda_graph = True
     tokenizer: PreTrainedTokenizerBase
     adapter: ThinkerAdapter
     window: MiniCPMODuplexWindow
@@ -62,7 +71,9 @@ class MiniCPMOThinkerEngineBuilder(SGLangGenerationEngineBuilder):
     ) -> None:
         self.window = window
 
-    def generation_defaults(self, *, dtype: str) -> dict[str, str | int | float | bool]:
+    def generation_defaults(
+        self, *, dtype: str
+    ) -> dict[str, str | int | float | bool | list[int]]:
         return dict(
             max_running_requests=4,
             dtype=dtype,
@@ -74,6 +85,14 @@ class MiniCPMOThinkerEngineBuilder(SGLangGenerationEngineBuilder):
             trust_remote_code=False,
             # note (Chenyang): CI serves MiniCPM-o with SGLang torch compile off.
             enable_torch_compile=False,
+            cuda_graph_backend_prefill=(
+                CudaGraphBackend.BREAKABLE
+                if current_platform.is_cuda()
+                else CudaGraphBackend.DISABLED
+            ),
+            cuda_graph_bs_prefill=build_default_prefill_cuda_graph_bs(
+                THINKER_PREFILL_CUDA_GRAPH_MAX_TOKENS
+            ),
         )
 
     def pre_infra_setup(self, checkpoint_dir: str) -> None:
