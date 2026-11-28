@@ -6,9 +6,11 @@ Most docs live under `docs/` as Markdown cookbooks and guides. Start there if yo
 
 ### Install Dependency
 
+Run the commands below from the repository root. The system packages shown here are for Debian/Ubuntu.
+
 ```bash
 apt-get update && apt-get install -y pandoc parallel retry
-pip install -r requirements.txt
+pip install -r docs/requirements.txt
 ```
 
 ### Update Documentation
@@ -20,11 +22,13 @@ Edit the Markdown (or RST) under `docs/`.
 - Preview locally:
 
 ```bash
-bash serve.sh
+bash docs/serve.sh
 
 # custom port
-PORT=8080 make serve
+PORT=8080 bash docs/serve.sh
 ```
+
+The launcher switches to its own `docs/` directory, so it also works from another working directory when invoked with the path to `serve.sh`. It stops if cleaning fails.
 
 ## Style
 
