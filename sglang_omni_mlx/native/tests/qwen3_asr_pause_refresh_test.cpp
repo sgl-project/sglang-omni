@@ -1013,22 +1013,40 @@ void TestPauseRefreshRequiresSessionOptIn() {
 
 int main() {
   try {
+    std::cerr << "TestAdmissionPolicy\n";
     qwen3_asr::tests::TestAdmissionPolicy();
+    std::cerr << "TestInvalidHintsKeepAudioAndDoNotSchedule\n";
     TestInvalidHintsKeepAudioAndDoNotSchedule();
+    std::cerr << "TestRepeatedPauseHintIsNotAdmitted\n";
     TestRepeatedPauseHintIsNotAdmitted();
+    std::cerr << "TestBusyPauseHintAdmission(false, false)\n";
     TestBusyPauseHintAdmission(false, false);
+    std::cerr << "TestBusyPauseHintAdmission(true, false)\n";
     TestBusyPauseHintAdmission(true, false);
+    std::cerr << "TestBusyPauseHintAdmission(true, true)\n";
     TestBusyPauseHintAdmission(true, true);
+    std::cerr << "TestBusyPauseCoveredAndInsufficientHintsAreNotDeferred\n";
     TestBusyPauseCoveredAndInsufficientHintsAreNotDeferred();
+    std::cerr
+        << "TestDeferredPauseIsInvalidatedBySpeechResumeOrMalformedEpoch\n";
     TestDeferredPauseIsInvalidatedBySpeechResumeOrMalformedEpoch();
+    std::cerr << "TestLaterValidPauseReplacesResumedHint\n";
     TestLaterValidPauseReplacesResumedHint();
+    std::cerr << "TestCadenceAndFinalHandoffSupersedePendingPause\n";
     TestCadenceAndFinalHandoffSupersedePendingPause();
+    std::cerr << "TestIntermediatePieceDoesNotFenceDeferredPause\n";
     TestIntermediatePieceDoesNotFenceDeferredPause();
+    std::cerr << "TestDeferredPauseClearedOnSegmentRollover\n";
     TestDeferredPauseClearedOnSegmentRollover();
+    std::cerr << "TestPauseRefreshRequiresSessionOptIn\n";
     qwen3_asr::tests::TestPauseRefreshRequiresSessionOptIn();
+    std::cerr << "TestPauseRefreshFinalOrdering(true, false)\n";
     TestPauseRefreshFinalOrdering(true, false);
+    std::cerr << "TestPauseRefreshFinalOrdering(false, false)\n";
     TestPauseRefreshFinalOrdering(false, false);
+    std::cerr << "TestPauseRefreshFinalOrdering(false, true)\n";
     TestPauseRefreshFinalOrdering(false, true);
+    std::cerr << "TestPauseRefreshFinalOrdering(true, true)\n";
     TestPauseRefreshFinalOrdering(true, true);
   } catch (const std::exception &error) {
     std::cerr << error.what() << '\n';
