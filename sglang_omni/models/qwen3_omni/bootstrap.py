@@ -39,6 +39,7 @@ def create_thinker_scheduler(
     """Create the Qwen thinker scheduler."""
     # Note (Junnan Li): The engine, runner and scheduler imports stay in the factory: this module is imported by the platform layer before a device exists.
     from sglang.srt.arg_groups.model_override_base import resolved_view
+    from sglang.srt.speculative.spec_info import SpeculativeAlgorithm
     from sglang.srt.utils.hf_transformers_utils import get_tokenizer
 
     from sglang_omni.model_runner.thinker_model_runner import ThinkerModelRunner
@@ -52,6 +53,7 @@ def create_thinker_scheduler(
     from sglang_omni.models.qwen3_omni.thinker_session_runner import (
         QwenSessionThinkerModelRunner,
     )
+    from sglang_omni.platforms import current_platform
     from sglang_omni.scheduling.bootstrap import (
         create_sglang_infrastructure,
         init_sglang_cuda_graphs,
@@ -155,6 +157,16 @@ def create_thinker_scheduler(
             output_proc,
             capture_prompt_hidden_states=capture_prompt_hidden_states,
         )
+    if (
+        SpeculativeAlgorithm.from_string(
+            resolved_server_args.speculative_algorithm
+        ).is_dflash()
+        and current_platform.is_cuda()
+    ):
+        # note (wilsonzheng0327): SGLang's DFlash verify never applies repetition_penalty; each request verifies one linear block, so the shared verify rows apply it exactly. EAGLE3 keeps refusing it, since its verify rows can form a tree.
+        model_runner.speculative_repetition_penalty_owner = "verify_logits"
+    else:
+        pass
 
     tokenizer = get_tokenizer(
         model_config.model_path,
