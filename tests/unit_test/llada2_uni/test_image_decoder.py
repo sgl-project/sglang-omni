@@ -113,6 +113,30 @@ def test_image_pipeline_config_round_trip() -> None:
     )
 
 
+def test_native_sp2_decoder_config() -> None:
+    config_path = (
+        Path(__file__).resolve().parents[3]
+        / "examples/configs/llada2_uni_native_sp2.yaml"
+    )
+    config = ConfigManager.from_file(str(config_path)).config
+    stage = next(stage for stage in config.stages if stage.name == IMAGE_DECODE_STAGE)
+    placement = build_stage_placement_plan(config)
+    assert set(placement.gpus) == {0, 1, 2}
+    assert stage.allow_child_processes and stage.runtime_gpu_ids == [1, 2]
+    assert stage.factory.backend == "sglang" and stage.factory.attention_backend == "fa"
+    assert stage.factory.ring_degree == 1
+
+    ring_config = ConfigManager(config).merge_config(
+        {
+            "image_decode.runtime_gpu_ids": [1, 2, 3, 4],
+            "image_decode.factory.ring_degree": 4,
+        }
+    )
+    ring_stage = ring_config.stage_named(IMAGE_DECODE_STAGE)
+    assert ring_stage.factory.ring_degree == 4
+    assert set(build_stage_placement_plan(ring_config).gpus) == {0, 1, 2, 3, 4}
+
+
 def native_worker(
     rank: int, directory: str, cfg: DecoderConfig, dtype: torch.dtype
 ) -> None:
@@ -907,3 +931,572 @@ def test_thinking_edit_is_rejected(preprocessor: LLaDA2Preprocessor) -> None:
     )
     with pytest.raises(ValueError, match="only supports text-to-image"):
         asyncio.run(preprocessor(payload))
+
+
+def test_diffusers_serial_offload_rejects_interleaved(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    decoder = Mock(spec=LLaDA2ImageDecoder)
+    monkeypatch.setattr(stages, "LLaDA2ImageDecoder", Mock(return_value=decoder))
+    monkeypatch.setattr(
+        stages,
+        "resolve_concrete_device",
+        lambda device, gpu_id: torch.device(f"cuda:{gpu_id or 0}"),
+    )
+    scheduler = create_image_decode_executor(
+        "unused",
+        device="cuda",
+        gpu_id=0,
+        backend="diffusers",
+        enable_serial_offload=True,
+    )
+    payload = StagePayload(
+        request_id="offload-interleaved",
+        request=OmniRequest(inputs={}),
+        data=LLaDA2UniPipelineState(task_kind="interleaved").to_dict(),
+    )
+    with pytest.raises(ValueError, match="does not support interleaved"):
+        scheduler.fn(payload)
+
+
+def test_sp_decoder_guards_and_leader_error_broadcast(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import errno
+    import gc
+    import json
+    import threading
+    import weakref
+
+    from sglang_omni.models.llada2_uni.components import (
+        image_decoder as image_decoder_mod,
+    )
+    from sglang_omni.models.llada2_uni.components.decoder_model import (
+        require_joint_sp_support,
+    )
+    from sglang_omni.models.llada2_uni.components.image_decoder import (
+        validate_checkpoint_sp_config,
+    )
+
+    class _LegacyModel(torch.nn.Module):
+        def __init__(self, config, hf_config):
+            super().__init__()
+
+    class _JointSPModel(torch.nn.Module):
+        def __init__(self, config, hf_config, *, shard_joint_sequence: bool = False):
+            super().__init__()
+
+    with pytest.raises(RuntimeError, match="shard_joint_sequence"):
+        require_joint_sp_support(_LegacyModel)
+    require_joint_sp_support(_JointSPModel)
+
+    turbo_dir = tmp_path / "decoder-turbo"
+    turbo_dir.mkdir()
+    turbo_cfg = turbo_dir / "config.json"
+    turbo_cfg.write_text(json.dumps({"n_heads": 30, "n_kv_heads": 30}))
+    validate_checkpoint_sp_config(str(tmp_path), "decoder-turbo", 2)
+    with pytest.raises(ValueError, match="divisible by Ulysses degree"):
+        validate_checkpoint_sp_config(str(tmp_path), "decoder-turbo", 4)
+
+    monkeypatch.setattr(
+        image_decoder_mod,
+        "hf_hub_download",
+        lambda repo_id, filename, local_files_only=False: str(turbo_cfg),
+    )
+    with pytest.raises(ValueError, match="divisible by Ulysses degree"):
+        validate_checkpoint_sp_config("inclusionAI/LLaDA2.0-Uni", "decoder-turbo", 4)
+
+    fresh_dir = tmp_path / "fresh-hub" / "decoder-turbo"
+    fresh_dir.mkdir(parents=True)
+    fresh_cfg = fresh_dir / "config.json"
+    fresh_cfg.write_text(json.dumps({"n_heads": 32, "n_kv_heads": 32}))
+
+    def _hub_prefers_online(repo_id, filename, local_files_only=False):
+        if local_files_only:
+            raise FileNotFoundError("not cached")
+        return str(fresh_cfg)
+
+    from huggingface_hub import constants as hf_constants
+
+    hub_cache = tmp_path / "hf-hub"
+    repo_root = hub_cache / "models--inclusionAI--LLaDA2.0-Uni"
+    old_snap = repo_root / "snapshots" / ("a" * 40) / "decoder-turbo"
+    new_snap = repo_root / "snapshots" / ("b" * 40) / "decoder-turbo"
+    old_snap.mkdir(parents=True)
+    new_snap.mkdir(parents=True)
+    (old_snap / "config.json").write_text(json.dumps({"n_heads": 30, "n_kv_heads": 30}))
+    monkeypatch.setenv("HF_HOME", str(tmp_path / "hf-home-empty"))
+    monkeypatch.setattr(hf_constants, "HF_HUB_CACHE", str(hub_cache))
+
+    monkeypatch.setattr(image_decoder_mod, "hf_hub_download", _hub_prefers_online)
+    validate_checkpoint_sp_config("inclusionAI/LLaDA2.0-Uni", "decoder-turbo", 4)
+
+    def _hub_offline(repo_id, filename, local_files_only=False):
+        raise FileNotFoundError("offline")
+
+    monkeypatch.setattr(image_decoder_mod, "hf_hub_download", _hub_offline)
+    with pytest.raises(ValueError, match="divisible by Ulysses degree"):
+        validate_checkpoint_sp_config("inclusionAI/LLaDA2.0-Uni", "decoder-turbo", 4)
+
+    (new_snap / "config.json").write_text(json.dumps({"n_heads": 32, "n_kv_heads": 32}))
+    assert (
+        image_decoder_mod.resolve_cached_snapshot_config(
+            "inclusionAI/LLaDA2.0-Uni", "decoder-turbo"
+        )
+        is None
+    )
+    validate_checkpoint_sp_config("inclusionAI/LLaDA2.0-Uni", "decoder-turbo", 4)
+
+    (new_snap / "config.json").unlink()
+    refs_dir = repo_root / "refs"
+    refs_dir.mkdir()
+    (refs_dir / "main").write_text("b" * 40)
+    sec_repo = tmp_path / "hf-home-empty" / "hub" / "models--inclusionAI--LLaDA2.0-Uni"
+    sec_snap = sec_repo / "snapshots" / ("c" * 40) / "decoder-turbo"
+    sec_snap.mkdir(parents=True)
+    (sec_snap / "config.json").write_text(json.dumps({"n_heads": 32, "n_kv_heads": 32}))
+    (sec_repo / "refs").mkdir()
+    (sec_repo / "refs" / "main").write_text("c" * 40)
+    with pytest.raises(FileNotFoundError, match="Active cached snapshot"):
+        validate_checkpoint_sp_config("inclusionAI/LLaDA2.0-Uni", "decoder-turbo", 4)
+    new_snap.rmdir()
+    new_snap.parent.rmdir()
+    with pytest.raises(FileNotFoundError, match="Active cached snapshot"):
+        validate_checkpoint_sp_config("inclusionAI/LLaDA2.0-Uni", "decoder-turbo", 4)
+
+    sp1_decoder = LLaDA2ImageDecoder(str(tmp_path), device="cpu", dtype=torch.float32)
+    sp1_diff_calls: list[str] = []
+    monkeypatch.setattr(
+        sp1_decoder,
+        "ensure_sigvq",
+        lambda: (_ for _ in ()).throw(FileNotFoundError("no sigvq")),
+    )
+    monkeypatch.setattr(
+        sp1_decoder, "ensure_diff_model", lambda mode: sp1_diff_calls.append(mode)
+    )
+    with pytest.raises(FileNotFoundError, match="no sigvq"):
+        sp1_decoder.decode([1], 1, 1, seed=7)
+    assert sp1_diff_calls == []
+
+    sp1_feature_refs: list[weakref.ReferenceType[torch.Tensor]] = []
+    sp1_decoder.sigvq = lambda tokens: torch.ones((1, tokens.shape[1], 16))
+    sp1_decoder.diff_model = lambda **kw: (
+        sp1_feature_refs.append(weakref.ref(kw["cap_feats"][0])),
+        ([torch.zeros_like(x) for x in kw["x"]],),
+    )[1]
+    sp1_decoder.diff_model_mode = "decoder-turbo"
+    sp1_decoder.diff_config = {"cap_feat_dim": 16}
+    monkeypatch.setattr(sp1_decoder, "ensure_sigvq", lambda: None)
+    monkeypatch.setattr(sp1_decoder, "ensure_diff_model", lambda mode: None)
+    monkeypatch.setattr(
+        sp1_decoder,
+        "ensure_vae",
+        lambda: (_ for _ in ()).throw(OSError("missing vae config")),
+    )
+
+    def _run_sp1_vae_fail() -> str:
+        try:
+            sp1_decoder.decode(
+                [1], 1, 1, decode_mode="decoder-turbo", num_steps=1, seed=7
+            )
+        except OSError as exc:
+            return str(exc)
+        raise AssertionError("Expected missing vae config error")
+
+    gc.collect()
+    assert ["missing vae config" in _run_sp1_vae_fail() for _ in range(2)] == [
+        True,
+        True,
+    ]
+    assert len(sp1_feature_refs) == 2
+    assert all(ref() is None for ref in sp1_feature_refs)
+
+    barrier = threading.Barrier(2)
+    status_slots: list[str | None] = [None, None]
+    feature_src: list[torch.Tensor | None] = [None]
+    broadcast_calls: list[int] = []
+    local_rank = threading.local()
+
+    def _fake_all_gather_obj(output_list, obj, group):
+        rank = local_rank.rank
+        status_slots[rank] = obj
+        barrier.wait(timeout=5.0)
+        output_list[:] = list(status_slots)
+        barrier.wait(timeout=5.0)
+
+    def _fake_broadcast(tensor, src, group):
+        rank = local_rank.rank
+        broadcast_calls.append(rank)
+        if rank == 0:
+            feature_src[0] = tensor.clone()
+        barrier.wait(timeout=5.0)
+        if rank != 0:
+            assert feature_src[0] is not None
+            tensor.copy_(feature_src[0])
+        barrier.wait(timeout=5.0)
+
+    monkeypatch.setattr(decoder_runtime.dist, "all_gather_object", _fake_all_gather_obj)
+    monkeypatch.setattr(decoder_runtime.dist, "broadcast", _fake_broadcast)
+    monkeypatch.setattr(decoder_runtime.dist, "get_global_rank", lambda group, rank: 0)
+    fake_ps = SimpleNamespace(
+        get_sp_group=lambda: SimpleNamespace(cpu_group="gloo", device_group="nccl")
+    )
+
+    def _make_runtime(rank: int) -> decoder_runtime.DecoderRuntimeHandle:
+        handle = decoder_runtime.DecoderRuntimeHandle(
+            torch.device("cpu"),
+            torch.float32,
+            "fa",
+            fake_ps,
+            SimpleNamespace(),
+            SimpleNamespace(),
+            SimpleNamespace(),
+        )
+        handle.sp_size = 2
+        handle.sp_rank = rank
+        handle.ulysses_degree = 2
+        return handle
+
+    leader = LLaDA2ImageDecoder(
+        str(tmp_path),
+        device="cpu",
+        dtype=torch.float32,
+        backend="sglang",
+        runtime=_make_runtime(0),
+    )
+    peer = LLaDA2ImageDecoder(
+        str(tmp_path),
+        device="cpu",
+        dtype=torch.float32,
+        backend="sglang",
+        runtime=_make_runtime(1),
+    )
+    captured_caps: dict[int, torch.Tensor] = {}
+    leader_feature_refs: list[weakref.ReferenceType[torch.Tensor]] = []
+
+    def _make_diff_model(rank: int):
+        def _diff_model(**kw):
+            captured_caps[rank] = kw["cap_feats"][0].clone()
+            if rank == 0:
+                leader_feature_refs.append(weakref.ref(kw["cap_feats"][0]))
+            return ([torch.zeros_like(x) for x in kw["x"]],)
+
+        return _diff_model
+
+    for rank, dec in ((0, leader), (1, peer)):
+        dec.diff_model = _make_diff_model(rank)
+        dec.diff_config = {
+            "cap_feat_dim": 16,
+            "all_patch_size": (2,),
+            "all_f_patch_size": (1,),
+        }
+        monkeypatch.setattr(dec, "ensure_diff_model", lambda mode: None)
+
+    leader.sigvq = lambda tokens: torch.full((1, 4, 16), 7.0)
+    leader.vae = SimpleNamespace(
+        config=SimpleNamespace(scaling_factor=1.0, shift_factor=0.0),
+        decode=lambda x, return_dict=False: (torch.zeros((1, 3, 16, 16)),),
+    )
+    monkeypatch.setattr(leader, "ensure_sigvq", lambda: None)
+    monkeypatch.setattr(leader, "ensure_vae", lambda: None)
+
+    def _run_pair(seed: int | None = 7) -> dict[int, object]:
+        outcomes: dict[int, object] = {}
+
+        def _worker(rank: int, dec: LLaDA2ImageDecoder) -> None:
+            local_rank.rank = rank
+            try:
+                outcomes[rank] = dec.decode([1], 1, 1, seed=seed)
+            except BaseException as exc:
+                outcomes[rank] = exc
+
+        threads = [
+            threading.Thread(target=_worker, args=(0, leader)),
+            threading.Thread(target=_worker, args=(1, peer)),
+        ]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=5.0)
+            assert not thread.is_alive()
+        return outcomes
+
+    missing_seed_outcomes = _run_pair(seed=None)
+    assert isinstance(missing_seed_outcomes[0], ValueError)
+    assert "explicit shared seed" in str(missing_seed_outcomes[0])
+    assert isinstance(missing_seed_outcomes[1], ValueError)
+    assert "explicit shared seed" in str(missing_seed_outcomes[1])
+
+    sp3_runtime = _make_runtime(0)
+    sp3_runtime.sp_size = 3
+    sp3_runtime.ulysses_degree = 3
+    sp3_decoder = LLaDA2ImageDecoder(
+        str(tmp_path),
+        device="cpu",
+        dtype=torch.float32,
+        backend="sglang",
+        runtime=sp3_runtime,
+    )
+    sp3_sigvq_calls: list[int] = []
+    monkeypatch.setattr(sp3_decoder, "ensure_sigvq", lambda: sp3_sigvq_calls.append(1))
+    with pytest.raises(ValueError, match="divide evenly"):
+        sp3_decoder.decode([0] * (32 * 32), 32, 32, seed=7)
+    assert sp3_sigvq_calls == []
+    image_decoder_mod.validate_sp_sequence_divisibility(24, 24, 2, 3)
+
+    ok_outcomes = _run_pair()
+    assert isinstance(ok_outcomes[0], Image.Image)
+    assert ok_outcomes[1] is None
+    assert sorted(broadcast_calls) == [0, 1]
+    assert torch.equal(captured_caps[1], torch.full((4, 16), 7.0))
+
+    broadcast_calls.clear()
+    monkeypatch.setattr(
+        leader,
+        "ensure_sigvq",
+        lambda: (_ for _ in ()).throw(FileNotFoundError("no sigvq")),
+    )
+    leader_fail = _run_pair()
+    assert isinstance(leader_fail[0], FileNotFoundError)
+    assert isinstance(leader_fail[1], RuntimeError)
+    assert "rank 0: FileNotFoundError: no sigvq" in str(leader_fail[1])
+    assert broadcast_calls == []
+
+    monkeypatch.setattr(leader, "ensure_sigvq", lambda: None)
+    monkeypatch.setattr(
+        peer,
+        "ensure_diff_model",
+        lambda mode: (_ for _ in ()).throw(
+            OSError(errno.EMFILE, "Too many open files")
+        ),
+    )
+    peer_fail = _run_pair()
+    assert isinstance(peer_fail[1], OSError)
+    assert isinstance(peer_fail[0], RuntimeError)
+    assert "rank 1: OSError" in str(peer_fail[0])
+    assert broadcast_calls == []
+
+    monkeypatch.setattr(peer, "ensure_diff_model", lambda mode: None)
+    monkeypatch.setattr(
+        leader,
+        "ensure_vae",
+        lambda: (_ for _ in ()).throw(OSError("missing vae config")),
+    )
+    gc.collect()
+    vae_fail = _run_pair()
+    assert isinstance(vae_fail[0], OSError)
+    assert isinstance(vae_fail[1], RuntimeError)
+    assert "during output finalization" in str(vae_fail[1])
+    assert "rank 0: OSError: missing vae config" in str(vae_fail[1])
+    vae_fail.clear()
+    assert leader_feature_refs[-1]() is None
+
+
+def test_native_sp_host_scheduler_and_umm_interleaved_reuse(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import json
+    import multiprocessing
+
+    from sglang_omni.config.runtime import (
+        apply_typed_stage_kwargs,
+        resolve_stage_typed_kwargs,
+    )
+    from sglang_omni.models.llada2_uni import native_sp_host
+    from sglang_omni.models.llada2_uni.config import LLaDA2UniInterleavedPipelineConfig
+    from sglang_omni.native_generation.stage import NativeGenerationScheduler
+
+    turbo_dir = tmp_path / "decoder-turbo"
+    turbo_dir.mkdir()
+    (turbo_dir / "config.json").write_text(
+        json.dumps({"n_heads": 30, "n_kv_heads": 30})
+    )
+
+    monkeypatch.setattr(native_sp_host, "require_joint_sp_support", lambda: None)
+    monkeypatch.setattr(
+        native_sp_host,
+        "resolve_concrete_device",
+        lambda device, gpu_id: torch.device(f"cuda:{gpu_id or 0}"),
+    )
+
+    stub_decoder = object.__new__(native_sp_host.NativeSPDecoder)
+    stub_decoder.args = SimpleNamespace()
+    stub_decoder.sp_size = 2
+    stub_decoder.decode_mode = "normal"
+    stub_decoder.num_steps = 17
+    stub_decoder.resolution_multiplier = 1
+    req_metrics = SimpleNamespace(stages={"semantic_decode": 1.0})
+    captured_params = []
+    monkeypatch.setattr(
+        native_sp_host,
+        "prepare_request",
+        lambda args, params: (
+            captured_params.append(params),
+            SimpleNamespace(extra={}, metrics=req_metrics),
+        )[1],
+    )
+    req = stub_decoder.build_request([3], 1, 1, seed=-1)
+    assert captured_params[0].seed == 0
+    assert (captured_params[0].width, captured_params[0].height) == (16, 16)
+    assert req.extra["llada_vq"] == ([3], 1, 1, -1, "normal", 17, 1)
+    stub_decoder.sp_size = 3
+    with pytest.raises(ValueError, match="divide evenly"):
+        stub_decoder.build_request(
+            [0] * (32 * 32), 32, 32, seed=7, resolution_multiplier=2
+        )
+    ok_sp3 = stub_decoder.build_request(
+        [0] * (24 * 24), 24, 24, seed=7, resolution_multiplier=2
+    )
+    assert ok_sp3.extra["llada_vq"][1:3] == (24, 24)
+    stub_decoder.sp_size = 2
+    ok_sp2 = stub_decoder.build_request(
+        [0] * (32 * 32), 32, 32, seed=7, resolution_multiplier=2
+    )
+    assert ok_sp2.extra["llada_vq"][1:3] == (32, 32)
+    with pytest.raises(RuntimeError, match="worker boom"):
+        native_sp_host.NativeSPDecoder.extract_png(
+            SimpleNamespace(error="worker boom", output_image_bytes=[b"png"])
+        )
+    with pytest.raises(RuntimeError, match="no PNG output"):
+        native_sp_host.NativeSPDecoder.extract_png(
+            SimpleNamespace(error=None, output_image_bytes=[])
+        )
+
+    from sglang_omni.models.llada2_uni.native_sp import SemanticDecode
+
+    sync_calls: list[tuple[BaseException | None, str]] = []
+
+    def _stub_sync(err: BaseException | None, stage: str = "") -> None:
+        sync_calls.append((err, stage))
+        if err is not None:
+            raise err
+        else:
+            pass
+
+    stage_obj = object.__new__(SemanticDecode)
+    stage_obj.runtime = SimpleNamespace(
+        compute_context=nullcontext, sync_rank_status=_stub_sync
+    )
+    stage_obj.decoder = SimpleNamespace(
+        decode=Mock(side_effect=[Image.new("RGB", (4, 4)), None])
+    )
+    leader_out = stage_obj.forward(req, SimpleNamespace())
+    peer_out = stage_obj.forward(req, SimpleNamespace())
+    assert len(leader_out.output_image_bytes) == 1
+    assert not peer_out.output_image_bytes
+    assert leader_out.metrics is req_metrics
+    assert peer_out.metrics is req_metrics
+    assert sync_calls == [
+        (None, "during output finalization"),
+        (None, "during output finalization"),
+    ]
+    assert stage_obj.decoder.decode.call_args.kwargs == {
+        "seed": -1,
+        "decode_mode": "normal",
+        "num_steps": 17,
+        "resolution_multiplier": 1,
+    }
+    failing_image = Mock(save=Mock(side_effect=OSError("png encode failed")))
+    stage_obj.decoder = SimpleNamespace(decode=Mock(return_value=failing_image))
+    sync_calls.clear()
+    with pytest.raises(OSError, match="png encode failed"):
+        stage_obj.forward(req, SimpleNamespace())
+    assert len(sync_calls) == 1
+    assert isinstance(sync_calls[0][0], OSError)
+    assert sync_calls[0][1] == "during output finalization"
+
+    reader, writer = multiprocessing.Pipe(duplex=False)
+    fake_worker = SimpleNamespace(pid=4242, exitcode=-9, sentinel=reader.fileno())
+    fake_engine = SimpleNamespace(
+        local_scheduler_process=[fake_worker],
+        shutdown=Mock(),
+    )
+    built_requests = []
+
+    class _FakeNativeSPDecoder:
+        def __init__(self, model_path, gpu_id, devices, ring_degree, **kwargs):
+            self.kwargs = kwargs
+            self.args = SimpleNamespace()
+            self.engine = fake_engine
+
+        def build_request(self, tokens, height, width, **kwargs):
+            built_requests.append((tokens, height, width, kwargs))
+            return SimpleNamespace(extra={"llada_vq": (tokens, height, width)})
+
+        extract_png = staticmethod(native_sp_host.NativeSPDecoder.extract_png)
+
+        def close(self):
+            self.engine.shutdown()
+
+    monkeypatch.setattr(native_sp_host, "NativeSPDecoder", _FakeNativeSPDecoder)
+
+    with pytest.raises(ValueError, match="divisible by Ulysses degree"):
+        native_sp_host.create_native_decoder(
+            str(tmp_path),
+            gpu_id=0,
+            runtime_gpu_ids=[0, 1, 2, 3],
+            ring_degree=1,
+        )
+
+    interleaved_cfg = ConfigManager(
+        LLaDA2UniInterleavedPipelineConfig(model_path=str(tmp_path))
+    ).merge_config(
+        {
+            "image_decode.gpu": 1,
+            "image_decode.runtime_gpu_ids": [1, 2],
+            "image_decode.allow_child_processes": True,
+            "image_decode.factory.backend": "sglang",
+            "image_decode.factory.attention_backend": "fa",
+            "image_decode.factory.dtype": "bf16",
+            "image_decode.factory.decode_mode": "decoder-turbo",
+            "image_decode.factory.num_steps": 8,
+            "image_decode.factory.ring_degree": 2,
+        }
+    )
+    stage_cfg = interleaved_cfg.stage_named(IMAGE_DECODE_STAGE)
+    assert stage_cfg.next == "orchestrator"
+    typed_args = apply_typed_stage_kwargs(
+        create_image_decode_executor,
+        {"runtime_gpu_ids": [0, 1]},
+        resolve_stage_typed_kwargs(stage_cfg),
+        stage_name=IMAGE_DECODE_STAGE,
+    )
+    scheduler = create_image_decode_executor(str(tmp_path), gpu_id=0, **typed_args)
+    try:
+        assert isinstance(scheduler, NativeGenerationScheduler)
+        assert scheduler.requires_tp_work_fanout is False
+        assert scheduler.claim_result(
+            StagePayload(request_id="r", request=OmniRequest(inputs={}), data={}),
+            terminal=False,
+        )
+        block_event = __import__("threading").Event()
+
+        def _blocked_forward(batch):
+            block_event.wait(timeout=5.0)
+            return SimpleNamespace(error=None, output_image_bytes=[b"png"])
+
+        monkeypatch.setattr(
+            native_sp_host.sync_scheduler_client, "forward", _blocked_forward
+        )
+        writer.close()
+        state = LLaDA2UniPipelineState(
+            task_kind="interleaved",
+            thinker_out={"output_ids": [IMAGE_TOKEN_OFFSET + 3]},
+            stream_state={
+                "interleaved": {
+                    "segments": [{"grid_h": 1, "grid_w": 1, "vq_tokens": [3]}]
+                }
+            },
+            request_metadata={"image_generation": {"seed": -1}},
+        )
+        payload = StagePayload(
+            request_id="dead-worker",
+            request=OmniRequest(inputs={}),
+            data=state.to_dict(),
+        )
+        with pytest.raises(RuntimeError, match="exited with code -9"):
+            scheduler.fn(payload)
+        block_event.set()
+    finally:
+        scheduler.stop()
+        reader.close()

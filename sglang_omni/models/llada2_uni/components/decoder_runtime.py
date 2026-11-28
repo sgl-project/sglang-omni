@@ -15,6 +15,53 @@ import torch.distributed as dist
 class DecoderRuntimeHandle:
     """Own the single-rank SGLang diffusion state used by one decoder stage."""
 
+    sp_size = 1
+    sp_rank = 0
+    ulysses_degree = 1
+
+    @property
+    def is_leader(self) -> bool:
+        return self.sp_rank == 0
+
+    def sync_rank_status(
+        self, error: BaseException | None, stage: str = "before feature broadcast"
+    ) -> None:
+        try:
+            if self.sp_size <= 1:
+                if error is not None:
+                    raise error
+                else:
+                    return
+            else:
+                pass
+            group = self.parallel_state.get_sp_group().cpu_group
+            local_status = (
+                f"rank {self.sp_rank}: {type(error).__name__}: {error}"
+                if error is not None
+                else None
+            )
+            statuses: list[str | None] = [None] * self.sp_size
+            dist.all_gather_object(statuses, local_status, group=group)
+            if error is not None:
+                raise error
+            else:
+                pass
+            failed = [status for status in statuses if status is not None]
+            if failed:
+                raise RuntimeError(f"SP rank failed {stage}: {', '.join(failed)}")
+            else:
+                pass
+        finally:
+            error = None
+
+    def broadcast_features(self, features: torch.Tensor) -> torch.Tensor:
+        if self.sp_size > 1:
+            group = self.parallel_state.get_sp_group().device_group
+            dist.broadcast(features, src=dist.get_global_rank(group, 0), group=group)
+        else:
+            pass
+        return features
+
     def __init__(
         self,
         device: torch.device,
@@ -80,9 +127,9 @@ class DecoderRuntimeHandle:
             parallel_state.get_sp_world_size(),
             parallel_state.get_sp_parallel_rank(),
         )
-        if topology != (1, 1, 1, 0):
+        if topology != (self.sp_size, 1, self.sp_size, self.sp_rank):
             raise RuntimeError(
-                f"SGLang decoder requires a single-rank runtime, got {topology}"
+                f"SGLang decoder has unexpected parallel topology, got {topology}"
             )
         else:
             pass

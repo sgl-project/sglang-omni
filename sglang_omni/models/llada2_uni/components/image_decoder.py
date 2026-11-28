@@ -11,12 +11,14 @@ from typing import Literal
 import torch
 import torch.nn.functional as F
 from diffusers import AutoencoderKL
+from huggingface_hub import hf_hub_download
 from PIL.Image import Image
 from torchvision.transforms.functional import to_pil_image
 
 from sglang_omni.models.llada2_uni.components.decoder_model import (
     DecoderConfig,
     ZImageTransformer2DModelWrapper,
+    validate_decoder_sp_architecture,
 )
 from sglang_omni.models.llada2_uni.components.decoder_runtime import (
     DecoderRuntimeHandle,
@@ -34,6 +36,132 @@ logger = logging.getLogger(__name__)
 
 DecoderBackend = Literal["diffusers", "sglang"]
 DecoderMode = Literal["normal", "decoder-turbo"]
+ZIMAGE_SEQ_MULTI_OF = 32
+
+
+def validate_sp_sequence_divisibility(
+    height: int,
+    width: int,
+    resolution_multiplier: int,
+    sp_size: int,
+) -> None:
+    if sp_size <= 1:
+        return
+    else:
+        pass
+    image_tokens = height * width * resolution_multiplier * resolution_multiplier
+    image_padded = (
+        (image_tokens + ZIMAGE_SEQ_MULTI_OF - 1) // ZIMAGE_SEQ_MULTI_OF
+    ) * ZIMAGE_SEQ_MULTI_OF
+    cap_tokens = 4 * height * width
+    cap_padded = (
+        (cap_tokens + ZIMAGE_SEQ_MULTI_OF - 1) // ZIMAGE_SEQ_MULTI_OF
+    ) * ZIMAGE_SEQ_MULTI_OF
+    if image_padded % sp_size != 0 or cap_padded % sp_size != 0:
+        raise ValueError(
+            f"SP degree {sp_size} requires padded image tokens ({image_padded}) "
+            f"and semantic tokens ({cap_padded}) for {height}x{width} grid "
+            f"(multiplier {resolution_multiplier}) to divide evenly across "
+            f"{sp_size} ranks. Choose a compatible grid size or SP degree."
+        )
+    else:
+        pass
+
+
+def resolve_cached_snapshot_config(model_path: str, subdir: str) -> str | None:
+    from huggingface_hub import constants as hf_constants
+
+    repo_dir = f"models--{model_path.replace('/', '--')}"
+    cache_roots = [hf_constants.HF_HUB_CACHE]
+    hf_home = os.environ.get("HF_HOME")
+    if hf_home:
+        cache_roots.append(os.path.join(hf_home, "hub"))
+    else:
+        pass
+    seen_roots: set[str] = set()
+    fallback_candidates: list[str] = []
+    fallback_seen: set[str] = set()
+    for root in cache_roots:
+        real_root = os.path.realpath(root)
+        if real_root in seen_roots:
+            continue
+        else:
+            seen_roots.add(real_root)
+        repo_root = os.path.join(root, repo_dir)
+        snapshots = os.path.join(repo_root, "snapshots")
+        ref_path = os.path.join(repo_root, "refs", "main")
+        if os.path.isfile(ref_path):
+            with open(ref_path, encoding="utf-8") as ref_file:
+                active_rev = ref_file.read().strip()
+            active_dir = os.path.join(snapshots, active_rev)
+            active_candidate = os.path.join(active_dir, subdir, "config.json")
+            if active_rev and os.path.isfile(active_candidate):
+                return active_candidate
+            elif active_rev:
+                raise FileNotFoundError(
+                    f"Active cached snapshot for {model_path} is missing "
+                    f"{subdir}/config.json at {active_candidate}"
+                )
+            else:
+                pass
+            continue
+        else:
+            pass
+        if not os.path.isdir(snapshots):
+            continue
+        else:
+            pass
+        for revision in sorted(os.listdir(snapshots)):
+            candidate = os.path.join(snapshots, revision, subdir, "config.json")
+            resolved = os.path.realpath(candidate)
+            if os.path.isfile(candidate) and resolved not in fallback_seen:
+                fallback_seen.add(resolved)
+                fallback_candidates.append(candidate)
+            else:
+                pass
+    return fallback_candidates[0] if len(fallback_candidates) == 1 else None
+
+
+def resolve_decoder_config_path(
+    model_path: str, decode_mode: DecoderMode
+) -> str | None:
+    subdir = "decoder-turbo" if decode_mode == "decoder-turbo" else "decoder"
+    if os.path.isdir(model_path):
+        config_path = os.path.join(model_path, subdir, "config.json")
+        return config_path if os.path.isfile(config_path) else None
+    else:
+        pass
+    if "/" not in model_path:
+        return None
+    else:
+        pass
+    for local_only in (True, False):
+        try:
+            return hf_hub_download(
+                model_path,
+                filename=f"{subdir}/config.json",
+                local_files_only=local_only,
+            )
+        except Exception:
+            continue
+    return resolve_cached_snapshot_config(model_path, subdir)
+
+
+def validate_checkpoint_sp_config(
+    model_path: str, decode_mode: DecoderMode, ulysses_degree: int
+) -> None:
+    if ulysses_degree <= 1:
+        return
+    else:
+        pass
+    config_path = resolve_decoder_config_path(model_path, decode_mode)
+    if config_path is None:
+        return
+    else:
+        pass
+    with open(config_path) as config_file:
+        config: DecoderConfig = json.load(config_file)
+    validate_decoder_sp_architecture(config, ulysses_degree)
 
 
 def create_decoder_model_fn(
@@ -203,6 +331,10 @@ class LLaDA2ImageDecoder:
         else:
             pass
 
+    @property
+    def is_leader(self) -> bool:
+        return self.runtime is None or self.runtime.is_leader
+
     def ensure_sigvq(self) -> None:
         if self.sigvq is not None:
             return
@@ -290,10 +422,10 @@ class LLaDA2ImageDecoder:
         num_steps: int | None = None,
         resolution_multiplier: int | None = None,
         seed: int | None = None,
-    ) -> Image:
+    ) -> Image | None:
         """Decode unoffset VQ IDs on an h-by-w semantic grid into a PIL image.
 
-        Switching decode_mode reloads weights; seed=None uses the global RNG.
+        Only the leader returns an image. SP peers share the noise seed.
         """
         mode: DecoderMode = decode_mode if decode_mode is not None else self.decode_mode
         steps = num_steps if num_steps is not None else self.num_steps
@@ -303,6 +435,10 @@ class LLaDA2ImageDecoder:
             else self.resolution_multiplier
         )
         self.validate_settings(mode, steps, output_resolution_multiplier)
+        if self.runtime is not None and self.runtime.sp_size > 1 and seed is None:
+            raise ValueError("SP image decoding requires an explicit shared seed")
+        else:
+            pass
         if not isinstance(h, int) or not isinstance(w, int) or h < 1 or w < 1:
             raise ValueError("Image decoder grid dimensions must be positive integers")
         else:
@@ -317,25 +453,54 @@ class LLaDA2ImageDecoder:
             )
         else:
             pass
+        if self.runtime is not None and self.runtime.sp_size > 1:
+            validate_sp_sequence_divisibility(
+                h, w, output_resolution_multiplier, self.runtime.sp_size
+            )
+        else:
+            pass
 
         image_height = h * 16 * output_resolution_multiplier
         image_width = w * 16 * output_resolution_multiplier
-        self.ensure_sigvq()
-        with self.component_context(self.sigvq, "sigvq"):
-            token_grid = (
-                torch.tensor(token_ids).view(1, 1, h, w).float().to(self.device)
-            )
-            upsampled_tokens = (
-                F.interpolate(token_grid, scale_factor=2, mode="nearest")
-                .long()
-                .view(1, -1)
-            )
-            positive_caption_features = [
-                self.sigvq(upsampled_tokens).squeeze(0).contiguous()
-            ]
-            negative_caption_features = [torch.zeros_like(positive_caption_features[0])]
+        rank_error: Exception | None = None
+        features: torch.Tensor | None = None
+        try:
+            if self.is_leader:
+                self.ensure_sigvq()
+                with self.component_context(self.sigvq, "sigvq"):
+                    token_grid = (
+                        torch.tensor(token_ids).view(1, 1, h, w).float().to(self.device)
+                    )
+                    upsampled_tokens = (
+                        F.interpolate(token_grid, scale_factor=2, mode="nearest")
+                        .long()
+                        .view(1, -1)
+                    )
+                    features = self.sigvq(upsampled_tokens).squeeze(0).contiguous()
+                self.ensure_diff_model(mode)
+            else:
+                self.ensure_diff_model(mode)
+                features = torch.empty(
+                    (4 * h * w, self.diff_config["cap_feat_dim"]),
+                    device=self.device,
+                    dtype=self.dtype,
+                )
+        except Exception as exc:
+            rank_error = exc
+        try:
+            if self.runtime:
+                self.runtime.sync_rank_status(rank_error)
+                assert features is not None
+                features = self.runtime.broadcast_features(features)
+            elif rank_error is not None:
+                raise rank_error
+            else:
+                assert features is not None
+        finally:
+            rank_error = None
+        positive_caption_features = [features]
+        negative_caption_features = [torch.zeros_like(features)]
 
-        self.ensure_diff_model(mode)
         with self.component_context(self.diff_model, "semantic_decoder"):
             decoder_config = self.diff_config
             noise_shape = [1, 16, 1, 2 * (image_height // 16), 2 * (image_width // 16)]
@@ -365,13 +530,33 @@ class LLaDA2ImageDecoder:
                 generator=generator,
             ).squeeze(2)
 
-        self.ensure_vae()
-        with self.component_context(self.vae, "vae"):
-            vae_latents = samples.to(self.dtype)
-            vae_latents = (
-                vae_latents / self.vae.config.scaling_factor
-            ) + self.vae.config.shift_factor
-            pixels = (
-                (self.vae.decode(vae_latents, return_dict=False)[0] + 1) / 2
-            ).clamp_(0, 1)
-            return to_pil_image(pixels[0].float())
+        image = None
+        vae_error: Exception | None = None
+        if self.is_leader:
+            try:
+                self.ensure_vae()
+                with self.component_context(self.vae, "vae"):
+                    vae_latents = samples.to(self.dtype)
+                    vae_latents = (
+                        vae_latents / self.vae.config.scaling_factor
+                    ) + self.vae.config.shift_factor
+                    pixels = (
+                        (self.vae.decode(vae_latents, return_dict=False)[0] + 1) / 2
+                    ).clamp_(0, 1)
+                    image = to_pil_image(pixels[0].float())
+            except Exception as exc:
+                vae_error = exc
+        else:
+            pass
+        try:
+            if self.runtime:
+                self.runtime.sync_rank_status(
+                    vae_error, stage="during output finalization"
+                )
+            elif vae_error is not None:
+                raise vae_error
+            else:
+                pass
+        finally:
+            vae_error = None
+        return image

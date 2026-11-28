@@ -3,8 +3,6 @@
 
 from __future__ import annotations
 
-import base64
-import hashlib
 import io
 import logging
 from collections.abc import Mapping
@@ -31,7 +29,12 @@ from sglang_omni.models.llada2_uni.components.image_decoder import (
 from sglang_omni.models.llada2_uni.components.image_encoder import LLaDA2ImageEncoder
 from sglang_omni.models.llada2_uni.components.preprocessor import LLaDA2Preprocessor
 from sglang_omni.models.llada2_uni.config import IMAGE_STAGE, THINKER_STAGE
-from sglang_omni.models.llada2_uni.merge import decode_events, extract_image_vq_tokens
+from sglang_omni.models.llada2_uni.merge import (
+    LLaDA2UniEventDict,
+    build_image_decode_step,
+    decode_events,
+    event_to_dict,
+)
 from sglang_omni.models.llada2_uni.payload_types import (
     LLaDA2UniEvent,
     LLaDA2UniPipelineState,
@@ -56,13 +59,6 @@ from sglang_omni.vendor.sglang.server_args import override_server_args
 logger = logging.getLogger(__name__)
 
 
-class LLaDA2UniEventDict(TypedDict):
-    type: str
-    modality: str
-    payload: dict[str, str | list[str]]
-    is_final: bool
-
-
 LLaDA2UniDecodeResult = TypedDict(
     "LLaDA2UniDecodeResult",
     {
@@ -73,15 +69,6 @@ LLaDA2UniDecodeResult = TypedDict(
         "finish_reason": NotRequired[str],
     },
 )
-
-
-def event_to_dict(event: LLaDA2UniEvent) -> LLaDA2UniEventDict:
-    return {
-        "type": event.type,
-        "modality": event.modality,
-        "payload": dict(event.payload),
-        "is_final": event.is_final,
-    }
 
 
 def create_preprocessing_executor(
@@ -313,14 +300,37 @@ def create_image_decode_executor(
     *,
     device: str | None = None,
     gpu_id: int | None = None,
+    runtime_gpu_ids: list[int] | None = None,
     dtype: str | torch.dtype | None = None,
     decode_mode: DecoderMode = "normal",
     num_steps: int = 50,
     resolution_multiplier: int = 2,
     backend: DecoderBackend = "diffusers",
     attention_backend: str = "torch_sdpa",
+    ring_degree: int = 1,
     enable_serial_offload: bool = False,
 ) -> SimpleScheduler[StagePayload, StagePayload]:
+    if runtime_gpu_ids is not None and len(runtime_gpu_ids) > 1:
+        from sglang_omni.models.llada2_uni.native_sp_host import create_native_decoder
+
+        return create_native_decoder(
+            model_path,
+            device=device,
+            gpu_id=gpu_id,
+            runtime_gpu_ids=runtime_gpu_ids,
+            dtype=dtype,
+            backend=backend,
+            attention_backend=attention_backend,
+            decode_mode=decode_mode,
+            num_steps=num_steps,
+            resolution_multiplier=resolution_multiplier,
+            ring_degree=ring_degree,
+            enable_serial_offload=enable_serial_offload,
+        )
+    elif ring_degree != 1:
+        raise ValueError("ring_degree > 1 requires multi-GPU runtime_gpu_ids")
+    else:
+        pass
     concrete_device = resolve_concrete_device(device, gpu_id)
     dtype = resolve_dtype(dtype)
     if enable_serial_offload and (
@@ -361,77 +371,20 @@ def create_image_decode_executor(
             pass
         raise
 
-    def decode_image(payload: StagePayload) -> StagePayload:
-        state = LLaDA2UniPipelineState.from_dict(payload.data)
-        if enable_serial_offload and state.task_kind == "interleaved":
-            raise ValueError(
-                "LLaDA2-Uni serial offload does not support interleaved generation"
-            )
-        else:
-            pass
-        result = extract_image_vq_tokens(state)
-        if result is None:
-            if state.task_kind in ("t2i", "edit"):
-                raise ValueError(
-                    f"{state.task_kind} request did not produce image VQ tokens"
-                )
-            else:
-                pass
-            payload.data = {"events": [], "modality": "image", "skipped": True}
-            return payload
-        else:
-            pass
-
-        vq_tokens, grid_height, grid_width, generation_params = result
-        call_kwargs = {
-            target: generation_params[source]
-            for source, target in (
-                ("decode_mode", "decode_mode"),
-                ("decoder_steps", "num_steps"),
-                ("seed", "seed"),
-            )
-            if generation_params.get(source) is not None
-        }
-        if (
-            call_kwargs.get("decode_mode") == "decoder-turbo"
-            and "num_steps" not in call_kwargs
-        ):
-            call_kwargs["num_steps"] = 8
-        else:
-            pass
+    def decode_png(
+        tokens: list[int], height: int, width: int, params: dict[str, int | DecoderMode]
+    ) -> bytes:
         with runtime.compute_context() if runtime else nullcontext():
-            image = decoder.decode(vq_tokens, grid_height, grid_width, **call_kwargs)
+            image = decoder.decode(tokens, height, width, **params)
         image_buffer = io.BytesIO()
         image.save(image_buffer, format="PNG")
-        image_b64 = base64.b64encode(image_buffer.getvalue()).decode("ascii")
-        if state.task_kind == "interleaved":
-            # One inline image segment for the UMM controller.
-            png = image_buffer.getvalue()
-            payload.data = {
-                "kind": "image",
-                "mime_type": "image/png",
-                "size_bytes": len(png),
-                "sha256": hashlib.sha256(png).hexdigest(),
-                "url": f"data:image/png;base64,{image_b64}",
-            }
-            return payload
-        else:
-            pass
-        event = LLaDA2UniEvent(
-            type="image_final",
-            modality="image",
-            payload={"image": image_b64, "format": "png"},
-            is_final=True,
-        )
-        payload.data = {
-            "events": [event_to_dict(event)],
-            "modality": "image",
-            **event.payload,
-        }
-        return payload
+        return image_buffer.getvalue()
 
+    decode_step = build_image_decode_step(
+        decode_png, enable_serial_offload=enable_serial_offload
+    )
     if runtime is None:
-        return SimpleScheduler(decode_image)
+        return SimpleScheduler(decode_step)
     else:
         pass
 
@@ -440,7 +393,6 @@ def create_image_decode_executor(
             try:
                 super().start()
             finally:
-                # Shutdown callbacks run before the compute thread has exited.
                 runtime.close()
 
-    return ImageDecoderScheduler(decode_image)
+    return ImageDecoderScheduler(decode_step)

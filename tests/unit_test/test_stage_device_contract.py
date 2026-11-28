@@ -651,11 +651,14 @@ def config_with_one_replicated_process(config_cls, model):
             if stage.gpu is not None
             and (model, stage.name) not in CPU_ONLY_GPU_PLACED
             and stage.tp_size == 1
+            and stage.runtime_gpu_ids is None
         ]
-        if gpu_members and all(stage.tp_size == 1 for stage in members):
+        if gpu_members and all(
+            stage.tp_size == 1 and stage.runtime_gpu_ids is None for stage in members
+        ):
             candidates.append((process_name, gpu_members))
     if not candidates:
-        return None, None
+        return None, None, None
     # A process with a single GPU stage needs no colocation memory budget; fall
     # back to the fullest process and budget every member when none exists.
     singles = [c for c in candidates if len(c[1]) == 1]
@@ -674,9 +677,19 @@ def config_with_one_replicated_process(config_cls, model):
             )
             for stage in stages_cfg
         ]
+    other_gpus = {
+        gpu
+        for stage in config.stages
+        if stage_process_name(stage) != process_name
+        for gpu in (
+            ([stage.gpu] if isinstance(stage.gpu, int) else [])
+            + list(stage.runtime_gpu_ids or [])
+        )
+    }
+    replica_devices = [gpu for gpu in range(2, 16) if gpu not in other_gpus][:2]
     processes = dict(config.processes)
     existing = processes.get(process_name)
-    replica_fields = {"num_replicas": 2, "replica_devices": [2, 3]}
+    replica_fields = {"num_replicas": 2, "replica_devices": replica_devices}
     processes[process_name] = (
         existing.model_copy(update=replica_fields)
         if existing is not None
@@ -685,6 +698,7 @@ def config_with_one_replicated_process(config_cls, model):
     return (
         config.model_copy(update={"stages": stages_cfg, "processes": processes}),
         [stage.name for stage in gpu_members],
+        replica_devices,
     )
 
 
@@ -712,7 +726,7 @@ def test_every_model_routes_each_process_replica_to_its_own_gpu(
     if getattr(module, "EntryClass", None) is not None:
         topologies["default"] = module.EntryClass
     topologies.update(getattr(module, "Variants", None) or {})
-    config, replicated_stages = config_with_one_replicated_process(
+    config, replicated_stages, replica_devices = config_with_one_replicated_process(
         resolve_variant(topologies[label]), model
     )
     if config is None:
@@ -754,7 +768,7 @@ def test_every_model_routes_each_process_replica_to_its_own_gpu(
         prep.runtime_dir.close()
 
     specs = {spec.stage_name: spec for group in groups for spec in group.specs}
-    for replica_id, expected_gpu in ((0, 2), (1, 3)):
+    for replica_id, expected_gpu in enumerate(replica_devices):
         for stage_name in replicated_stages:
             spec = specs[f"{stage_name}@r{replica_id}"]
             assert spec.factory_arg_defaults["gpu_id"] == expected_gpu

@@ -3,9 +3,9 @@
 
 from __future__ import annotations
 
+import inspect
 from collections.abc import Iterable, Iterator
 from pathlib import Path
-from types import SimpleNamespace
 from typing import Literal, TypedDict
 
 import torch
@@ -88,6 +88,46 @@ def semantic_checkpoint(
         yield name, value
 
 
+def validate_decoder_sp_architecture(
+    cfg: DecoderConfig, ulysses_degree: int
+) -> DecoderConfig:
+    normalized = decoder_config(cfg)
+    if (
+        normalized["n_kv_heads"] != normalized["n_heads"]
+        or normalized["n_heads"] % ulysses_degree
+    ):
+        raise ValueError(
+            "Native decoder requires equal Q/KV heads divisible by Ulysses degree"
+        )
+    else:
+        pass
+    if normalized["all_patch_size"] != (2,) or normalized["all_f_patch_size"] != (1,):
+        raise ValueError(
+            "Native spatial decoder supports only patch_size=2, f_patch_size=1"
+        )
+    else:
+        pass
+    return normalized
+
+
+def require_joint_sp_support(model_cls: type[nn.Module] | None = None) -> None:
+    if model_cls is None:
+        from sglang.multimodal_gen.runtime.models.dits.zimage import (
+            ZImageTransformer2DModel,
+        )
+
+        model_cls = ZImageTransformer2DModel
+    else:
+        pass
+    if "shard_joint_sequence" not in inspect.signature(model_cls.__init__).parameters:
+        raise RuntimeError(
+            "Installed sglang ZImageTransformer2DModel lacks shard_joint_sequence "
+            "support required for SP decoding"
+        )
+    else:
+        pass
+
+
 class ZImageTransformer2DModelWrapper(nn.Module):
     """Load semantic checkpoints and return positive velocity for t in [0, 1].
 
@@ -117,9 +157,9 @@ class ZImageTransformer2DModelWrapper(nn.Module):
                     int,
                     int,
                 ],
-                SimpleNamespace,
-                dict[
-                    str, torch.Tensor | tuple[torch.Tensor, torch.Tensor] | int | None
+                tuple[
+                    tuple[torch.Tensor, torch.Tensor],
+                    tuple[torch.Tensor, torch.Tensor],
                 ],
             ]
             | None
@@ -148,9 +188,6 @@ class ZImageTransformer2DModelWrapper(nn.Module):
             ZImageArchConfig,
             ZImageDitConfig,
         )
-        from sglang.multimodal_gen.configs.pipeline_configs.zimage import (
-            ZImagePipelineConfig,
-        )
         from sglang.multimodal_gen.runtime.layers.attention.selector import (
             component_attn_backend_context_manager,
         )
@@ -169,28 +206,21 @@ class ZImageTransformer2DModelWrapper(nn.Module):
         )
         from sglang.multimodal_gen.runtime.platforms import AttentionBackendEnum
 
-        if self.cfg["n_kv_heads"] != self.cfg["n_heads"]:
-            raise ValueError("Native decoder requires equal Q/KV heads")
-        else:
-            pass
-        if self.cfg["all_patch_size"] != (2,) or self.cfg["all_f_patch_size"] != (1,):
-            raise ValueError(
-                "Native spatial decoder supports only patch_size=2, f_patch_size=1"
-            )
-        else:
-            pass
+        validate_decoder_sp_architecture(self.cfg, self.runtime.ulysses_degree)
         try:
             attention = AttentionBackendEnum[self.runtime.attention_backend.upper()]
         except KeyError as exc:
             raise ValueError(
                 f"Unknown decoder attention backend: {self.runtime.attention_backend}"
             ) from exc
+        if self.runtime.sp_size > 1:
+            require_joint_sp_support(ZImageTransformer2DModel)
+        else:
+            pass
         arch = dict(self.cfg)
         arch["num_layers"] = arch.pop("n_layers")
         arch["num_attention_heads"] = arch.pop("n_heads")
         config = ZImageDitConfig(arch_config=ZImageArchConfig(**arch))
-        self.spatial_config = ZImagePipelineConfig(dit_config=config)
-        self.spatial_config.vae_config.post_init()
         with (
             component_attn_backend_context_manager(
                 attention,
@@ -200,7 +230,12 @@ class ZImageTransformer2DModelWrapper(nn.Module):
             set_default_torch_dtype(dtype),
             torch.device("meta"),
         ):
-            model = ZImageTransformer2DModel(config=config, hf_config=self.cfg)
+            if self.runtime.sp_size > 1:
+                model = ZImageTransformer2DModel(
+                    config=config, hf_config=self.cfg, shard_joint_sequence=True
+                )
+            else:
+                model = ZImageTransformer2DModel(config=config, hf_config=self.cfg)
         load_model_from_full_model_state_dict(
             model=model,
             full_sd_iterator=semantic_checkpoint(
@@ -236,8 +271,8 @@ class ZImageTransformer2DModelWrapper(nn.Module):
             patch_size,
             f_patch_size,
         )
-        spatial = self.spatial_config
         if self.native_cache is None or self.native_cache[0] != key:
+            self.runtime.validate()
             if any(image.shape != x[0].shape for image in x) or any(
                 cap.shape != cap_feats[0].shape for cap in cap_feats
             ):
@@ -246,56 +281,37 @@ class ZImageTransformer2DModelWrapper(nn.Module):
                 )
             else:
                 pass
-            full = torch.stack(x)
-            if full.shape[2] != 1:
-                raise ValueError("Native spatial decoder supports one image frame")
+            if x[0].shape[1] != 1:
+                raise ValueError("Native decoder supports one image frame")
             else:
                 pass
-            ratio = spatial.vae_config.arch_config.spatial_compression_ratio
-            batch = SimpleNamespace(
-                raw_latent_shape=tuple(full.shape),
-                height=full.shape[-2] * ratio,
-                width=full.shape[-1] * ratio,
-                prompt_embeds=[cap_feats],
-                prompt_seq_lens=[[cap.shape[0] for cap in cap_feats]],
+            freqs_cis = self.model._build_single_sample_freqs_cis(  # noqa: leading-underscore  # SGLang API
+                x[0], cap_feats[0], patch_size, f_patch_size
             )
-            cond = spatial.prepare_pos_cond_kwargs(
-                batch, full.device, self.model.rotary_emb, full.dtype
-            )
-            batch.prompt_embeds = None
-            target = cond["image_seq_len_target"]
-            full_tokens = (full.shape[-2] // patch_size) * (
-                full.shape[-1] // patch_size
-            )
-            if target is not None and target != ((full_tokens + 31) // 32) * 32:
-                raise ValueError(
-                    "Native decoder changed the learned-padding token count"
-                )
-            else:
-                pass
-            self.native_cache = (
-                key,
-                batch,
-                cond,
-            )
+            self.native_cache = (key, freqs_cis)
         else:
             pass
-        _, batch, cond = self.native_cache
+        _, freqs_cis = self.native_cache
         full = torch.stack(x)
-        local, _ = spatial.shard_latents_for_sp(batch, full)
         with set_forward_context(
             current_timestep=0, attn_metadata=None, forward_batch=None
         ):
             prediction = self.model(
-                hidden_states=local,
+                hidden_states=full,
                 encoder_hidden_states=cap_feats,
                 timestep=1000.0 - t * self.cfg["t_scale"],
                 patch_size=patch_size,
                 f_patch_size=f_patch_size,
-                **cond,
+                freqs_cis=freqs_cis,
             )
-        # Native forward returns -velocity. SP1 gather is an identity operation.
-        return list((-spatial.gather_noise_pred_for_sp(batch, prediction)).unbind(0))
+        if not isinstance(prediction, torch.Tensor) or prediction.shape != full.shape:
+            raise RuntimeError(
+                "Native decoder must return the full [B, C, F, H, W] shape"
+            )
+        else:
+            pass
+        # Native forward returns negative velocity.
+        return list((-prediction).unbind(0))
 
     def forward(
         self,
