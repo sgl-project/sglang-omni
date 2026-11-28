@@ -4,9 +4,7 @@
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
-#include <cstdlib>
 #include <exception>
-#include <execinfo.h>
 #include <functional>
 #include <future>
 #include <iostream>
@@ -721,7 +719,6 @@ void TestPauseRefreshFinalOrdering(bool queue_behind_blocker,
   TestSignal blocker_started;
   TestSignal pause_started;
   TestSignal final_finished;
-  TestSignal worker_drained;
   std::atomic<int> decoded_samples = 0;
   std::atomic<int> segment_events = 0;
   std::atomic<bool> saw_pause_reuse = false;
@@ -799,7 +796,9 @@ void TestPauseRefreshFinalOrdering(bool queue_behind_blocker,
   } else {
   }
   if (close_during_pause) {
-    DrainWorker(worker, worker_drained);
+    static_cast<void>(worker.Transcribe(
+        [](const std::atomic<bool> &) { return TranscriptionResult{}; },
+        NewCancelFlag()));
     Require(decoded_samples.load() ==
                     (queue_behind_blocker
                          ? 0
@@ -1008,47 +1007,23 @@ void TestPauseRefreshRequiresSessionOptIn() {
 } // namespace qwen3_asr::tests
 
 int main() {
-  std::set_terminate([] {
-    void *frames[64];
-    const int frame_count = backtrace(frames, 64);
-    backtrace_symbols_fd(frames, frame_count, 2);
-    std::abort();
-  });
   try {
-    std::cerr << "TestAdmissionPolicy\n";
     qwen3_asr::tests::TestAdmissionPolicy();
-    std::cerr << "TestInvalidHintsKeepAudioAndDoNotSchedule\n";
     TestInvalidHintsKeepAudioAndDoNotSchedule();
-    std::cerr << "TestRepeatedPauseHintIsNotAdmitted\n";
     TestRepeatedPauseHintIsNotAdmitted();
-    std::cerr << "TestBusyPauseHintAdmission(false, false)\n";
     TestBusyPauseHintAdmission(false, false);
-    std::cerr << "TestBusyPauseHintAdmission(true, false)\n";
     TestBusyPauseHintAdmission(true, false);
-    std::cerr << "TestBusyPauseHintAdmission(true, true)\n";
     TestBusyPauseHintAdmission(true, true);
-    std::cerr << "TestBusyPauseCoveredAndInsufficientHintsAreNotDeferred\n";
     TestBusyPauseCoveredAndInsufficientHintsAreNotDeferred();
-    std::cerr
-        << "TestDeferredPauseIsInvalidatedBySpeechResumeOrMalformedEpoch\n";
     TestDeferredPauseIsInvalidatedBySpeechResumeOrMalformedEpoch();
-    std::cerr << "TestLaterValidPauseReplacesResumedHint\n";
     TestLaterValidPauseReplacesResumedHint();
-    std::cerr << "TestCadenceAndFinalHandoffSupersedePendingPause\n";
     TestCadenceAndFinalHandoffSupersedePendingPause();
-    std::cerr << "TestIntermediatePieceDoesNotFenceDeferredPause\n";
     TestIntermediatePieceDoesNotFenceDeferredPause();
-    std::cerr << "TestDeferredPauseClearedOnSegmentRollover\n";
     TestDeferredPauseClearedOnSegmentRollover();
-    std::cerr << "TestPauseRefreshRequiresSessionOptIn\n";
     qwen3_asr::tests::TestPauseRefreshRequiresSessionOptIn();
-    std::cerr << "TestPauseRefreshFinalOrdering(true, false)\n";
     TestPauseRefreshFinalOrdering(true, false);
-    std::cerr << "TestPauseRefreshFinalOrdering(false, false)\n";
     TestPauseRefreshFinalOrdering(false, false);
-    std::cerr << "TestPauseRefreshFinalOrdering(false, true)\n";
     TestPauseRefreshFinalOrdering(false, true);
-    std::cerr << "TestPauseRefreshFinalOrdering(true, true)\n";
     TestPauseRefreshFinalOrdering(true, true);
   } catch (const std::exception &error) {
     std::cerr << error.what() << '\n';
