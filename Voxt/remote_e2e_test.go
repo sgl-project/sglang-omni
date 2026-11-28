@@ -333,7 +333,22 @@ func TestRemoteProviderPriorityDrag(t *testing.T) {
 	drag(llm.Custom, "ollama", []string{"ollama", llm.Custom})
 }
 
-// Rapid successive drags preserve their final priority in live and saved settings.
+type firstSettingsUpdateBlocker struct {
+	settings.Service
+	firstStarted chan struct{}
+	releaseFirst chan struct{}
+	updates      atomic.Int32
+}
+
+func (b *firstSettingsUpdateBlocker) Update(ctx context.Context, update func(*settings.Settings)) error {
+	if b.updates.Add(1) == 1 {
+		close(b.firstStarted)
+		<-b.releaseFirst
+	}
+	return b.Service.Update(ctx, update)
+}
+
+// Rapid successive drags preserve their final priority even when the second save finishes first.
 func TestRemoteProviderRapidDragsSaveInDropOrder(t *testing.T) {
 	a, _, _ := newTestApp(t)
 	initial := []settings.Provider{{ID: "ollama"}, {ID: "deepseek"}, {ID: "openai"}}
@@ -343,8 +358,29 @@ func TestRemoteProviderRapidDragsSaveInDropOrder(t *testing.T) {
 		t.Fatal(err)
 	}
 	a.prefs.Providers.LLM = slices.Clone(initial)
-	a.moveRemoteProvider("llm", "ollama", "openai")
+	blocker := &firstSettingsUpdateBlocker{
+		Service:      a.settings,
+		firstStarted: make(chan struct{}),
+		releaseFirst: make(chan struct{}),
+	}
+	a.settings = blocker
+	firstDragDone := make(chan struct{})
+	go func() {
+		a.moveRemoteProvider("llm", "ollama", "openai")
+		close(firstDragDone)
+	}()
+	select {
+	case <-blocker.firstStarted:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the first drag did not reach the settings service")
+	}
 	a.moveRemoteProvider("llm", "deepseek", "ollama")
+	close(blocker.releaseFirst)
+	select {
+	case <-firstDragDone:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the drag saves did not finish")
+	}
 	want := []string{"openai", "ollama", "deepseek"}
 	for name, got := range map[string][]settings.Provider{
 		"live":  a.prefs.Providers.LLM,
