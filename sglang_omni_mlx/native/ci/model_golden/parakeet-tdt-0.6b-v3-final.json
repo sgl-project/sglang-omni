@@ -24,7 +24,7 @@
   "Apple M4 Max": {
    "metrics": {
     "wer_en": 0.02548,
-    "cer_zh": 0.99988,
+    "cer_zh": 0.9995,
     "mer_mixed": 0.88689
    },
    "clips": {
