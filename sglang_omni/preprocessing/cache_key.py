@@ -248,7 +248,10 @@ def hash_media_item(item: object) -> str | None:
         by_frame = not cpu.is_contiguous() and cpu.shape[0] ** 2 <= cpu.numel()
         state = xxhash.xxh3_64()
         for frame in cpu if by_frame else [cpu]:
-            state.update(memoryview(frame.contiguous().numpy()))
+            # NumPy cannot represent BF16/FP8; reinterpret storage without
+            # converting values, so existing dtypes keep the same digest.
+            raw = frame.contiguous().reshape(-1).view(torch.uint8)
+            state.update(memoryview(raw.numpy()))
         return f"pt:{meta}:{state.hexdigest()}"
     else:
         pass
