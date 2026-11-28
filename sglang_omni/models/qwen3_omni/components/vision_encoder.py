@@ -12,6 +12,7 @@ from transformers.models.qwen3_omni_moe.configuration_qwen3_omni_moe import (
 
 from sglang_omni.models.qwen3_omni.components.packed_attention import (
     PackedAttention,
+    PackedAttentionBackend,
     resolve_packed_attention,
 )
 from sglang_omni.models.qwen3_omni.components.vision_attention import (
@@ -98,12 +99,19 @@ def instantiate_visual(
     device: str,
     dtype: torch.dtype,
     native_visual_class: type[Qwen3OmniMoeVisionEncoderCompat],
+    mm_attention_backend: PackedAttentionBackend | None,
 ) -> Qwen3OmniMoeVisionEncoderCompat:
     if torch.device(device).type != current_platform.device_type:
         return instantiate_module(native_visual_class, vision_config)
     else:
         # note (ratish): per-image Transformers attention reaches cuDNN on Hopper, whose output changes between processes.
-        packed_attention = resolve_packed_attention(torch.device(device), dtype)
+        # note (moviw): FA4 by default only for vision, where it was measured on SM120; the audio encoder keeps Triton.
+        packed_attention = resolve_packed_attention(
+            torch.device(device),
+            dtype,
+            mm_attention_backend=mm_attention_backend,
+            fa4_on_blackwell=True,
+        )
         with no_init_weights():
             if type(current_platform) is XPUOmniPlatform:
                 head_dimension = vision_config.hidden_size // vision_config.num_heads

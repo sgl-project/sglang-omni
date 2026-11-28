@@ -25,6 +25,7 @@ from sglang_omni.models.qwen3_omni.components.audio_layer_graph import (
 from sglang_omni.models.qwen3_omni.components.common import load_thinker_config
 from sglang_omni.models.qwen3_omni.components.packed_attention import (
     PackedAttention,
+    PackedAttentionBackend,
     resolve_packed_attention,
 )
 from sglang_omni.models.weight_loader import load_module, resolve_dtype
@@ -207,6 +208,7 @@ class Qwen3OmniAudioEncoder(nn.Module):
         device: str = "cuda",
         dtype: str | torch.dtype | None = None,
         enable_layer_cuda_graph: bool = False,
+        mm_attention_backend: PackedAttentionBackend | None,
     ) -> None:
         super().__init__()
         torch_dtype = resolve_dtype(dtype)
@@ -224,7 +226,7 @@ class Qwen3OmniAudioEncoder(nn.Module):
         self.segment_splits = SegmentSplits()
         # note (ratish): one attention kernel for a clip whether or not its batch fits a layer graph.
         self.packed_attention: PackedAttention | None = resolve_packed_attention(
-            self.device, torch_dtype
+            self.device, torch_dtype, mm_attention_backend=mm_attention_backend
         )
         if self.packed_attention is not None:
             for layer in self.audio_tower.layers:

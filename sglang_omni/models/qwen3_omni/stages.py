@@ -26,6 +26,9 @@ from sglang_omni.models.qwen3_omni.components.image_encoder import (
     ImageEncoderOutput,
     Qwen3OmniImageEncoder,
 )
+from sglang_omni.models.qwen3_omni.components.packed_attention import (
+    PackedAttentionBackend,
+)
 from sglang_omni.models.qwen3_omni.components.preprocessor import Qwen3OmniPreprocessor
 from sglang_omni.models.qwen3_omni.components.streaming_detokenizer import (
     StreamingDetokenizeScheduler,
@@ -1071,12 +1074,18 @@ def create_image_encoder_executor(
     device: str | None = None,
     gpu_id: int | None = None,
     dtype: str | None = None,
+    mm_attention_backend: PackedAttentionBackend | None = None,
 ) -> SimpleScheduler[StagePayload, StagePayload]:
     from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
     from sglang_omni.utils.device import resolve_concrete_device
 
     device = str(resolve_concrete_device(device, gpu_id))
-    model = Qwen3OmniImageEncoder(model_path=model_path, device=device, dtype=dtype)
+    model = Qwen3OmniImageEncoder(
+        model_path=model_path,
+        device=device,
+        dtype=dtype,
+        mm_attention_backend=mm_attention_backend,
+    )
     cache = StageOutputCache(
         max_size=QWEN3_ENCODER_CACHE_MAX_ENTRIES,
         max_bytes=QWEN3_ENCODER_CACHE_MAX_BYTES,
@@ -1147,6 +1156,7 @@ def create_audio_encoder_executor(
     gpu_id: int | None = None,
     dtype: str | None = None,
     enable_layer_cuda_graph: bool = False,
+    mm_attention_backend: PackedAttentionBackend | None = None,
 ) -> SimpleScheduler[StagePayload, StagePayload]:
     from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
     from sglang_omni.utils.device import resolve_concrete_device
@@ -1157,6 +1167,7 @@ def create_audio_encoder_executor(
         device=device,
         dtype=dtype,
         enable_layer_cuda_graph=enable_layer_cuda_graph,
+        mm_attention_backend=mm_attention_backend,
     )
     cache = StageOutputCache(
         max_size=QWEN3_ENCODER_CACHE_MAX_ENTRIES,

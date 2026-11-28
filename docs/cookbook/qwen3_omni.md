@@ -60,6 +60,8 @@ Multimodal preprocessing (tokenization, image/video/audio feature extraction) ru
 
 For video decoder thread allocation and overrides, see [Video Decoding](../basic_usage/omni.md#video-decoding).
 
+On CUDA, the image and audio encoders run packed attention on FA3 on Hopper (SM90) and on Triton elsewhere, except that the image encoder runs on FA4 on SM100 and SM120 Blackwell GPUs when the FA4 kernels import; a float32 encoder keeps Transformers' attention. Set `--image_encoder.factory.mm_attention_backend` or `--audio_encoder.factory.mm_attention_backend` to `triton_attn`, `fa3` or `fa4` to choose the kernel per stage; `fa3` is rejected on Blackwell.
+
 For MMSU-style audio-input / text-output benchmarks with short requests, use the fused text-path config so the full text path stays inside one worker process:
 
 ```bash
