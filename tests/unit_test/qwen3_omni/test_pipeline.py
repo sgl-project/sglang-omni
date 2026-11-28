@@ -87,6 +87,8 @@ from sglang_omni.scheduling.sglang_backend.server_args_builder import (
     apply_encoder_mem_reserve,
     build_sglang_server_args,
 )
+from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
+from sglang_omni.scheduling.threaded_simple_scheduler import ThreadedSimpleScheduler
 from sglang_omni.serve.openai_errors import is_bad_request_error
 from sglang_omni.utils.imports import import_string
 from tests.unit_test.fixtures.qwen_fakes import (
@@ -2995,6 +2997,103 @@ def test_preprocessing_serial_requests_keep_arrival_order_on_the_scheduler_threa
     assert results == ["first", "second", "third"]
     assert [call[0] for call in calls] == results
     assert {call[1] for call in calls} == {worker.ident}
+
+
+@pytest.mark.parametrize(
+    ("max_running_video_requests", "max_concurrency", "scheduler_type"),
+    [
+        (0, 1, SimpleScheduler),
+        (0, 2, ThreadedSimpleScheduler),
+        (2, 1, qwen_stages.PreprocessingScheduler),
+        (2, 2, qwen_stages.PreprocessingScheduler),
+    ],
+)
+def test_preprocessing_executor_threads_requests_without_video_above_one(
+    monkeypatch: pytest.MonkeyPatch,
+    max_running_video_requests: int,
+    max_concurrency: int,
+    scheduler_type: type,
+) -> None:
+    """Requests without video always ran on the scheduler thread, and max_concurrency, which threaded them, failed at startup."""
+    monkeypatch.setattr(qwen_stages, "Qwen3OmniPreprocessor", lambda **_: object())
+    scheduler = qwen_stages.create_preprocessing_executor(
+        "model",
+        max_running_video_requests=max_running_video_requests,
+        max_concurrency=max_concurrency,
+    )
+    try:
+        assert type(scheduler) is scheduler_type
+        if scheduler_type is qwen_stages.PreprocessingScheduler:
+            assert (scheduler.request_executor is None) == (max_concurrency == 1)
+        else:
+            pass
+    finally:
+        scheduler.stop()
+
+
+@pytest.mark.parametrize("max_running_video_requests", [0, 2])
+def test_preprocessing_request_threads_keep_results_errors_and_running_abort(
+    monkeypatch: pytest.MonkeyPatch, max_running_video_requests: int
+) -> None:
+    entered, release, finished = threading.Event(), threading.Event(), threading.Event()
+
+    class Preprocessor:
+        async def __call__(self, payload: StagePayload) -> str:
+            return await self.process(
+                payload, preprocessor_mod.read_request_inputs(payload), None
+            )
+
+        async def process(
+            self,
+            payload: StagePayload,
+            request_inputs: RequestInputs,
+            video_lane: preprocessor_mod.VideoLane | None,
+        ) -> str:
+            if payload.request_id == "slow":
+                entered.set()
+                assert release.wait(timeout=5)
+                finished.set()
+            elif payload.request_id == "error":
+                raise ValueError("invalid preprocessing input")
+            else:
+                pass
+            return payload.request_id
+
+    monkeypatch.setattr(
+        qwen_stages, "Qwen3OmniPreprocessor", lambda **_: Preprocessor()
+    )
+    scheduler = qwen_stages.create_preprocessing_executor(
+        "model",
+        max_running_video_requests=max_running_video_requests,
+        max_concurrency=2,
+    )
+    worker = threading.Thread(target=scheduler.start, daemon=True)
+    worker.start()
+    try:
+        scheduler.inbox.put(text_request("slow"))
+        assert entered.wait(timeout=5)
+        scheduler.inbox.put(text_request("fast"))
+        result = scheduler.outbox.get(timeout=5)
+        assert (result.request_id, result.type, result.data) == (
+            "fast",
+            "result",
+            "fast",
+        )
+        scheduler.abort("slow")
+        release.set()
+        assert finished.wait(timeout=5)
+        scheduler.inbox.put(text_request("error"))
+        error = scheduler.outbox.get(timeout=5)
+        assert (error.request_id, error.type) == ("error", "error")
+        assert isinstance(error.data, ValueError)
+        scheduler.inbox.put(text_request("after"))
+        result = scheduler.outbox.get(timeout=5)
+        assert (result.request_id, result.data) == ("after", "after")
+    finally:
+        release.set()
+        scheduler.stop()
+        worker.join(timeout=3)
+    assert not worker.is_alive()
 
 
 @pytest.mark.parametrize(

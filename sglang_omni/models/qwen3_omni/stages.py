@@ -67,6 +67,7 @@ from sglang_omni.scheduling.sglang_backend import (
 from sglang_omni.scheduling.sglang_backend.request_data import SGLangARRequestData
 from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
 from sglang_omni.scheduling.stage_cache import StageOutputCache
+from sglang_omni.scheduling.threaded_simple_scheduler import ThreadedSimpleScheduler
 from sglang_omni.utils.cpu import (
     MAX_VIDEO_DECODE_THREADS,
     automatic_video_decode_threads,
@@ -1055,7 +1056,7 @@ def thread_pool_with_intraop_threads(
 
 
 class PreprocessingScheduler(SimpleScheduler[StagePayload, StagePayload]):
-    """Run requests in arrival order on the scheduler thread, except that a request with video runs on the video lane, so no request behind it waits for its media loads or its CPU work."""
+    """Run requests without video in arrival order on the scheduler thread, or on request_worker_count threads above one, and a request with video on the video lane, so no request behind it waits for its media loads or its CPU work."""
 
     def __init__(
         self,
@@ -1065,8 +1066,18 @@ class PreprocessingScheduler(SimpleScheduler[StagePayload, StagePayload]):
         stage_intraop_threads: int,
         stage_cpu_count: int,
         video_decode_threads: int | None,
+        request_worker_count: int = 1,
     ) -> None:
-        super().__init__(preprocessor, shutdown_callback=self.shut_down_video_lane)
+        super().__init__(preprocessor, shutdown_callback=self.shut_down_threads)
+        self.request_executor = (
+            None
+            if request_worker_count <= 1
+            else ThreadPoolExecutor(
+                max_workers=request_worker_count,
+                thread_name_prefix="prep-request",
+                initializer=name_native_thread,
+            )
+        )
         # note (ratish): the threads share one preprocessor, since the Transformers 5.19 HF processor writes none of its own state while it runs and its tokenizer keeps one padding and truncation setting.
         self.preprocessor = preprocessor
         # note (ratish): a running video decodes on at least one of the stage's CPUs, so videos past them would only hold their frames while they wait for one.
@@ -1111,8 +1122,12 @@ class PreprocessingScheduler(SimpleScheduler[StagePayload, StagePayload]):
         self.videos_lock = threading.Lock()
         self.videos_running = 0
 
-    def shut_down_video_lane(self) -> None:
-        # note (ratish): a running video waits on its media, decode and frame jobs, and concurrent.futures.wait never returns for a job a pool cancels in its queue, so only video requests no thread has taken are dropped.
+    def shut_down_threads(self) -> None:
+        # note (ratish): a running video waits on its media, decode and frame jobs, and concurrent.futures.wait never returns for a job a pool cancels in its queue, so only requests no thread has taken are dropped.
+        if self.request_executor is not None:
+            self.request_executor.shutdown(wait=False, cancel_futures=True)
+        else:
+            pass
         self.video_executor.shutdown(wait=False, cancel_futures=True)
         for executor in (
             self.media_executor,
@@ -1127,8 +1142,31 @@ class PreprocessingScheduler(SimpleScheduler[StagePayload, StagePayload]):
             self.video_executor.submit(
                 copy_context().run, self.run_video_request, msg, request_inputs
             )
-        else:
+        elif self.request_executor is None:
             loop.run_until_complete(self.run_request(msg, request_inputs, None))
+        else:
+            self.request_executor.submit(
+                copy_context().run, self.run_request_on_thread, msg, request_inputs
+            )
+
+    def run_request_on_thread(
+        self,
+        msg: IncomingMessage,
+        request_inputs: TrainRequestInputs | ChatRequestInputs,
+    ) -> None:
+        try:
+            asyncio.run(self.run_request(msg, request_inputs, None))
+        except Exception as exc:
+            self.answer_thread_failure(msg, exc)
+
+    def answer_thread_failure(self, msg: IncomingMessage, exc: Exception) -> None:
+        # note (ratish): nothing reads a request thread's future, so a failure outside the request's own preprocessing is answered here or never.
+        logger.exception(f"Request {msg.request_id} failed on its thread")
+        if self.consume_if_aborted(msg.request_id):
+            return
+        else:
+            pass
+        self.emit_error(msg.request_id, exc, self.outbox)
 
     def run_video_request(
         self, msg: IncomingMessage, request_inputs: ChatRequestInputs
@@ -1150,13 +1188,7 @@ class PreprocessingScheduler(SimpleScheduler[StagePayload, StagePayload]):
                 )
                 asyncio.run(self.run_request(msg, request_inputs, video_lane))
         except Exception as exc:
-            # note (ratish): nothing reads a video thread's future, so a failure outside the request's own preprocessing is answered here or never.
-            logger.exception(f"Video request {msg.request_id} failed on its thread")
-            if self.consume_if_aborted(msg.request_id):
-                return
-            else:
-                pass
-            self.emit_error(msg.request_id, exc, self.outbox)
+            self.answer_thread_failure(msg, exc)
 
     @contextmanager
     def video_slot(self) -> Iterator[int]:
@@ -1203,6 +1235,7 @@ def create_preprocessing_executor(
     model_path: str,
     *,
     max_running_video_requests: int,
+    max_concurrency: int = 1,
     max_seq_len: int | None = None,
     video_fps: float | None = None,
     video_max_frames: int | None = None,
@@ -1210,8 +1243,11 @@ def create_preprocessing_executor(
     video_max_pixels: int | None = None,
     video_total_pixels: int | None = None,
     video_decode_threads: int | None = None,
-) -> SimpleScheduler[StagePayload, StagePayload]:
-    # note (ratish): the scheduler thread preprocesses one request at a time, so a video it runs decodes on the whole automatic thread count.
+) -> (
+    SimpleScheduler[StagePayload, StagePayload]
+    | ThreadedSimpleScheduler[StagePayload, StagePayload]
+):
+    # note (ratish): a video off the video lane decodes beside the other requests the stage runs at once, so they split the automatic thread count.
     preprocessor = Qwen3OmniPreprocessor(
         model_path=model_path,
         max_seq_len=max_seq_len,
@@ -1221,14 +1257,18 @@ def create_preprocessing_executor(
         video_max_pixels=video_max_pixels,
         video_total_pixels=video_total_pixels,
         video_decode_threads=(
-            automatic_video_decode_threads(1)
+            automatic_video_decode_threads(max(max_concurrency, 1))
             if video_decode_threads is None
             else video_decode_threads
         ),
     )
 
-    if max_running_video_requests == 0:
+    if max_running_video_requests == 0 and max_concurrency <= 1:
         return SimpleScheduler[StagePayload, StagePayload](preprocessor)
+    elif max_running_video_requests == 0:
+        return ThreadedSimpleScheduler[StagePayload, StagePayload](
+            preprocessor, max_concurrency=max_concurrency
+        )
     else:
         pass
 
@@ -1238,6 +1278,7 @@ def create_preprocessing_executor(
         stage_intraop_threads=torch.get_num_threads(),
         stage_cpu_count=effective_cpu_count(),
         video_decode_threads=video_decode_threads,
+        request_worker_count=max_concurrency,
     )
 
 
