@@ -790,15 +790,35 @@ def prewarm_cuda_ipc_export(spec: StageWorkerProcessSpec, log: logging.Logger) -
         return
     else:
         pass
-    gpu_ids = stage_gpu_ids(host_owned_stage_specs(spec))
+    host_specs = host_owned_stage_specs(spec)
+    gpu_ids = stage_gpu_ids(host_specs)
     if not gpu_ids:
         return
     else:
         pass
     tensor = torch.empty(1, dtype=torch.uint8, device=f"cuda:{gpu_ids[0]}")
-    shared = (
-        tensor.untyped_storage()._share_cuda_()
-    )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+    try:
+        shared = (
+            tensor.untyped_storage()._share_cuda_()
+        )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+    except RuntimeError as exc:
+        stage_names = ", ".join(
+            sorted(
+                stage_spec.stage_name
+                for stage_spec in host_specs
+                if stage_spec.gpu_id is not None
+            )
+        )
+        raise RuntimeError(
+            f"Stage process {spec.process_name!r} (stages: {stage_names}) could not "
+            f"export CUDA memory on cuda:{gpu_ids[0]} through CUDA IPC. SGLang-Omni "
+            "moves tensors between same-node GPU stage processes with CUDA IPC, so "
+            "CUDA allocations in these processes must be exportable with "
+            "cuIpcGetMemHandle. A custom CUDA allocator (for example one injected "
+            "with LD_PRELOAD) or an allocator backend whose memory cannot be IPC "
+            "exported causes this failure; start the pipeline without it. "
+            f"Original error: {exc}"
+        ) from exc
     _cuda_ipc_warm_shares.append(tensor)
     register_prewarm_cuda_ipc_handle(shared[4])
     log.info(f"Warmed CUDA IPC on cuda:{gpu_ids[0]} before constructing stages")
