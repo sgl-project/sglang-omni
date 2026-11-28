@@ -241,12 +241,14 @@ def patch_thinker_startup(
 
 @pytest.mark.parametrize("algorithm", [None, "DFLASH", "EAGLE3"])
 @pytest.mark.parametrize("requested_async", [None, False, True])
-def test_thinker_overlap_requires_explicit_opt_in(
+@pytest.mark.parametrize("execution_mode", ["request", "session"])
+def test_thinker_overlaps_a_dflash_request_server_by_default(
     monkeypatch: pytest.MonkeyPatch,
     algorithm: str | None,
     requested_async: bool | None,
+    execution_mode: str,
 ) -> None:
-    """Ordinary decode defaults to async; speculative overlap requires explicit opt-in."""
+    """Unset, async decode is on without a draft and for a DFlash request server, where it drains every prefill; an explicit value wins."""
     patch_thinker_startup(
         monkeypatch, expected_context_length=8192 if algorithm else None
     )
@@ -271,11 +273,70 @@ def test_thinker_overlap_requires_explicit_opt_in(
         "dummy",
         total_gpu_memory_fraction=0.75,
         server_args_overrides=overrides,
+        **{
+            **resolve_stage_typed_kwargs(config.stage_named("thinker")),
+            "execution_mode": execution_mode,
+        },
+    )
+
+    if requested_async is None:
+        expected_async = algorithm is None or (
+            algorithm == "DFLASH" and execution_mode == "request"
+        )
+    else:
+        expected_async = requested_async
+    expected_drain = sys.maxsize if algorithm and expected_async else None
+    scheduler_kwargs = create_scheduler.call_args.kwargs
+    assert scheduler_kwargs["enable_async_decode"] is expected_async
+    assert scheduler_kwargs["prefill_drain_below_batch_size"] == expected_drain
+
+
+@pytest.mark.parametrize("prefill_drain_below_batch_size", [None, 0, 64])
+def test_thinker_passes_the_prefill_drain_to_its_scheduler(
+    monkeypatch: pytest.MonkeyPatch,
+    prefill_drain_below_batch_size: int | None,
+) -> None:
+    """A prefill drain set in the pipeline config reaches the thinker scheduler; unset, overlap drains every prefill."""
+    patch_thinker_startup(monkeypatch, expected_context_length=8192)
+    monkeypatch.setattr(
+        qwen_stages.AutoConfig,
+        "from_pretrained",
+        lambda *args, **kwargs: SimpleNamespace(max_position_embeddings=8192),
+    )
+    create_scheduler = Mock(wraps=qwen_stages.create_thinker_scheduler)
+    monkeypatch.setattr(qwen_stages, "create_thinker_scheduler", create_scheduler)
+    config_entries = [("thinker.factory.enable_async_decode", "true")]
+    if prefill_drain_below_batch_size is not None:
+        config_entries.append(
+            (
+                "thinker.factory.prefill_drain_below_batch_size",
+                str(prefill_drain_below_batch_size),
+            )
+        )
+    else:
+        pass
+    config = ConfigManager(Qwen3OmniPipelineConfig(model_path="dummy")).merge_config(
+        config_entries
+    )
+    qwen_stages.create_sglang_thinker_executor_from_config(
+        "dummy",
+        total_gpu_memory_fraction=0.75,
+        server_args_overrides={
+            "speculative_algorithm": "DFLASH",
+            "speculative_draft_model_path": "draft",
+        },
         **resolve_stage_typed_kwargs(config.stage_named("thinker")),
     )
 
-    expected_async = algorithm is None if requested_async is None else requested_async
-    assert create_scheduler.call_args.kwargs["enable_async_decode"] is expected_async
+    expected_drain = (
+        sys.maxsize
+        if prefill_drain_below_batch_size is None
+        else prefill_drain_below_batch_size
+    )
+    assert (
+        create_scheduler.call_args.kwargs["prefill_drain_below_batch_size"]
+        == expected_drain
+    )
 
 
 def test_colocated_ar_budget_uses_stage_total_fraction(monkeypatch) -> None:

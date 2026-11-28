@@ -6,6 +6,8 @@ stages:
   preprocessing:
     factory:
       max_seq_len: 8192
+      # The draft serves requests faster, so serial preprocessing becomes a queue at 16 requests; see docs/cookbook/qwen3_omni.md.
+      max_concurrency: 4
   image_encoder:
     gpu_memory_fraction: 0.025
   audio_encoder:

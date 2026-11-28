@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 import os
+import sys
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal, TypedDict
@@ -1242,6 +1243,7 @@ def create_sglang_thinker_executor_from_config(
     total_gpu_memory_fraction: float | None = None,
     enable_async_decode: bool | None = None,
     async_decode_min_batch_size: int = 1,
+    prefill_drain_below_batch_size: int | None = None,
     prefill_coalesce_requests: int = 0,
     prefill_coalesce_wait_ms: float = 60.0,
     prefill_coalesce_when_idle: bool = False,
@@ -1346,8 +1348,20 @@ def create_sglang_thinker_executor_from_config(
         else:
             max_seq_len = max_seq_len or draft_context_length
 
+    # note (Zhenning Guo): async decode under a draft means speculative overlap, which is on by default for a DFlash request server; speculative sessions need synchronous decoding, and EAGLE3 overlap is unmeasured, so both keep it off.
     if enable_async_decode is None:
-        enable_async_decode = speculative_algorithm.is_none()
+        enable_async_decode = speculative_algorithm.is_none() or (
+            speculative_algorithm.is_dflash() and execution_mode == "request"
+        )
+    else:
+        pass
+    # note (Zhenning Guo): under overlap a prefill's first token otherwise waits for the verify round launched after it, so by default every prefill is drained, whatever the batch size.
+    if (
+        not speculative_algorithm.is_none()
+        and enable_async_decode
+        and prefill_drain_below_batch_size is None
+    ):
+        prefill_drain_below_batch_size = sys.maxsize
     else:
         pass
 
@@ -1436,6 +1450,7 @@ def create_sglang_thinker_executor_from_config(
         total_gpu_memory_fraction=effective_total_gpu_memory_fraction,
         enable_async_decode=enable_async_decode,
         async_decode_min_batch_size=async_decode_min_batch_size,
+        prefill_drain_below_batch_size=prefill_drain_below_batch_size,
         prefill_coalesce_requests=prefill_coalesce_requests,
         prefill_coalesce_wait_ms=prefill_coalesce_wait_ms,
         prefill_coalesce_when_idle=prefill_coalesce_when_idle,
