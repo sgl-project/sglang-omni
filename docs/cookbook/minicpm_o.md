@@ -14,6 +14,12 @@
 
 Follow [Installation](../get_started/installation.md) and install the `minicpm-o` extra before starting the default speech-enabled server (for a source install, run `uv pip install --prerelease=allow -e '.[minicpm-o]'`), with the host's FFmpeg libraries available. Then run the commands on this page from the repository root. For Intel GPUs, follow the [MiniCPM-o XPU recipe](../other_platforms/installation_xpu.md#minicpm-o-45-omni-chat-and-speech-single-xpu). For Ascend NPU, see [Installation — NPU](../other_platforms/installation_npu.md#minicpm-o) for the launch command, configuration, and validated versions.
 
+### Optional Speech Flow graph replay on Ascend
+
+Set `SPEECH_NPU_DISABLE_INTERNAL_FORMAT=1` and `SPEECH_FLOW_NPU_GRAPH=1` before starting the service. The 910C realtime validation used `--variant session --enable-realtime --window.sliding_window_mode off`. Replay is off by default. Set `SPEECH_FLOW_NPU_GRAPH=0` and restart to return to eager execution. Unset `SPEECH_NPU_DISABLE_INTERNAL_FORMAT` to use the environment default again.
+
+The graph path supports eligible single-stream, FP32, five-step Flow chunks. The first successful capture binds the cache to its submitting NPU stream. Other streams and unsupported signatures use eager execution. The cache holds up to eight graphs, and first use can incur capture latency and additional device memory. Eager verification is enabled by default when using graphs. Set `SPEECH_FLOW_NPU_GRAPH_VERIFY=0` for performance measurements after validating correctness.
+
 ### Start the server and check readiness
 
 ```bash
