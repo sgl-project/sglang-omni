@@ -78,6 +78,14 @@ class SileroSpeechModel:
     def __init__(self) -> None:
         self.model = load_silero_stream()
 
+    def fork(self) -> SileroSpeechModel:
+        # Note (wenyao): silero's wrapper rebinds its state tensors on every call and
+        # reset, so a shallow copy shares only the ONNX session.
+        forked = copy.copy(self)
+        forked.model = copy.copy(self.model)
+        forked.reset()
+        return forked
+
     def predict(self, frame: np.ndarray, sample_rate: int) -> float:
         with torch.inference_mode():
             tensor = torch.from_numpy(frame).unsqueeze(0)
