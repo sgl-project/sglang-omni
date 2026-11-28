@@ -26,6 +26,7 @@ class MiniMaxMusic3State(DeclarativeStateBase):
     max_audio_frames: int = wire(DEFAULT_MAX_AUDIO_FRAMES, codec="int")
     generated_frames: int = wire(0, emit="truthy", codec="int")
     finish_reason: str | None = wire(None, codec="str")
+    stream_audio: bool = wire(False, codec="bool")
 
 
 __all__ = ["MiniMaxMusic3State"]

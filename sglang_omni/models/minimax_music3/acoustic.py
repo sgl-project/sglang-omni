@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Checkpoint-backed DIT/DAV and the non-streaming acoustic scheduler."""
+"""Checkpoint-backed DIT/DAV and the acoustic scheduler that streams the song."""
 
 from __future__ import annotations
 
@@ -8,11 +8,12 @@ import logging
 import math
 import threading
 import time
-from collections.abc import Callable
-from contextlib import nullcontext
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass, field
 
 import torch
+import torchaudio.functional as AF
 from torch import Tensor
 
 from sglang_omni.models.minimax_music3.serial_offload import (
@@ -58,10 +59,80 @@ def derive_seed(seed: int, *parts: object) -> int:
     return int.from_bytes(digest.digest(), "little") & ((1 << 63) - 1)
 
 
-def resample_waveform(waveform: Tensor) -> Tensor:
-    import torchaudio.functional as AF
+RESAMPLE_GCD = math.gcd(DAV_SAMPLE_RATE, OUTPUT_SAMPLE_RATE)
+RESAMPLE_INPUT_BLOCK = DAV_SAMPLE_RATE // RESAMPLE_GCD
+RESAMPLE_OUTPUT_BLOCK = OUTPUT_SAMPLE_RATE // RESAMPLE_GCD
 
-    return AF.resample(waveform.float(), DAV_SAMPLE_RATE, OUTPUT_SAMPLE_RATE)
+
+@contextmanager
+def single_intra_op_thread() -> Iterator[None]:
+    # note (ruiling): a piece takes a few ms on one thread; the default pool wakes
+    # every core on each piece and slowed eight concurrent songs by 10%.
+    threads = torch.get_num_threads()
+    torch.set_num_threads(1)
+    try:
+        yield
+    finally:
+        torch.set_num_threads(threads)
+
+
+class StreamingResampler:
+    """Resample 44.1 kHz audio to 32 kHz as it arrives, one piece per push.
+
+    Every output block of 320 samples comes from one 441-sample input block plus
+    the filter's reach on either side. A piece covers whole blocks and is
+    resampled with one block of input on each side, wider than the filter's
+    reach, so each block sees the input it would see in one pass over the
+    joined audio. Stream and full responses join the same pieces.
+    """
+
+    def __init__(self) -> None:
+        self.pending: Tensor | None = None
+        self.pending_start = 0
+        self.input_samples = 0
+        self.output_samples = 0
+        self.emitted_blocks = 0
+
+    def push(self, wave: Tensor, *, final: bool) -> Tensor | None:
+        """Append [channels, samples] of 44.1 kHz audio; return the 32 kHz audio now settled."""
+        wave = wave.float()
+        self.pending = (
+            wave if self.pending is None else torch.cat((self.pending, wave), dim=-1)
+        )
+        self.input_samples += int(wave.shape[-1])
+        if final:
+            total = math.ceil(
+                self.input_samples * RESAMPLE_OUTPUT_BLOCK / RESAMPLE_INPUT_BLOCK
+            )
+            ready = math.ceil(total / RESAMPLE_OUTPUT_BLOCK)
+        else:
+            total = None
+            ready = max(0, self.input_samples // RESAMPLE_INPUT_BLOCK - 1)
+        if ready <= self.emitted_blocks and total is None:
+            return None
+        else:
+            pass
+        context = 1 if self.emitted_blocks else 0
+        start = (self.emitted_blocks - context) * RESAMPLE_INPUT_BLOCK
+        end = self.input_samples if final else (ready + 1) * RESAMPLE_INPUT_BLOCK
+        segment = self.pending[:, start - self.pending_start : end - self.pending_start]
+        with single_intra_op_thread():
+            resampled = AF.resample(segment, DAV_SAMPLE_RATE, OUTPUT_SAMPLE_RATE)
+        first = context * RESAMPLE_OUTPUT_BLOCK
+        if total is None:
+            last = first + (ready - self.emitted_blocks) * RESAMPLE_OUTPUT_BLOCK
+        else:
+            last = first + total - self.output_samples
+        piece = resampled[:, first:last]
+        self.emitted_blocks = ready
+        self.output_samples += int(piece.shape[-1])
+        keep_from = (self.emitted_blocks - 1) * RESAMPLE_INPUT_BLOCK
+        if keep_from > self.pending_start:
+            self.pending = self.pending[:, keep_from - self.pending_start :]
+            self.pending_start = keep_from
+        else:
+            pass
+        return piece if piece.shape[-1] else None
 
 
 def positive_int(name: str, value: object) -> int:
@@ -438,7 +509,9 @@ class MiniMaxMusic3AcousticDecoder:
 @dataclass
 class AcousticStreamState:
     final_state: MiniMaxMusic3State | None = None
-    wave_chunks: list[Tensor] = field(default_factory=list)
+    resampler: StreamingResampler = field(default_factory=StreamingResampler)
+    audio_pieces: list[Tensor] = field(default_factory=list)
+    stream_audio: bool = False
     hidden_frames: int = 0
     last_latent: Tensor | None = None
     last_condition: Tensor | None = None
@@ -449,7 +522,7 @@ class AcousticStreamState:
 
 
 class MiniMaxMusic3AcousticScheduler(StreamingSimpleScheduler):
-    """Consumes internal hidden chunks while HTTP remains non-streaming."""
+    """Decode hidden chunks into song audio, streaming each settled piece on request."""
 
     def __init__(
         self,
@@ -512,6 +585,12 @@ class MiniMaxMusic3AcousticScheduler(StreamingSimpleScheduler):
         end_frame = int(metadata["end_frame"])
         seed = int(metadata["seed"])
         is_last = bool(metadata["is_final"])
+        stream_audio = metadata.get("stream_audio", False)
+        if not isinstance(stream_audio, bool):
+            raise ValueError("MiniMax Music 3 acoustic stream_audio must be a bool")
+        else:
+            pass
+        state.stream_audio = stream_audio
         if chunk_idx != state.next_chunk_idx or start_frame != state.next_start_frame:
             raise ValueError(
                 "MiniMax Music 3 acoustic chunks must be ordered: "
@@ -550,11 +629,36 @@ class MiniMaxMusic3AcousticScheduler(StreamingSimpleScheduler):
             ChunkWindow(chunk_idx, 0, int(hidden.shape[0]), chunk_idx == 0, is_last),
         )
         end = wave.shape[-1] - right_trim if right_trim else wave.shape[-1]
-        state.wave_chunks.append(wave[:, left_trim:end])
+        piece = state.resampler.push(wave[:, left_trim:end], final=is_last)
         state.hidden_frames += int(hidden.shape[0])
         state.next_chunk_idx += 1
         state.next_start_frame += AR_CHUNK_HOP_FRAMES
-        return []
+        if piece is None:
+            return []
+        else:
+            state.audio_pieces.append(piece)
+        if not state.stream_audio:
+            return []
+        else:
+            pass
+        data: dict[str, bytes | list[int] | str | int | bool] = dict(
+            audio_waveform_payload(
+                piece,
+                sample_rate=OUTPUT_SAMPLE_RATE,
+                modality="audio",
+                source_hint="MiniMax Music 3",
+                keep_channels=True,
+            )
+        )
+        data["keep_audio_channels"] = True
+        return [
+            OutgoingMessage(
+                request_id=request_id,
+                type="stream",
+                data=data,
+                metadata={"modality": "audio"},
+            )
+        ]
 
     def on_stream_done(self, request_id: str) -> list[OutgoingMessage]:
         state = self.stream_states.get(request_id)
@@ -562,26 +666,28 @@ class MiniMaxMusic3AcousticScheduler(StreamingSimpleScheduler):
             raise ValueError("MiniMax Music 3 stream completed without final payload")
         else:
             pass
-        if not state.wave_chunks:
+        if not state.audio_pieces:
             raise ValueError(
                 "MiniMax Music 3 stream completed without decoded audio chunks"
             )
         else:
             pass
-        waveform_44k = torch.cat(state.wave_chunks, dim=1)
-        waveform_32k = resample_waveform(waveform_44k)
+        output_samples = state.resampler.output_samples
         final_state = state.final_state
-        payload_data: dict[
-            str, bytes | list[int] | str | int | dict[str, int | float]
-        ] = dict(
-            audio_waveform_payload(
-                waveform_32k,
-                sample_rate=OUTPUT_SAMPLE_RATE,
-                modality="audio",
-                source_hint="MiniMax Music 3",
-                keep_channels=True,
+        payload_data: dict[str, bytes | list[int] | str | int | dict[str, int | float]]
+        if state.stream_audio:
+            # note (ruiling): the client already holds every piece; the result only closes the stream.
+            payload_data = {"modality": "audio", "sample_rate": OUTPUT_SAMPLE_RATE}
+        else:
+            payload_data = dict(
+                audio_waveform_payload(
+                    torch.cat(state.audio_pieces, dim=1),
+                    sample_rate=OUTPUT_SAMPLE_RATE,
+                    modality="audio",
+                    source_hint="MiniMax Music 3",
+                    keep_channels=True,
+                )
             )
-        )
         usage = build_usage(final_state)
         if usage is not None:
             payload_data["usage"] = usage
@@ -589,7 +695,7 @@ class MiniMaxMusic3AcousticScheduler(StreamingSimpleScheduler):
             pass
         payload_data["finish_reason"] = final_state.finish_reason or "stop"
         logger.info(
-            f"MiniMax Music 3 acoustic done request={request_id} hidden_frames={state.hidden_frames} samples={waveform_44k.shape[-1]}->{waveform_32k.shape[-1]} duration={waveform_32k.shape[-1] / OUTPUT_SAMPLE_RATE:.2f}s sample_rate={OUTPUT_SAMPLE_RATE} finish_reason={payload_data['finish_reason']} elapsed={time.perf_counter() - state.started_at:.1f}s"
+            f"MiniMax Music 3 acoustic done request={request_id} hidden_frames={state.hidden_frames} samples={state.resampler.input_samples}->{output_samples} duration={output_samples / OUTPUT_SAMPLE_RATE:.2f}s sample_rate={OUTPUT_SAMPLE_RATE} streamed={state.stream_audio} pieces={len(state.audio_pieces)} finish_reason={payload_data['finish_reason']} elapsed={time.perf_counter() - state.started_at:.1f}s"
         )
         return [
             OutgoingMessage(
@@ -615,7 +721,8 @@ class MiniMaxMusic3AcousticScheduler(StreamingSimpleScheduler):
         state = self.stream_states.pop(request_id, None)
         if state is not None:
             state.abort_event.set()
-            state.wave_chunks.clear()
+            state.audio_pieces.clear()
+            state.resampler = StreamingResampler()
             state.final_state = None
             state.last_latent = None
             state.last_condition = None
@@ -632,6 +739,6 @@ class MiniMaxMusic3AcousticScheduler(StreamingSimpleScheduler):
 __all__ = [
     "MiniMaxMusic3AcousticDecoder",
     "MiniMaxMusic3AcousticScheduler",
-    "resample_waveform",
+    "StreamingResampler",
     "resolve_acoustic_dtype",
 ]

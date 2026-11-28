@@ -1923,6 +1923,54 @@ def test_speech_stream_defaults_to_audio_with_wav_or_pcm(
     assert client.get("/v1/audio/speech/speech-unknown").status_code == 404
 
 
+@pytest.mark.parametrize("stream_format", ["audio", "sse"])
+def test_speech_stereo_wav_preserves_samples_and_duration(
+    stream_format: Literal["audio", "sse"],
+) -> None:
+    """Marked stereo chunks must keep both channels through the HTTP endpoint."""
+    waveform = np.stack(
+        [np.full(3200, 0.25, dtype=np.float32), np.full(3200, -0.5, dtype=np.float32)]
+    )
+    chunks = [
+        GenerateChunk(
+            request_id="song",
+            modality="audio",
+            audio_data=piece,
+            sample_rate=32000,
+            keep_audio_channels=True,
+        )
+        for piece in np.split(waveform, 2, axis=-1)
+    ]
+    chunks.append(
+        GenerateChunk(request_id="song", modality="audio", finish_reason="stop")
+    )
+    client = TestClient(
+        create_app(ScriptedStreamingSpeechClient(chunks), model_name="minimax-music3")
+    )
+
+    response = client.post(
+        "/v1/audio/speech",
+        json={
+            "input": "lyrics",
+            "stream": True,
+            "response_format": "wav",
+            "stream_format": stream_format,
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.headers["x-channels"] == "2"
+    if stream_format == "sse":
+        events = parse_speech_sse_events(response.text, False)
+        audio = b"".join(base64.b64decode(event["audio"]) for event in events[:-1])
+        assert events[-1]["finish_reason"] == "stop"
+        assert events[-1]["duration"] == pytest.approx(0.1)
+    else:
+        audio = response.content
+    assert struct.unpack("<H", audio[22:24]) == (2,)
+    assert audio[44:] == encode_pcm(waveform, 32000)
+
+
 def test_speech_outcome_identity_is_independent_of_reused_correlation_ids() -> None:
     client = TestClient(
         create_app(TerminalChunkStreamingSpeechClient(), model_name="s2-pro")

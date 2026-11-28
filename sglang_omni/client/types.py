@@ -220,6 +220,8 @@ class GenerateChunk:
     audio_data: object = None
     media: list[dict[str, object]] | None = None
     sample_rate: int | None = None
+    # note (ruiling): the producer asks a stream to keep its channels instead of mixing them to mono.
+    keep_audio_channels: bool = False
     diarization: DiarizationResult | None = None
     image: str | None = None  # base64-encoded PNG from the terminal result
     n_best: list[TranscriptHypothesis] | None = None

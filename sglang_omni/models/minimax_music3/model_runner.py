@@ -102,6 +102,7 @@ class MiniMaxMusic3ARState:
     emitted_windows: int = 0
     generated_frames: int = 0
     finish_reason: str = "length"
+    stream_audio: bool = False
     started_s: float = 0.0
     pending_chunks: list[tuple[torch.Tensor, dict[str, str | int | bool]]] = field(
         default_factory=list
@@ -402,6 +403,7 @@ class MiniMaxMusic3ModelRunner(ModelRunner["MiniMaxMusic3SGLangRequestData"]):
             decode_limit=decode_limit,
             started_s=time.perf_counter(),
             forced_codes=self.load_forced_codes(state.seed),
+            stream_audio=state.stream_audio,
         )
         self.request_data[request_id] = data
         logger.info(
@@ -535,6 +537,7 @@ class MiniMaxMusic3ModelRunner(ModelRunner["MiniMaxMusic3SGLangRequestData"]):
                     "end_frame": window.end,
                     "is_final": is_final,
                     "seed": ar_state.seed,
+                    "stream_audio": ar_state.stream_audio,
                 },
             )
         )

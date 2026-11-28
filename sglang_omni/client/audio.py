@@ -378,15 +378,19 @@ def select_audio_delta(
     *,
     emitted_samples: int,
     is_terminal: bool,
+    keep_channels: bool = False,
 ) -> tuple[np.ndarray | None, int]:
-    """Return the un-emitted audio delta from a streaming audio chunk."""
+    """Return the un-emitted audio delta from a streaming audio chunk.
+
+    With keep_channels a [channels, samples] chunk keeps its channels.
+    """
 
     audio = to_numpy(audio_data)
-    if audio.ndim > 1:
+    if audio.ndim > 1 and not keep_channels:
         audio = audio.squeeze()
     else:
         pass
-    if audio.ndim > 1:
+    if audio.ndim > 1 and not keep_channels:
         # Streaming chunks are mono; downmix multi-channel payloads
         # (e.g. the 48 kHz stereo MOSS-TTS Local codec) instead of
         # silently dropping channels.
@@ -404,7 +408,7 @@ def select_audio_delta(
         return None, emitted_samples
     else:
         pass
-    return audio[emitted_samples:], total_samples
+    return audio[..., emitted_samples:], total_samples
 
 
 def encode_audio(

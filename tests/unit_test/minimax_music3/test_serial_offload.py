@@ -300,7 +300,7 @@ def test_acoustic_abort_reopens_admission_after_ar_cleanup(
     )
     decoder = RecordingAcousticDecoder()
     scheduler = MiniMaxMusic3AcousticScheduler(decoder)
-    acoustic_state = AcousticStreamState(wave_chunks=[torch.ones(1)])
+    acoustic_state = AcousticStreamState(audio_pieces=[torch.ones(1)])
     scheduler.stream_states["cancelled"] = acoustic_state
     runner = MiniMaxMusic3ModelRunner.__new__(MiniMaxMusic3ModelRunner)
     runner.serial_offload = coordinator
@@ -332,7 +332,7 @@ def test_acoustic_abort_reopens_admission_after_ar_cleanup(
     runner.reset_request("cancelled")
     assert scheduler.is_aborted("cancelled")
     assert acoustic_state.abort_event.is_set()
-    assert not acoustic_state.wave_chunks
+    assert not acoustic_state.audio_pieces
     assert decoder.release_count == (0 if abort_before_handoff else 1)
     assert coordinator.try_acquire_ar("next")
     coordinator.begin_dit_handoff("next")
