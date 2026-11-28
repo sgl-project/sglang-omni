@@ -25,6 +25,7 @@ class CorpusEntry:
     sample_id: str
     text: str
     source_line: int
+    language: str | None = None
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -41,6 +42,7 @@ class StressConfig:
     corpus: tuple[CorpusEntry, ...]
     corpus_path: Path
     text_field: str
+    language_field: str | None
     text_id_field: str | None
     text_repeat: str
 
@@ -90,9 +92,22 @@ class StressConfig:
     def entry_for(self, index: int) -> CorpusEntry:
         return self.corpus[index % len(self.corpus)]
 
-    def payload_for(self, index: int, text: str | None = None) -> dict[str, Any]:
+    def payload_for(
+        self,
+        index: int,
+        text: str | None = None,
+        entry: CorpusEntry | None = None,
+    ) -> dict[str, Any]:
+        """Build one request body, keeping text and language from the same entry.
+
+        A per-row language overrides --language / --extra-body; rows without a
+        language keep the template's default.
+        """
         payload = dict(self.payload_template)
-        payload["input"] = text if text is not None else self.entry_for(index).text
+        chosen = entry if entry is not None else self.entry_for(index)
+        payload["input"] = text if text is not None else chosen.text
+        if chosen.language is not None:
+            payload["language"] = chosen.language
         return payload
 
     def snapshot(self) -> dict[str, Any]:
@@ -114,6 +129,10 @@ class StressConfig:
             "corpus": {
                 "text_jsonl": str(self.corpus_path),
                 "text_field": self.text_field,
+                "language_field": self.language_field,
+                "languages": sorted(
+                    {entry.language for entry in self.corpus if entry.language}
+                ),
                 "text_id_field": self.text_id_field,
                 "corpus_size": len(self.corpus),
                 "first_sample_ids": [entry.sample_id for entry in self.corpus[:5]],
@@ -243,7 +262,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
         default=1.0,
         help="speech speed, server range 0.25 to 4.0",
     )
-    request.add_argument("--language", default=None)
+    request.add_argument(
+        "--language",
+        default=None,
+        help="default request language; overridden by a per-row --language-field value",
+    )
     request.add_argument("--task-type", default=None)
     request.add_argument("--instructions", default=None)
     request.add_argument(
@@ -288,6 +311,15 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
     corpus.add_argument(
         "--text-field", default="text", help="prompt field name in each jsonl object"
+    )
+    corpus.add_argument(
+        "--language-field",
+        default="language",
+        metavar="FIELD",
+        help=(
+            "per-row language field; its value overrides --language for that request, "
+            "so a corpus can mix languages. Pass an empty string to disable per-row lookup"
+        ),
     )
     corpus.add_argument(
         "--text-id-field",
@@ -568,6 +600,17 @@ def resolve_options(options: argparse.Namespace) -> StressConfig:
             errors.append(f"--reference is not valid JSON: {exc}")
 
     corpus = load_corpus(options, errors)
+    if (
+        corpus
+        and options.language_field
+        and options.language_field != "language"
+        and not any(entry.language for entry in corpus)
+    ):
+        errors.append(
+            f"--language-field {options.language_field!r} is absent from every "
+            "corpus row; check the field name or pass an empty string to disable "
+            "per-row language"
+        )
     payload_template = build_payload(
         options, file_template, extra_body, references, errors
     )
@@ -609,6 +652,7 @@ def resolve_options(options: argparse.Namespace) -> StressConfig:
         corpus=corpus,
         corpus_path=Path(options.text_jsonl).expanduser().resolve(),
         text_field=options.text_field,
+        language_field=options.language_field or None,
         text_id_field=options.text_id_field,
         text_repeat=options.text_repeat,
         qpm=qpm,
@@ -679,6 +723,7 @@ def load_corpus(
         return ()
 
     id_fields = (options.text_id_field,) if options.text_id_field else SAMPLE_ID_FIELDS
+    language_field = options.language_field or None
     entries: list[CorpusEntry] = []
     try:
         with path.open(encoding="utf-8") as handle:
@@ -706,6 +751,9 @@ def load_corpus(
                     CorpusEntry(
                         sample_id=resolve_sample_id(record, id_fields, line_number),
                         text=value.strip(),
+                        language=resolve_language(
+                            record, language_field, path, line_number, errors
+                        ),
                         source_line=line_number,
                     )
                 )
@@ -716,6 +764,28 @@ def load_corpus(
     if not entries:
         errors.append(f"--text-jsonl produced no usable prompts: {path}")
     return tuple(entries)
+
+
+def resolve_language(
+    record: dict[str, Any],
+    field_name: str | None,
+    path: Path,
+    line_number: int,
+    errors: list[str],
+) -> str | None:
+    """Read one row's language; missing or blank rows fall back to --language."""
+    if not field_name:
+        return None
+    value = record.get(field_name)
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return None
+    if isinstance(value, str):
+        return value.strip()
+    errors.append(
+        f"{path}:{line_number} field {field_name!r} must be a non-empty string; "
+        f"got {type(value).__name__}"
+    )
+    return None
 
 
 def resolve_sample_id(
@@ -889,6 +959,9 @@ def describe_plan(config: StressConfig) -> str:
         f"text corpus      : {len(config.corpus)} prompts from {config.corpus_path} "
         f"(field={config.text_field}), first sample_id={config.corpus[0].sample_id} "
         f"text={config.corpus[0].text[:60]!r}",
+        f"languages        : field={config.language_field or 'disabled'}, "
+        f"default={config.payload_template.get('language') or 'none'}, "
+        f"values={sorted({entry.language for entry in config.corpus if entry.language})}",
         f"output           : {config.output}",
         "config snapshot  : "
         + json.dumps(config_snapshot, ensure_ascii=False)[:300]

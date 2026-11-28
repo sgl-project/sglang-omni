@@ -261,6 +261,7 @@ def new_recorder(
         text=entry.text,
         warmup=warmup,
         planned_at_s=planned_at_s,
+        entry=entry,
     )
 
 
@@ -269,7 +270,9 @@ async def perform_request(
     session: aiohttp.ClientSession,
     recorder: StreamRecorder,
 ) -> None:
-    payload = config.payload_for(recorder.sequence, text=recorder.text)
+    payload = config.payload_for(
+        recorder.sequence, text=recorder.text, entry=recorder.entry
+    )
     async with session.post(config.url, json=payload) as response:
         recorder.start_response(response.status, dict(response.headers.items()))
         if response.status != 200:

@@ -1,0 +1,100 @@
+{"id": "zh-001", "language": "zh", "text": "这个和前缀缓存是正交的。"}
+{"id": "zh-002", "language": "zh", "text": "行地址在构造后永不变更。"}
+{"id": "zh-003", "language": "zh", "text": "但\"能用\"不等于\"值得\"。"}
+{"id": "zh-004", "language": "zh", "text": "该伪代码没有讲约束解码的重叠。"}
+{"id": "zh-005", "language": "zh", "text": "如果检测到差异，立即警告用户。"}
+{"id": "zh-006", "language": "zh", "text": "这直接影响了流式调度的切分策略。"}
+{"id": "zh-007", "language": "zh", "text": "残差机制被破坏了，自然音质会下降。"}
+{"id": "zh-008", "language": "zh", "text": "这个优化到底是不是在拿效果换速度？"}
+{"id": "zh-009", "language": "zh", "text": "因此不会让某些硬件上的正确性出问题。"}
+{"id": "zh-010", "language": "zh", "text": "可见，探索与利用的平衡存在严重冲突。"}
+{"id": "zh-011", "language": "zh", "text": "这里摘录一些对我蛮有启发的博客的记录。"}
+{"id": "zh-012", "language": "zh", "text": "序列权重是所有 Token 权重的乘积。"}
+{"id": "zh-013", "language": "zh", "text": "在 Omni 中，显存配额的定义有所不同。"}
+{"id": "zh-014", "language": "zh", "text": "Prefill 完成后，生成按帧循环进行。"}
+{"id": "zh-015", "language": "zh", "text": "对于整个更新函数，我几乎怀疑到了每一步头上。"}
+{"id": "zh-016", "language": "zh", "text": "这是对我而言最清晰的地方，实际上也是最熟悉的。"}
+{"id": "zh-017", "language": "zh", "text": "面对无处不在的荒诞，冷眼旁观或一笑而过都是不够的。"}
+{"id": "zh-018", "language": "zh", "text": "下载的镜像相当于压缩包，我们要把镜像解成容器才可以运行。"}
+{"id": "zh-019", "language": "zh", "text": "宿主机和 docker 容器会共享目录下所有的文件和文件夹。"}
+{"id": "zh-020", "language": "zh", "text": "这些不完整的行只在最终 flush、整段序列都可用时才释放。"}
+{"id": "zh-021", "language": "zh", "text": "具体的麻烦总会有一天在别处道来，但是有一句话，是值得立刻分享的。"}
+{"id": "zh-022", "language": "zh", "text": "而在把关卡通过率对齐之后，TEMPO 的 Score 仍然更高。"}
+{"id": "zh-023", "language": "zh", "text": "基于这种思想，我们可以从人类专家的轨迹中提取出策略的知识，供智能体学习。"}
+{"id": "zh-024", "language": "zh", "text": "很有意思，就是第一个被广播的参数很慢，其他参数都很快。这是因为没有同步么？"}
+{"id": "zh-025", "language": "zh", "text": "我个人比较喜欢这样解耦的设计，同时，AgentLoop 的代码结构也比较清晰。"}
+{"id": "zh-026", "language": "zh", "text": "RVQ 的层级残差机制让生成同一帧不同层 codec token 的顺序变得重要。"}
+{"id": "zh-027", "language": "zh", "text": "换句话说，Coordinator 更像请求入口和结果汇聚器，而不是全局工作流调度器。"}
+{"id": "zh-028", "language": "zh", "text": "更微妙的是，就算真的有多个 Worker，当前并发也不主要由 Worker 池提供。"}
+{"id": "zh-029", "language": "zh", "text": "这一文件仅仅配置了 gsm8k 的 tool 调用，并不会覆盖之前训练的 config。"}
+{"id": "zh-030", "language": "zh", "text": "前一段时间我们在 RL 训练和 SGLang 本身的推理当中都遇到了一定的显存泄露问题。"}
+{"id": "zh-031", "language": "zh", "text": "在 MDP 中，交互采样得到的数据本身不满足独立假设，因为这一时刻的状态和上一时刻的状态有关。"}
+{"id": "zh-032", "language": "zh", "text": "这是整套系统最核心的扩展手段之一，因为它试图把“模型差异”压缩到配置与 executor 层。"}
+{"id": "zh-033", "language": "zh", "text": "其中，Flow / CFM 先生成 mel 声学特征，HiFT 再将这些特征转换成可播放的音频。"}
+{"id": "zh-034", "language": "zh", "text": "有趣的是，乍一想，我们可能都不会认为这是什么不平凡的事情，，但看似简单的重构最终却暗藏许多门道。"}
+{"id": "zh-035", "language": "zh", "text": "但是显然，这三部分会占据相当大的显存。考虑大小为 XB 的模型，这三部分会有 12X 的显存占用。"}
+{"id": "zh-036", "language": "zh", "text": "因此对于一个成熟的框架来说，应该在测试性能时，把性能测试的粒度划分得足够细，从而发现一些设计之初可能会忽视的问题。"}
+{"id": "zh-037", "language": "zh", "text": "此外，每个 mixed-reference 实验配置重复三次，每次服务启动后先完成 50 条预热，并从正式统计中剔除。"}
+{"id": "zh-038", "language": "zh", "text": "不幸的是，截至今天，很少有模型支持此功能。由于 verl 是一个需要支持各种模型的框架，我们不能依赖只适用于少数模型的解决方案。"}
+{"id": "zh-039", "language": "zh", "text": "四个阶段中，Encoding 和 Decoding 在不同模型之间相对稳定——差异主要体现在 codec 的选型，而非计算模式本身。"}
+{"id": "zh-040", "language": "zh", "text": "当然，这个多臂老虎机模型是最为简化的 RL 任务，因为奖励是不延迟的，state 不会变化，而且 action 之间不会有后续影响。"}
+{"id": "zh-041", "language": "zh", "text": "我们的第一反应是本文第一节中描述的 SGLang 0.5.16 的执行流程变化导致了这个回退，profile 看上去似乎支持我们的猜想。"}
+{"id": "zh-042", "language": "zh", "text": "异构带来的不只是调度上的解耦诉求——stage 之间如何传递数据，同样需要分情况讨论。第二个共性是 stage 之间的依赖模式出现了分化。"}
+{"id": "zh-043", "language": "zh", "text": "讲到这里，不得不提到兰青老师曾给我分享过的一种定义——CUDA Graph 就是一种 cache。既然是 cache，一定是空间换时间的。"}
+{"id": "zh-044", "language": "zh", "text": "项目做完后，我一直想抽空做个总结，因为 SGLang 在量化这块的设计确实非常清晰，很值得拿出来聊聊。所以就有了这篇文章。本文会以 w4afp8 为例，带大家看看 SGLang 是如何处理量化的。"}
+{"id": "zh-045", "language": "zh", "text": "WER 用替换、删除和插入的词数除以参考文本词数，短句的分母小，确实容易因少量错误发生大幅变化。比如一条 4 词短句出现 3 个词错误，WER 就达到 75%。观察到性能上的潜在收益时，一定要小心正确性是否会受到影响。"}
+{"id": "zh-046", "language": "zh", "text": "\"模型生成了 EOS\"和\"流水线已经处理完这个请求\"是两个不同的事件。清理属于第二个边界，这个边界的位置，取决于最后一个还握着这个请求的地方什么时候放手，所以要把这些地方逐个列出来确认，不能看模型的 finish 标志。"}
+{"id": "zh-047", "language": "zh", "text": "最后这一条其实比第二条更有说服力，因为分数更高还可以用\"探索得更多\"来解释，但相同进度下用更少的步数就没法这么解释了，它说明模型确实更早地判断出了哪条路走不通，也就是 critic 那套判断能力真的泛化回了 actor 身上。"}
+{"id": "zh-048", "language": "zh", "text": "痛点在于，如果从 Server 启动时就开启 profiling，生成的 trace 文件往往大到难以处理。因此希望SGLang Server刚开始正常运行，我们通过交互式的方式在特定时间段进行profile并获得相应trace信息。"}
+{"id": "zh-049", "language": "zh", "text": "如果您的目标是完全消除训推不匹配，我们推荐使用 Truly On Policy 解决方案，我们接下来也会做出更多关于 Truly On Policy 的探索。如果您倾向于在缓解不匹配的同时保持高性能，像 MIS 这样的算法修正是一个轻量级且有效的选择。"}
+{"id": "zh-050", "language": "zh", "text": "然后按这个数字与目标值 V 的误差给每次采样一个 reward，误差越小 reward 越高；接着在这 m 个 reward 上做组内中心化，得到每条采样的 advantage；最后按 policy gradient 更新，梯度自然就落到了整段推理上。"}
+{"id": "en-001", "language": "en", "text": "Unfortunately, our gain was essentially zero."}
+{"id": "en-002", "language": "en", "text": "Write model checkpoints at regular intervals."}
+{"id": "en-003", "language": "en", "text": "Higgs had already regressed before the branch existed."}
+{"id": "en-004", "language": "en", "text": "SGLang's varlen FlashAttention path expects a different representation."}
+{"id": "en-005", "language": "en", "text": "Where do we hope SGLang Omni will go next?"}
+{"id": "en-006", "language": "en", "text": "Batch evaluate rewards for multiple samples, improving evaluation efficiency."}
+{"id": "en-007", "language": "en", "text": "Prove our training performance on complex, multi-turn suitable tasks."}
+{"id": "en-008", "language": "en", "text": "It’s particularly useful for inference servers like VerlEngine using HybridEngine."}
+{"id": "en-009", "language": "en", "text": "This multi-turn interaction is how VLMs evolve into truly intelligent agents."}
+{"id": "en-010", "language": "en", "text": "All of these numbers come from a single instance per GPU."}
+{"id": "en-011", "language": "en", "text": "Long packed CUDA outputs are also compared with the dense SDPA reference."}
+{"id": "en-012", "language": "en", "text": "Returns empty lists and dictionaries if no tool configuration path is specified."}
+{"id": "en-013", "language": "en", "text": "Although the physical dtype remains floating point, the value precision is effectively reduced."}
+{"id": "en-014", "language": "en", "text": "This issue is especially prominent in multi-turn tasks involving variable-length dialogues and tool calls."}
+{"id": "en-015", "language": "en", "text": "It checks whether the current input sequence length exceeds the model's maximum length limit."}
+{"id": "en-016", "language": "en", "text": "A dense batch contains padding for every audio sequence shorter than the longest one."}
+{"id": "en-017", "language": "en", "text": "When the vocoder runs in a separate process, the same optimization is approximately neutral."}
+{"id": "en-018", "language": "en", "text": "If gradients not managed by oneself are directly discarded, gradient accumulation cannot be completed."}
+{"id": "en-019", "language": "en", "text": "If multiple variables move together, the source of the gain needs to be separated carefully."}
+{"id": "en-020", "language": "en", "text": "Since late February this year, my personal focus has shifted from SGLang RL to SGLang Omni."}
+{"id": "en-021", "language": "en", "text": "Encoder-side mel alignment and LLM-side sequence packing allow multiple requests to be processed together more efficiently."}
+{"id": "en-022", "language": "en", "text": "We can view Block Diffusion as a functional extension to the existing Chunk Prefill mechanism within SGLang."}
+{"id": "en-023", "language": "en", "text": "Two years have passed since then, and this was essentially the opening work of this MoE-dominated era."}
+{"id": "en-024", "language": "en", "text": "The old tensor pointed to by the original SGLang engine handler is also freed, preventing any memory leaks."}
+{"id": "en-025", "language": "en", "text": "The multi-stage decoding scenario differs noticeably from single-stage decoding managed by a single Scheduler in terms of memory configuration."}
+{"id": "en-026", "language": "en", "text": "The evaluation results in the table above demonstrate that all models achieve good accuracy, with MMLU scores consistently above 0.55."}
+{"id": "en-027", "language": "en", "text": "Fixing the GPU model while leaving CPU resources uncontrolled can make a few percentage points of improvement hard to interpret."}
+{"id": "en-028", "language": "en", "text": "It receives one frame's complete 10 tokens and decodes them into actual audio PCM waveforms. Pure signal processing, completely decoupled from LLM scheduling."}
+{"id": "en-029", "language": "en", "text": "Without waiting for the final outcome, an unfinished trajectory can already produce training signals, which is exactly what actor-critic schemes hope to achieve."}
+{"id": "en-030", "language": "en", "text": "I know clearly that my fundamentals have gaps — almost every step forward requires me to pay back something I owed in the past."}
+{"id": "en-031", "language": "en", "text": "Considering that the scheduling system is perhaps the most complex central component of SGLang, I have revised the writing structure several times for easier understanding."}
+{"id": "en-032", "language": "en", "text": "It's important to note that from a macro process perspective, this \"free\" is more about releasing the cache reference rather than directly evicting it from the cache."}
+{"id": "en-033", "language": "en", "text": "The return order of the rollout is random, so it needs to reorder the return values according to the batch ID and the offset within the batch."}
+{"id": "en-034", "language": "en", "text": "SGLang's own server would return the rest of the call as content, closing tags included, and the dialog would speak them, so this option needs the chat service."}
+{"id": "en-035", "language": "en", "text": "But after 600 steps, although the train and eval reward remains stable, the K3 KL metrics start to increase dramatically, indicating the existence of training and rollout mismatch."}
+{"id": "en-036", "language": "en", "text": "If a single LLM were to string all tokens into one sequence for autoregressive generation, this LLM's context window would need to accommodate all 10 × number-of-frames codec tokens."}
+{"id": "en-037", "language": "en", "text": "That kind of failure is easy to misattribute to preprocessing, image resizing, tokenizer changes, model weights, rotary positions, or general GPU nondeterminism, so we compared the two stacks layer by layer."}
+{"id": "en-038", "language": "en", "text": "During the refactor, we also explored several broader abstractions based on profiling results, including batched reference encoding and a shared decode-state pool. Load testing showed, however, that these optimizations were highly workload-dependent."}
+{"id": "en-039", "language": "en", "text": "FIFO keeps several reference groups within one outer call. It still computes them group by group, but reduces repeated exits from the compute path, collection of the next batch, dispatch, and return."}
+{"id": "en-040", "language": "en", "text": "Second, server topology is not as simple as core numbering; a single physical core usually has two hyperthreads, and as soon as a pair of siblings is handed to two different processes, contention is manufactured."}
+{"id": "en-041", "language": "en", "text": "However, an entire batch goes in, and an entire batch comes out. The requests in these batches are returned simultaneously and simultaneously parsed to check for tool call parameters, then requests are sent to the tool."}
+{"id": "en-042", "language": "en", "text": "The encoder output is forwarded once to prefill. When the KV layouts are compatible and both phases run on the same host, each prefill rank transfers its KV shard to the corresponding decode rank over CUDA IPC."}
+{"id": "en-043", "language": "en", "text": "It is the core component in SGLang Scheduler responsible for batching prefill and decode requests. Its main role is to select suitable requests from the waiting queue and assemble them into a prefill batch that can be executed efficiently."}
+{"id": "en-044", "language": "en", "text": "VLM multi-turn sampling isn't fundamentally different from LLM's—you just need to maintain and concatenate multimodal context information each round. We explicitly decouple the environment from rollout, so things like \"how the environment parses actions\" are completely independent of sampling and training."}
+{"id": "en-045", "language": "en", "text": "These decisions take as much intelligence as the answer itself; hand them to silence thresholds and hand-written rules, and they will be dumber than the model and fall further behind as models improve. So the goal is not a faster turn-based system."}
+{"id": "en-046", "language": "en", "text": "It looked like it touched close to 2,000 lines, but the logic was not complicated. In short, we previously had one script for benchmarking Omni Model Voice Clone performance on the SeedTTS dataset, and another script for testing Omni Model Voice Clone correctness."}
+{"id": "en-047", "language": "en", "text": "To draw conclusions about smaller gains, we need more independent repetitions, interleaved or randomized A/B execution order, and per-run differences with confidence intervals. Hundreds of requests within one run share queueing, resource contention, and environmental changes; they cannot simply be treated as hundreds of independent experiments."}
+{"id": "en-048", "language": "en", "text": "It generated the interpolation state differently, retained FP32 weights during multiplication, and reduced the four corners with a sum. Both implementations describe the same bilinear interpolation mathematically, but BF16 multiplication and addition are not associative. Changing the intermediate dtype and accumulation order changed the positional embeddings seen by the pretrained vision tower."}
+{"id": "en-049", "language": "en", "text": "For single-rank stages, assigning two stages to the same process group places their instances in one process while preserving each stage's computation and scheduler. Assigning them to different groups instead allows each stage to have its own replica count. Neither choice changes the stage graph, provided the edge contracts support the chosen boundary."}
+{"id": "en-050", "language": "en", "text": "It is just that for those of us accustomed to optimizing long context inference, \"madly optimizing against the GPU\" is a habit, and it blinded us to another resource that is equally decisive for throughput. Any optimization must suit the specific circumstances, start from the essence of the task and the environment, and find and exploit the fundamental limiting factor in order to solve the problems encountered in the system."}

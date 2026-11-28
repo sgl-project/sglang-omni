@@ -3,6 +3,7 @@
 
 import base64
 import json
+import random
 from pathlib import Path
 
 import pytest
@@ -10,6 +11,7 @@ import pytest
 from benchmarks.tts_serving.stream_stress.config_parser import (
     StressConfig,
     arrival_offsets,
+    describe_plan,
     parse_config,
 )
 from benchmarks.tts_serving.stream_stress.responder import (
@@ -523,3 +525,183 @@ class TestSseParsing:
         done = new_recorder()
         sender.handle_sse_frame(done, b"data: [DONE]", 0.1)
         assert done.sse_done is not None
+
+
+class TestPerRowLanguage:
+    @staticmethod
+    def write_corpus(tmp_path: Path, rows: list[dict]) -> Path:
+        path = tmp_path / "language_corpus.jsonl"
+        path.write_text(
+            "\n".join(json.dumps(row, ensure_ascii=False) for row in rows),
+            encoding="utf-8",
+        )
+        return path
+
+    @staticmethod
+    def config(tmp_path: Path, corpus: Path, *args: str) -> StressConfig:
+        return parse_config(
+            [
+                "--text-jsonl",
+                str(corpus),
+                "--output",
+                str(tmp_path / "out.jsonl"),
+                *args,
+            ]
+        )
+
+    @staticmethod
+    def mixed_corpus(tmp_path: Path) -> Path:
+        return TestPerRowLanguage.write_corpus(
+            tmp_path,
+            [
+                {"id": "zh-001", "language": "zh", "text": "中文句子"},
+                {"id": "en-001", "language": "en", "text": "English sentence"},
+                {"id": "no-lang", "text": "没有语言字段"},
+            ],
+        )
+
+    def test_per_row_language_overrides_cli_default(self, tmp_path: Path) -> None:
+        config = self.config(tmp_path, self.mixed_corpus(tmp_path), "--language", "fr")
+
+        assert config.payload_for(0)["language"] == "zh"
+        assert config.payload_for(1)["language"] == "en"
+        assert config.payload_for(0)["input"] == "中文句子"
+        assert config.payload_for(2)["language"] == "fr"
+
+    def test_language_is_omitted_without_row_or_cli(self, tmp_path: Path) -> None:
+        config = self.config(tmp_path, self.mixed_corpus(tmp_path))
+
+        assert config.payload_for(0)["language"] == "zh"
+        assert "language" not in config.payload_for(2)
+
+    def test_custom_language_field_and_new_language(self, tmp_path: Path) -> None:
+        corpus = self.write_corpus(
+            tmp_path, [{"id": "ja-001", "lang": "ja", "text": "こんにちは"}]
+        )
+        config = self.config(
+            tmp_path, corpus, "--language-field", "lang", "--language", "zh"
+        )
+
+        assert config.payload_for(0)["language"] == "ja"
+
+    def test_language_field_can_be_disabled(self, tmp_path: Path) -> None:
+        config = self.config(
+            tmp_path,
+            self.mixed_corpus(tmp_path),
+            "--language-field",
+            "",
+            "--language",
+            "ko",
+        )
+
+        assert [config.payload_for(i)["language"] for i in range(3)] == ["ko"] * 3
+
+    def test_invalid_language_value_is_rejected(self, tmp_path: Path) -> None:
+        corpus = self.write_corpus(
+            tmp_path, [{"id": "bad", "language": ["zh"], "text": "text"}]
+        )
+
+        with pytest.raises(ValueError, match="language"):
+            self.config(tmp_path, corpus)
+
+    def test_snapshot_and_plan_record_languages(self, tmp_path: Path) -> None:
+        config = self.config(tmp_path, self.mixed_corpus(tmp_path))
+
+        corpus_snapshot = config.snapshot()["corpus"]
+        assert corpus_snapshot["language_field"] == "language"
+        assert corpus_snapshot["languages"] == ["en", "zh"]
+        assert "values=['en', 'zh']" in describe_plan(config)
+
+    def test_result_record_keeps_resolved_language(self, tmp_path: Path) -> None:
+        config = self.config(tmp_path, self.mixed_corpus(tmp_path), "--language", "fr")
+        recorder = StreamRecorder(
+            config,
+            sequence=2,
+            request_id="r",
+            sample_id=config.corpus[2].sample_id,
+            text=config.corpus[2].text,
+            warmup=False,
+            entry=config.corpus[2],
+        )
+
+        assert recorder.language == "fr"
+        assert recorder.finalize(load_start=0.0).to_dict()["language"] == "fr"
+
+    def test_random_repeat_keeps_text_and_language_paired(self, tmp_path: Path) -> None:
+        sender = pytest.importorskip("benchmarks.tts_serving.stream_stress.sender")
+        config = self.config(
+            tmp_path,
+            self.mixed_corpus(tmp_path),
+            "--text-repeat",
+            "random",
+            "--language",
+            "fr",
+        )
+        expected = {
+            "中文句子": "zh",
+            "English sentence": "en",
+            "没有语言字段": "fr",
+        }
+        random_generator = random.Random(20261127)
+
+        for sequence in range(20):
+            recorder = sender.new_recorder(
+                config,
+                sequence=sequence,
+                planned_at_s=0.0,
+                warmup=False,
+                random_generator=random_generator,
+            )
+            payload = config.payload_for(
+                recorder.sequence, text=recorder.text, entry=recorder.entry
+            )
+            assert payload["input"] == recorder.text
+            assert payload["language"] == expected[recorder.text]
+
+    def test_random_entry_keeps_text_and_language_paired(self, tmp_path: Path) -> None:
+        config = self.config(tmp_path, self.mixed_corpus(tmp_path), "--language", "fr")
+        expected = {
+            "中文句子": "zh",
+            "English sentence": "en",
+            "没有语言字段": "fr",
+        }
+        random_generator = random.Random(20261127)
+
+        for sequence in range(20):
+            entry = random_generator.choice(config.corpus)
+            recorder = StreamRecorder(
+                config,
+                sequence=sequence,
+                request_id="r",
+                sample_id=entry.sample_id,
+                text=entry.text,
+                warmup=False,
+                entry=entry,
+            )
+            payload = config.payload_for(
+                recorder.sequence, text=recorder.text, entry=recorder.entry
+            )
+            assert payload["input"] == recorder.text
+            assert payload["language"] == expected[recorder.text]
+            assert recorder.language == expected[recorder.text]
+
+    def test_per_row_language_beats_extra_body(self, tmp_path: Path) -> None:
+        config = self.config(
+            tmp_path,
+            self.mixed_corpus(tmp_path),
+            "--extra-body",
+            '{"language": "de"}',
+        )
+
+        assert config.payload_for(0)["language"] == "zh"
+        assert config.payload_for(1)["language"] == "en"
+        assert config.payload_for(2)["language"] == "de"
+
+    def test_misspelled_language_field_is_rejected(self, tmp_path: Path) -> None:
+        with pytest.raises(ValueError, match="--language-field"):
+            self.config(
+                tmp_path,
+                self.mixed_corpus(tmp_path),
+                "--language-field",
+                "lang",
+            )
