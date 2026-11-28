@@ -98,7 +98,7 @@ This table lists every `VOXTNEW_*` variable that the Go code, the Swift helper o
 | `VOXTNEW_HUB` | Model library that `scripts/mac-latency.sh` reads. | `~/Library/Application Support/SGLang Omni/models` |
 | `VOXTNEW_INK` | Directory where the overlay tests write the rendered cards as PNG. | Unset: no pictures |
 | `VOXTNEW_LATENCY` | `1` runs `TestMacE2EFirstLatency` on a Mac. | Unset: the test skips |
-| `VOXTNEW_LATENCY_ATTEMPT` | Attempt number written to each latency JSON object; also overrides the round number for A/B runs. | `0`: use the round counter |
+| `VOXTNEW_LATENCY_ATTEMPT` | Attempt number written to each latency JSON object; runs only that attempt instead of iterating through the rounds. | `0`: use the round counter |
 | `VOXTNEW_LATENCY_ARM` | Arm label written to each latency JSON object for A/B comparisons. | Unset: empty arm |
 | `VOXTNEW_LATENCY_OUT` | File where each latency session appends one JSON object with stage times, text and its hash. | Unset: no JSONL output |
 | `VOXTNEW_LATENCY_PCM` | Recording that the latency test plays. | Unset: the bundled speech sample |

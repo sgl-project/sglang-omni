@@ -199,10 +199,7 @@ func TestMacE2EFirstLatency(t *testing.T) {
 	defer func() { omniNewRuntime = old }()
 
 	got := map[string][]latencyStages{}
-	for round := 1; round <= rounds; round++ {
-		if attempt > 0 {
-			round = attempt
-		}
+	runLatencyRounds(rounds, attempt, func(round int) {
 		t.Run(fmt.Sprintf("round%d", round), func(t *testing.T) {
 			opened := time.Now()
 			a := newSessionApp(t, "frame-ms=100,"+helpertest.Opt("pcm", latencyAudio()), func(s *settings.Settings) {
@@ -225,7 +222,7 @@ func TestMacE2EFirstLatency(t *testing.T) {
 				got["switch"] = append(got["switch"], latencySession(t, a, lg, changed, time.Time{}, "switch", ids[1], round))
 			}
 		})
-	}
+	})
 	for _, name := range []string{"cold", "warm", "switch"} {
 		t.Logf("MEASURE latency %-6s n=%d settle %v:  first audio %s  server ready %s (its start %s)  first partial %s  Final after Stop %s  insert after Stop %s  done after Stop %s", name, len(got[name]), settle,
 			spread(got[name], func(s latencyStages) time.Duration { return s.heard }),
@@ -235,6 +232,44 @@ func TestMacE2EFirstLatency(t *testing.T) {
 			spread(got[name], func(s latencyStages) time.Duration { return s.final }),
 			spread(got[name], func(s latencyStages) time.Duration { return s.insert }),
 			spread(got[name], func(s latencyStages) time.Duration { return s.done }))
+	}
+}
+
+func runLatencyRounds(rounds, attempt int, runRound func(int)) {
+	if attempt > 0 {
+		runRound(attempt)
+		return
+	}
+	for round := 1; round <= rounds; round++ {
+		runRound(round)
+	}
+}
+
+func TestLatencyAttemptRunsOneColdWarmPair(t *testing.T) {
+	tests := []struct {
+		name            string
+		rounds, attempt int
+		wantRounds      []int
+	}{
+		{name: "selected attempt", rounds: 2, attempt: 1, wantRounds: []int{1}},
+		{name: "selected attempt label", rounds: 3, attempt: 2, wantRounds: []int{2}},
+		{name: "all rounds", rounds: 2, wantRounds: []int{1, 2}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var gotRounds []int
+			var sessions []string
+			runLatencyRounds(test.rounds, test.attempt, func(round int) {
+				if len(gotRounds) >= len(test.wantRounds) {
+					t.Fatalf("extra cold+warm pair in round %d", round)
+				}
+				gotRounds = append(gotRounds, round)
+				sessions = append(sessions, "cold", "warm")
+			})
+			if !slices.Equal(gotRounds, test.wantRounds) || len(sessions) != 2*len(test.wantRounds) {
+				t.Fatalf("rounds = %v, sessions = %v, want rounds %v with one cold+warm pair each", gotRounds, sessions, test.wantRounds)
+			}
+		})
 	}
 }
 
