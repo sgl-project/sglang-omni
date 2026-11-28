@@ -833,10 +833,18 @@ class MossTTSDelaySGLangModel(torch.nn.Module):
         text_logits: torch.Tensor,
         audio_logits: torch.Tensor,
         batch: DelayGraphBatch,
+        *,
+        text_rows: torch.Tensor | None = None,
     ) -> DelaySamplingOutput:
-        """Run one fixed-shape full-text-vocabulary sampling/FSM step."""
+        """Run one fixed-shape full-text-vocabulary sampling/FSM step.
 
-        return self.mixed_graph_sampler(text_logits, audio_logits, batch)
+        ``text_rows`` restricts the text draw to the rows that can still choose
+        a free token at this step; omitting it draws every row.
+        """
+
+        return self.mixed_graph_sampler(
+            text_logits, audio_logits, batch, text_rows=text_rows
+        )
 
     @torch.no_grad()
     def init_sampling_graphs(
@@ -915,8 +923,14 @@ class MossTTSDelaySGLangModel(torch.nn.Module):
         text_logits: torch.Tensor,
         audio_logits: torch.Tensor,
         batch: DelayGraphBatch,
+        *,
+        text_rows: torch.Tensor | None = None,
     ) -> DelaySamplingOutput:
-        """Replay one full-text-vocabulary sampling/FSM CUDA graph."""
+        """Replay one full-text-vocabulary sampling/FSM CUDA graph.
+
+        ``text_rows`` selects a captured compacted text-draw graph when one
+        covers the live row count; otherwise the full-width graph runs.
+        """
 
         runner = self.mixed_sampling_graph_runner
         if runner is None:
@@ -925,7 +939,7 @@ class MossTTSDelaySGLangModel(torch.nn.Module):
             )
         else:
             pass
-        return runner.replay(text_logits, audio_logits, batch)
+        return runner.replay(text_logits, audio_logits, batch, text_rows=text_rows)
 
     @torch.no_grad()
     def sample_delay_graphed(

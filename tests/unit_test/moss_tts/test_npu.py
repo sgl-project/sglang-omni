@@ -10,6 +10,7 @@ import pytest
 import torch
 from sglang.srt.models.qwen3 import Qwen3Attention
 
+import sglang_omni.models.moss_tts.model_runner as moss_model_runner
 import sglang_omni.models.moss_tts.sglang_model as moss_model
 from sglang_omni.models.moss_tts.model_runner import MossTTSModelRunner
 from sglang_omni.models.moss_tts.sampling_npu import (
@@ -130,6 +131,89 @@ def test_npu_compact_sampler_handles_request_batch_shapes() -> None:
             )
             assert actual.shape == (rows,)
             assert actual.tolist() == token_ids.cpu()[expected].tolist()
+
+
+@pytest.mark.accelerator
+@pytest.mark.skipif(not current_platform.is_npu(), reason="Ascend NPU is required")
+def test_sample_tokens_routes_compact_draw_to_npu_kernel(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """NPU requests must reach the compact NPU kernel, not the generic one."""
+    calls: list[tuple[tuple[int, ...], list[int]]] = []
+
+    def record_npu(scores, seeds, positions, token_ids):
+        calls.append((tuple(scores.shape), token_ids.cpu().tolist()))
+        return torch.zeros(scores.shape[0], dtype=torch.long, device=scores.device)
+
+    def unexpected_generic(*_: object) -> torch.Tensor:
+        raise AssertionError("generic compact kernel must not run on NPU")
+
+    monkeypatch.setattr(
+        moss_model_runner, "multinomial_with_seed_and_token_ids_npu", record_npu
+    )
+    monkeypatch.setattr(
+        moss_model_runner,
+        "multinomial_with_seed_and_token_ids",
+        unexpected_generic,
+    )
+
+    token_ids = torch.tensor([151652, 151653], device="npu")
+    for rows in (1, 3, 5, 7):
+        logits = torch.randn(rows, 2, device="npu")
+        out = MossTTSModelRunner.sample_tokens(
+            logits,
+            temperature=1.0,
+            top_p=1.0,
+            top_k=0,
+            seeds=torch.arange(rows, device="npu"),
+            positions=torch.arange(rows, device="npu"),
+            candidate_token_ids=token_ids,
+        )
+        assert out.tolist() == [151652] * rows
+    assert [shape for shape, _ in calls] == [(1, 2), (3, 2), (5, 2), (7, 2)]
+    assert all(ids == [151652, 151653] for _, ids in calls)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
+def test_sample_tokens_routes_compact_draw_to_generic_kernel_on_cuda(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Non-CPU, non-NPU devices keep the generic compiled compact sampler."""
+    calls: list[tuple[tuple[int, ...], list[int]]] = []
+
+    def record_generic(scores, seeds, positions, token_ids):
+        calls.append((tuple(scores.shape), token_ids.cpu().tolist()))
+        return torch.zeros(scores.shape[0], dtype=torch.long, device=scores.device)
+
+    def unexpected_npu(*_: object) -> torch.Tensor:
+        raise AssertionError("NPU compact kernel must not run off-device")
+
+    monkeypatch.setattr(
+        moss_model_runner,
+        "multinomial_with_seed_and_token_ids",
+        record_generic,
+    )
+    monkeypatch.setattr(
+        moss_model_runner,
+        "multinomial_with_seed_and_token_ids_npu",
+        unexpected_npu,
+    )
+
+    token_ids = torch.tensor([151652, 151653], device="cuda")
+    for rows in (1, 3, 5, 7):
+        logits = torch.randn(rows, 2, device="cuda")
+        out = MossTTSModelRunner.sample_tokens(
+            logits,
+            temperature=1.0,
+            top_p=1.0,
+            top_k=0,
+            seeds=torch.arange(rows, device="cuda"),
+            positions=torch.arange(rows, device="cuda"),
+            candidate_token_ids=token_ids,
+        )
+        assert out.tolist() == [151652] * rows
+    assert [shape for shape, _ in calls] == [(1, 2), (3, 2), (5, 2), (7, 2)]
+    assert all(ids == [151652, 151653] for _, ids in calls)
 
 
 @pytest.mark.parametrize("compact", [False, True], ids=["full", "compact"])

@@ -737,6 +737,158 @@ def test_mixed_sampling_graph_matches_eager_at_text_audio_boundaries(
         )
 
 
+def audio_routing_state(
+    *, is_audio: bool, audio_end_step: int | None
+) -> SimpleNamespace:
+    return SimpleNamespace(is_audio=is_audio, audio_end_step=audio_end_step)
+
+
+def test_text_draw_rows_skips_only_the_forced_countdown() -> None:
+    runner = MossTTSModelRunner.__new__(MossTTSModelRunner)
+    delay_row = 10
+    n_vq = 32
+    end = delay_row + n_vq
+    runner.model = SimpleNamespace(config=make_config(n_vq=n_vq))
+    cases = [
+        (False, None, 0, True),
+        (False, end, 0, True),
+        (True, None, 0, True),
+        (True, end, delay_row - 1, True),
+        (True, end, delay_row, True),
+        (True, end, delay_row + 1, False),
+        (True, end, end, False),
+        (True, end, end + 1, True),
+    ]
+    for is_audio, audio_end_step, position, expected in cases:
+        data = audio_routing_state(is_audio=is_audio, audio_end_step=audio_end_step)
+        assert runner.needs_full_text_vocabulary(data, position) is expected, (
+            is_audio,
+            audio_end_step,
+            position,
+        )
+
+    device = torch.device("cpu")
+    forced_audio = [
+        audio_routing_state(is_audio=True, audio_end_step=end),
+        audio_routing_state(is_audio=True, audio_end_step=end),
+    ]
+    rows = runner.text_draw_rows(forced_audio, [delay_row + 2, end], device)
+    assert rows is not None
+    assert rows.tolist() == [0]
+    mixed = [
+        audio_routing_state(is_audio=True, audio_end_step=end),
+        audio_routing_state(is_audio=False, audio_end_step=None),
+    ]
+    rows = runner.text_draw_rows(mixed, [delay_row + 2, 0], device)
+    assert rows is not None
+    assert rows.tolist() == [1]
+
+
+@pytest.mark.accelerator
+def test_compacted_text_draw_matches_full_draw(
+    graph_device: torch.device,
+) -> None:
+    device = graph_device
+    n_vq = 4
+    config = make_config(n_vq=n_vq, audio_vocab=8)
+    config.vocab_size_list[0] = 32
+    sampler = MossTTSDelayMixedGraphSampler(config).to(device)
+    states = torch.tensor(
+        [
+            [0, INT64_MAX, 0],
+            [1, INT64_MAX, 1],
+            [6, 0, 1],
+            [6, 1, 1],
+            [6, n_vq, 1],
+            [6, n_vq + 1, 1],
+            [0, INT64_MAX, 1],
+        ],
+        dtype=torch.long,
+        device=device,
+    )
+    text_mask = states[:, 1] > n_vq
+    rows = text_mask.nonzero(as_tuple=False).reshape(-1)
+    assert 0 < int(rows.numel()) < states.shape[0]
+    seeds = torch.arange(states.shape[0], device=device, dtype=torch.long) + 7
+    steps = torch.tensor([0, 2, 30, 31, 34, 35, 2], device=device)
+    generator = torch.Generator(device=device).manual_seed(7)
+    text_logits = torch.randn(states.shape[0], 32, generator=generator, device=device)
+    audio_logits = torch.randn(
+        states.shape[0], n_vq, 8, generator=generator, device=device
+    )
+    batch = DelayGraphBatch(delay_state=states, seeds=seeds, generation_steps=steps)
+    full = sampler(text_logits, audio_logits, batch)
+    compacted = sampler(text_logits[rows], audio_logits, batch, text_rows=rows)
+    assert torch.equal(compacted.rows, full.rows)
+    assert torch.equal(compacted.next_delay_state, full.next_delay_state)
+
+
+@pytest.mark.accelerator
+@pytest.mark.parametrize("text_count", [1, 2, 3, 4, 5])
+def test_mixed_sampling_graph_compacted_text_draw_matches_full(
+    text_count: int,
+    graph_device: torch.device,
+) -> None:
+    device = graph_device
+    n_vq = 32
+    config = make_config(n_vq=n_vq, audio_vocab=1025)
+    config.vocab_size_list[0] = 128
+    sampler = MossTTSDelayMixedGraphSampler(config).to(device)
+    model = SimpleNamespace(
+        config=config,
+        device=device,
+        sample_mixed_fixed_shape=sampler,
+    )
+    graph = MossTTSDelayMixedSamplingCudaGraphRunner.capture(
+        model=model, capture_bs=(8,), disable_padding=False
+    )
+    assert graph.compacted_text_buckets(8) == (1, 2, 4)
+    expected_width = {1: 1, 2: 2, 3: 4, 4: 4, 5: None}[text_count]
+    assert graph.compacted_text_width(8, text_count) == expected_width
+
+    batch_size = 8
+    states = []
+    for index in range(batch_size):
+        if index < text_count:
+            states.append([0, INT64_MAX, 0])
+        else:
+            states.append([n_vq, index - text_count + 1, 1])
+    state = torch.tensor(states, dtype=torch.long, device=device)
+    seeds = torch.arange(batch_size, device=device, dtype=torch.long) + 321
+    steps = torch.arange(batch_size, device=device, dtype=torch.long) + 40
+    generator = torch.Generator(device=device).manual_seed(11)
+    text_logits = torch.randn(batch_size, 128, device=device, generator=generator)
+    audio_logits = torch.randn(
+        batch_size, n_vq, 1025, device=device, generator=generator
+    )
+    batch = DelayGraphBatch(delay_state=state, seeds=seeds, generation_steps=steps)
+    rows = torch.arange(text_count, device=device, dtype=torch.long)
+    expected = graph.replay(text_logits, audio_logits, batch)
+    compacted = graph.replay(text_logits, audio_logits, batch, text_rows=rows)
+    assert torch.equal(compacted.rows, expected.rows)
+    assert torch.equal(compacted.next_delay_state, expected.next_delay_state)
+
+    # All rows in their forced countdown: the drawn token is discarded, so a
+    # one-row compacted draw must still match the full draw.
+    countdown_state = torch.tensor(
+        [[n_vq, index + 1, 1] for index in range(batch_size)],
+        dtype=torch.long,
+        device=device,
+    )
+    countdown_batch = DelayGraphBatch(
+        delay_state=countdown_state, seeds=seeds, generation_steps=steps
+    )
+    dummy_row = torch.zeros(1, dtype=torch.long, device=device)
+    expected_countdown = graph.replay(text_logits, audio_logits, countdown_batch)
+    compacted_countdown = graph.replay(
+        text_logits, audio_logits, countdown_batch, text_rows=dummy_row
+    )
+    assert torch.equal(compacted_countdown.rows, expected_countdown.rows)
+    assert torch.equal(
+        compacted_countdown.next_delay_state, expected_countdown.next_delay_state
+    )
+
+
 @pytest.mark.accelerator
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
 def test_sampling_metadata_upload_owns_values_across_growth_and_reuse() -> None:
