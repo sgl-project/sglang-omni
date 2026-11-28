@@ -12,6 +12,7 @@ from sglang_omni.models.nemotron_voicechat.conformer import (
     StreamingPerception,
 )
 from sglang_omni.models.nemotron_voicechat.payload_types import NemotronVoiceChatState
+from sglang_omni.platforms import current_platform
 from sglang_omni.proto.request import OmniRequest, StagePayload
 
 REQUIRES_CUDA = [
@@ -72,7 +73,9 @@ def perception_model(
     )
     model.preprocessor.featurizer.fb.uniform_(0.01, 0.1)
     model.preprocessor.featurizer.window.copy_(
-        torch.hann_window(model.preprocessor.win_length, device=execution_device)
+        torch.hann_window(
+            model.preprocessor.win_length, dtype=torch.float32, device=execution_device
+        )
     )
     return model
 
@@ -100,7 +103,22 @@ def test_stream_owns_history_when_caller_reuses_input(
 
 
 @pytest.mark.parametrize(
-    ("execution_device", "stream_class"), STREAM_CASES, indirect=["execution_device"]
+    ("execution_device", "stream_class"),
+    [
+        *STREAM_CASES,
+        pytest.param(
+            "npu:0",
+            GraphPerception,
+            marks=[
+                pytest.mark.accelerator,
+                pytest.mark.skipif(
+                    not current_platform.is_npu(), reason="requires NPU"
+                ),
+            ],
+            id="npu-GraphPerception",
+        ),
+    ],
+    indirect=["execution_device"],
 )
 @torch.inference_mode()
 def test_stream_matches_fresh_encoding_across_requests(
@@ -114,6 +132,10 @@ def test_stream_matches_fresh_encoding_across_requests(
         assert actual.shape == (frame_count + 1, 8)
         assert torch.isfinite(actual).all()
         torch.testing.assert_close(actual, expected, rtol=0, atol=0)
+    if isinstance(stream, GraphPerception):
+        assert stream.graph is not None
+    else:
+        pass
 
 
 @pytest.mark.parametrize(

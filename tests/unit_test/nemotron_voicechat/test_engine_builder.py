@@ -3,8 +3,11 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 
+import sglang_omni.models.nemotron_voicechat.duplex_stages as duplex_stages
 import sglang_omni.models.nemotron_voicechat.engine_builder as engine_builder
 from sglang_omni.models.nemotron_voicechat.duplex_stages import (
     TalkerBuilder,
@@ -17,9 +20,15 @@ from sglang_omni.scheduling.generation_batch_policy import (
 
 
 def generation_defaults_on(
-    monkeypatch: pytest.MonkeyPatch, builder, *, is_cuda: bool, sm_version: int | None
+    monkeypatch: pytest.MonkeyPatch,
+    builder,
+    *,
+    is_cuda: bool,
+    sm_version: int | None,
+    is_npu: bool = False,
 ) -> dict:
     monkeypatch.setattr(engine_builder.current_platform, "is_cuda", lambda: is_cuda)
+    monkeypatch.setattr(engine_builder.current_platform, "is_npu", lambda: is_npu)
     monkeypatch.setattr(
         engine_builder, "get_visible_gpu_sm_version", lambda gpu_id: sm_version
     )
@@ -48,6 +57,27 @@ def test_talker_default_attention_backend(
     )
 
     assert defaults.get("attention_backend") == expected_backend
+
+
+@pytest.mark.parametrize(
+    "builder_class",
+    [engine_builder.NemotronVoiceChatTalkerEngineBuilder, TalkerBuilder],
+)
+@pytest.mark.parametrize("is_npu", [False, True])
+def test_talker_uses_sdpa_for_ascend_prefill(
+    monkeypatch: pytest.MonkeyPatch, builder_class: type, is_npu: bool
+) -> None:
+    monkeypatch.setattr(engine_builder.current_platform, "is_npu", lambda: is_npu)
+    backend = SimpleNamespace(use_native_sdpa=False)
+    worker = SimpleNamespace(model_runner=SimpleNamespace(attn_backend=backend))
+    builder_class().setup_model(
+        model_worker=worker,
+        checkpoint_dir=None,
+        device=None,
+        gpu_id=0,
+        server_args=None,
+    )
+    assert backend.use_native_sdpa is is_npu
 
 
 def test_operator_attention_backend_overrides_talker_default(
@@ -121,3 +151,30 @@ def test_duplex_stages_capture_decode_graphs_only_on_cuda(
     assert on_cuda["disable_cuda_graph"] is False
     assert on_cuda["cuda_graph_backend_prefill"] == CudaGraphBackend.DISABLED
     assert off_cuda["disable_cuda_graph"] is True
+
+
+@pytest.mark.parametrize("builder_class", [ThinkerBuilder, TalkerBuilder])
+def test_ascend_duplex_defaults_to_paged_attention(
+    monkeypatch: pytest.MonkeyPatch, builder_class: type
+) -> None:
+    defaults = generation_defaults_on(
+        monkeypatch, builder_class(), is_cuda=False, sm_version=None, is_npu=True
+    )
+
+    assert defaults["attention_backend"] == "ascend"
+    assert defaults["page_size"] == 128
+
+
+@pytest.mark.parametrize("builder_class", [ThinkerBuilder, TalkerBuilder])
+def test_ascend_duplex_rejects_single_token_pages(
+    monkeypatch: pytest.MonkeyPatch, builder_class: type
+) -> None:
+    monkeypatch.setattr(engine_builder.current_platform, "is_npu", lambda: True)
+    monkeypatch.setattr(
+        duplex_stages, "resolved_view", lambda server_args: SimpleNamespace(page_size=1)
+    )
+
+    with pytest.raises(
+        ValueError, match="VoiceChat Ascend attention requires paged KV"
+    ):
+        builder_class().validate_before_infrastructure(SimpleNamespace())

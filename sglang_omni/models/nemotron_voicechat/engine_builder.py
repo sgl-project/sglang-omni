@@ -9,8 +9,11 @@ from pathlib import Path
 from sglang.kernels.ops.mamba.triton_ops import (
     initialize_mamba_selective_state_update_backend,
 )
+from sglang.srt.server_args import ServerArgs
+from sglang.srt.utils import is_npu
 from transformers import AutoTokenizer
 
+from sglang_omni.model_runner.model_worker import ModelWorker
 from sglang_omni.models.nemotron_voicechat.duplex_config import CONTEXT_LENGTH
 from sglang_omni.models.nemotron_voicechat.hf_config import (
     VOICECHAT_MODEL_ARCH_OVERRIDE,
@@ -46,6 +49,13 @@ from sglang_omni.scheduling.engine_factory import (
 from sglang_omni.scheduling.omni_scheduler import OmniScheduler
 from sglang_omni.scheduling.sglang_backend.request_data import SGLangARRequestData
 from sglang_omni.utils.gpu_compat import get_visible_gpu_sm_version
+
+if is_npu():
+    from sglang_omni.models.nemotron_voicechat.ascend_mamba import (
+        VoiceChatAscendMamba2Backend,
+    )
+else:
+    pass
 
 TALKER_SPEAKER = "Aria"
 TALKER_PROMPT_FRAMES = 37
@@ -201,6 +211,24 @@ class NemotronVoiceChatEngineBuilder(VoiceChatEngineBuilder):
     def customize_server_args(self, server_args):
         initialize_mamba_selective_state_update_backend(server_args)
 
+    def setup_model(
+        self,
+        *,
+        model_worker: ModelWorker,
+        checkpoint_dir: str,
+        device: str,
+        gpu_id: int,
+        server_args: ServerArgs,
+    ) -> None:
+        if is_npu():
+            model_runner = model_worker.model_runner
+            attention_backend = model_runner.attn_backend
+            mamba_backend = VoiceChatAscendMamba2Backend(model_runner)
+            attention_backend.linear_attn_backend = mamba_backend
+            attention_backend.attn_backend_list[1] = mamba_backend
+        else:
+            pass
+
     def make_model_runner(self, model_worker, output_proc):
         return NemotronVoiceChatModelRunner(model_worker, output_proc)
 
@@ -253,6 +281,14 @@ class NemotronVoiceChatTalkerEngineBuilder(VoiceChatEngineBuilder):
         shim = shim_dir("voicechat-talker", source)
         (shim / "config.json").write_text(json.dumps(talker_config(source)))
         return str(shim)
+
+    def setup_model(self, *, model_worker, checkpoint_dir, device, gpu_id, server_args):
+        if current_platform.is_npu():
+            # The 72-wide Talker heads use SDPA for Ascend prefill. The
+            # Ascend backend still runs its existing paged decode path.
+            model_worker.model_runner.attn_backend.use_native_sdpa = True
+        else:
+            pass
 
     def make_model_runner(self, model_worker, output_proc):
         return NemotronVoiceChatTalkerModelRunner(model_worker, output_proc)

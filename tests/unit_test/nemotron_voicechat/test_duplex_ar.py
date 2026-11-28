@@ -1,16 +1,25 @@
 # SPDX-License-Identifier: Apache-2.0
 """AR adapters preserve fusion inputs across streaming continuations."""
 
+from array import array
 from unittest.mock import Mock
 
 import pytest
 import torch
+from sglang.srt.mem_cache.base_prefix_cache import MatchPrefixParams
+from sglang.srt.mem_cache.radix_cache import RadixKey
+from sglang.srt.mem_cache.unified_cache.component_type import ComponentType
 from sglang.srt.model_executor.forward_batch_info import ForwardBatch
+from sglang.srt.session.streaming_session import SessionSlot
 from transformers import PreTrainedTokenizerBase
 
 from sglang_omni.admission import ContextExhaustedError
 from sglang_omni.model_runner.model_worker import ModelWorker
 from sglang_omni.model_runner.prefill_inputs import get_omni_prefill_inputs
+from sglang_omni.models.nemotron_voicechat import ascend_session_kv_reuse
+from sglang_omni.models.nemotron_voicechat.ascend_session_kv_reuse import (
+    VoiceChatAscendStreamingSession,
+)
 from sglang_omni.models.nemotron_voicechat.duplex_ar import (
     DuplexTalkerRunner,
     DuplexThinkerRunner,
@@ -34,6 +43,7 @@ from sglang_omni.models.nemotron_voicechat.talker_model_runner import (
     NemotronVoiceChatTalkerModelRunner,
     VoiceChatTalkerModelRunner,
 )
+from sglang_omni.platforms import current_platform
 from sglang_omni.proto.request import OmniRequest, StagePayload
 from sglang_omni.proto.session import SessionIdentity, TimedChunk
 from sglang_omni.scheduling.sglang_backend.output_processor import SGLangOutputProcessor
@@ -384,10 +394,27 @@ def test_talker_continuation_fuses_previous_codes_with_current_text() -> None:
 
 
 @pytest.mark.accelerator
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA graph requires GPU")
+@pytest.mark.parametrize(
+    "device",
+    [
+        pytest.param(
+            "cuda",
+            marks=pytest.mark.skipif(
+                not torch.cuda.is_available(), reason="requires CUDA"
+            ),
+        ),
+        pytest.param(
+            "npu:0",
+            marks=pytest.mark.skipif(
+                not current_platform.is_npu(), reason="requires NPU"
+            ),
+        ),
+    ],
+)
 @torch.inference_mode()
 def test_sampler_replay_uses_new_hidden_states_and_randomness(
     monkeypatch: pytest.MonkeyPatch,
+    device: str,
 ) -> None:
     def sample_codes(
         hidden: torch.Tensor,
@@ -405,7 +432,7 @@ def test_sampler_replay_uses_new_hidden_states_and_randomness(
         output_processor: SGLangOutputProcessor,
     ) -> None:
         runner.model = Mock(
-            hidden_out=torch.zeros(1, 16, device="cuda"),
+            hidden_out=torch.zeros(1, 16, device=device),
             talker=Mock(num_quantizers=8, generate_codes=sample_codes),
             mog_head=Mock(),
         )
@@ -421,6 +448,7 @@ def test_sampler_replay_uses_new_hidden_states_and_randomness(
         Mock(spec=ModelWorker), Mock(spec=SGLangOutputProcessor)
     )
     first_codes = runner.generate_codes(0)
+    assert runner.sampler_graph is not None
     saved_codes = first_codes.clone()
     second_codes = runner.generate_codes(0)
     assert not torch.equal(first_codes, second_codes)
@@ -654,3 +682,72 @@ def test_a_rows_code_distribution_does_not_depend_on_its_batch() -> None:
     for batched in (mixed[::2], copies):
         distance = (first_level_distribution(batched) - alone_distribution).abs()
         assert 0.5 * distance.sum() < 0.1
+
+
+@pytest.mark.parametrize(
+    ("prefix_tokens", "retained_tokens"),
+    [(127, 127), (128, 128), (129, 129), (128, 129)],
+    ids=["before-page", "page-boundary", "after-page", "rewind"],
+)
+def test_ascend_session_reuses_only_the_exact_completed_prefix(
+    monkeypatch: pytest.MonkeyPatch, prefix_tokens: int, retained_tokens: int
+) -> None:
+    monkeypatch.setattr(
+        ascend_session_kv_reuse, "get_parallel", lambda: Mock(attn_dcp_size=1)
+    )
+    monkeypatch.setattr(
+        ascend_session_kv_reuse, "get_disagg", lambda: Mock(disaggregation_mode="null")
+    )
+    monkeypatch.setattr(
+        ascend_session_kv_reuse,
+        "get_schedule",
+        lambda: Mock(disable_overlap_schedule=True),
+    )
+    monkeypatch.setattr(
+        ascend_session_kv_reuse, "get_spec", lambda: Mock(speculative_algorithm=None)
+    )
+    cache = Mock(
+        disable=True,
+        tree_components=(ComponentType.FULL, ComponentType.MAMBA),
+        enable_mamba_extra_buffer=False,
+        is_mamba_enabled=True,
+    )
+    record = Mock(
+        kv_committed_len=retained_tokens,
+        kv_allocated_len=retained_tokens,
+        cache_protected_len=0,
+        max_evicted_seqlen=0,
+        holds_kv=True,
+        holds_mamba=True,
+        mamba_ping_pong_track_buffer=None,
+        mamba_needs_clear=False,
+        mamba_cow_src_index=None,
+        retraction_backup=None,
+    )
+    session = VoiceChatAscendStreamingSession(cache)
+    session.release_session = Mock()
+    session.slots["voicechat"] = SessionSlot(kv=record)
+    request = Mock(
+        session=Mock(
+            session_id="voicechat", streaming=True, committed_origin_len=retained_tokens
+        ),
+        to_finish=None,
+        full_untruncated_fill_ids=list(range(prefix_tokens + 1)),
+        sampling_params=Mock(max_new_tokens=1),
+        retraction_count=0,
+        kv=record if prefix_tokens != retained_tokens else None,
+    )
+
+    match = session.try_match_prefix(
+        MatchPrefixParams(key=RadixKey(array("q", range(prefix_tokens))), req=request)
+    )
+
+    if prefix_tokens == retained_tokens:
+        assert match is not None
+        assert match.device_prefix_len == prefix_tokens
+        assert request.kv is record
+        session.release_session.assert_not_called()
+    else:
+        assert match is None
+        request.detach_kv.assert_called_once()
+        session.release_session.assert_called_once_with("voicechat")
