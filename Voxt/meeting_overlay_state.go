@@ -158,13 +158,14 @@ func formatMeetingOverlayElapsed(duration time.Duration) string {
 
 // meetingOverlayTranscriptRow is one display row. Key is stable across snapshots.
 type meetingOverlayTranscriptRow struct {
-	Key    string `json:"key"`
-	Who    string `json:"who"`
-	Text   string `json:"text"`
-	Me     bool   `json:"me"`
-	Live   bool   `json:"live"`
-	First  bool   `json:"first"`
-	Source string `json:"source"`
+	Key       string `json:"key"`
+	Who       string `json:"who"`
+	SpeakerID string `json:"speaker_id"`
+	Text      string `json:"text"`
+	Me        bool   `json:"me"`
+	Live      bool   `json:"live"`
+	First     bool   `json:"first"`
+	Source    string `json:"source"`
 }
 
 const meetingOverlayJoinGap = 2 * time.Second
@@ -175,7 +176,7 @@ func meetingOverlayTranscriptRows(translator *i18n.Translator, snapshot meeting.
 	add := func(row meetingOverlayTranscriptRow, start time.Duration, joinable bool) {
 		if count := len(rows); count > 0 {
 			previous := &rows[count-1]
-			if previous.Who == row.Who {
+			if previous.SpeakerID == row.SpeakerID {
 				if joinable && !previous.Live && !meetingOverlayEndsSentence(previous.Text) && start-lastEnd <= meetingOverlayJoinGap {
 					previous.Text = joinMeetingOverlayText(previous.Text, row.Text)
 					return
@@ -194,16 +195,22 @@ func meetingOverlayTranscriptRows(translator *i18n.Translator, snapshot meeting.
 		}
 		me := segment.Speaker == "me" || segment.Speaker == "" && segment.Source == meeting.SourceMic
 		add(meetingOverlayTranscriptRow{
-			Key: segment.ID, Who: meetingOverlaySpeaker(translator, segment.Speaker, segment.Source), Text: segment.Text,
-			Me: me, Source: string(segment.Source),
+			Key: segment.ID, Who: meetingOverlayNamedSpeaker(translator, segment.Speaker, segment.Source, snapshot.Speakers), Text: segment.Text,
+			SpeakerID: meetingSpeakerID(segment.Speaker, me),
+			Me:        me, Source: string(segment.Source),
 		}, segment.Start, true)
 		lastEnd = segment.End
 	}
 	for _, source := range []meeting.Source{meeting.SourceMic, meeting.SourceSystem} {
 		if text := snapshot.Live[source]; text != "" {
+			speaker := snapshot.LiveSpeakers[source]
+			if snapshot.Elapsed-snapshot.SpeakerAt > 3*time.Second {
+				speaker = ""
+			}
 			add(meetingOverlayTranscriptRow{
-				Key: "live/" + string(source), Who: meetingOverlaySpeaker(translator, "", source), Text: text,
-				Me: source == meeting.SourceMic, Live: true, Source: string(source),
+				Key: "live/" + string(source), Who: meetingOverlayNamedSpeaker(translator, speaker, source, snapshot.Speakers), Text: text,
+				SpeakerID: meetingSpeakerID(speaker, source == meeting.SourceMic),
+				Me:        source == meeting.SourceMic, Live: true, Source: string(source),
 			}, 0, false)
 		}
 	}
@@ -248,9 +255,16 @@ func meetingOverlayStateProblemText(translator *i18n.Translator, key string) str
 	}
 }
 
-func meetingOverlaySpeaker(translator *i18n.Translator, name string, source meeting.Source) string {
-	if name == "" && source == meeting.SourceMic {
-		return translator.T("You")
+func meetingOverlayNamedSpeaker(translator *i18n.Translator, speaker string, source meeting.Source, names map[string]string) string {
+	if speaker == "" && source == meeting.SourceMic {
+		speaker = "me"
 	}
-	return meetingViewSpeakerText(translator, name, nil)
+	return meetingViewSpeakerText(translator, speaker, names)
+}
+
+func meetingSpeakerID(speaker string, me bool) string {
+	if me {
+		return "me"
+	}
+	return speaker
 }

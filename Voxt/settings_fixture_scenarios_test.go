@@ -225,6 +225,21 @@ func settingsFixtureScenarios() []meetingFixtureScenario {
 	scenarios = append(scenarios, checkOnly)
 
 	scenarios = append(scenarios, newMeetingSettingsFixtureScenario("meeting-settings-normal"))
+	liveSpeakers := newMeetingSettingsFixtureScenario("meeting-settings-live-speakers")
+	liveSpeakers.meetingSettings.Meeting.Speakers = true
+	moss := local.Model{ID: "asr.moss", Name: "MOSS-Transcribe-Diarize", Kind: local.ASR}
+	liveSpeakers.meetingSettings.ReadyASR = append(liveSpeakers.meetingSettings.ReadyASR, moss)
+	liveSpeakers.meetingSettings.ShownASR = append(liveSpeakers.meetingSettings.ShownASR, moss)
+	scenarios = append(scenarios, liveSpeakers)
+	speakerDownload := newMeetingSettingsFixtureScenario("meeting-speakers-downloading")
+	speakerDownload.meetingSettings.SpeakerReady = false
+	speakerDownload.meetingSettings.SpeakerDownloading = true
+	speakerDownload.meetingSettings.SpeakerProgress = 42
+	scenarios = append(scenarios, speakerDownload)
+	speakerFailure := newMeetingSettingsFixtureScenario("meeting-speakers-download-failed")
+	speakerFailure.meetingSettings.SpeakerReady = false
+	speakerFailure.meetingSettings.SpeakerFailed = true
+	scenarios = append(scenarios, speakerFailure)
 	customCorrection := newMeetingSettingsFixtureScenario("meeting-settings-custom-style")
 	customCorrection.meetingSettings.Meeting.CorrectionStyle = "Keep the conversation's tone. 保留英文产品名。"
 	customCorrection.meetingSettings.CorrectionText = customCorrection.meetingSettings.Meeting.CorrectionStyle
@@ -398,6 +413,7 @@ func newMeetingSettingsFixtureScenario(name string) meetingFixtureScenario {
 	return meetingFixtureScenario{
 		name: name, kind: "meeting-settings",
 		meetingSettings: settingsMeetingStateInput{
+			SpeakerReady: true,
 			Meeting: settings.Meeting{
 				Feature: settings.Feature{ASR: "fixture-speech-two", LLM: "fixture-language-two"},
 				Lang:    "en", HideFromSharing: true,

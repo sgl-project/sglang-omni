@@ -245,7 +245,6 @@
   "Spoken language": "说话语言",
   "Spoken language in meetings": "会议中说的语言",
   "Same as the main language": "与主要语言相同",
-  "The language the speech model listens for. Choose one when the whole meeting is in it. For Speaker 1–4 labels, install MOSS-Transcribe-Diarize and choose Chinese or English here.": "语音识别模型按这个语言来听。整场会议都说同一种语言时，选上它。要按说话人 1–4 分开，请安装 MOSS-Transcribe-Diarize，并在这里选择中文或英文。",
   "Summaries, live translation and follow-up questions send the full meeting text to this model.": "摘要、实时翻译和后续提问会把会议全文发给这个模型。",
   "No language model is set up, so summaries and translation are off.": "还没设置语言模型，摘要和翻译不可用。",
   "If you let programs on this Mac read the history (below), where that text goes next is up to them.": "如果你允许这台 Mac 上的程序读取历史（见下方），这些文字之后去哪里就由它们决定。",
@@ -296,5 +295,12 @@
   "Voxt library": "Voxt 资料库",
   "Exported the library to %s": "资料库已导出到 %s",
   "Experimental": "实验功能",
-  "Sessions (experimental)": "会话（实验功能）"
+  "Sessions (experimental)": "会话（实验功能）",
+  "Live speaker labels": "实时区分说话人",
+  "To match speaker names, allow Voxt in System Settings → Privacy & Security → Screen & System Audio Recording.": "要匹配说话人的姓名，请在系统设置 → 隐私与安全性 → 屏幕与系统音频录制中允许 Voxt。",
+  "Identify up to eight remote speakers from audio, including with hidden meeting windows. Download the 199 MB speaker model on first use. Screen access only adds names.": "根据声音实时区分最多八位远端说话人，会议窗口隐藏时也能工作。首次使用会下载 199 MB 的分人模型；屏幕读取仅用于补充姓名。",
+  "Downloading speaker model… %d%%": "正在下载分人模型… %d%%",
+  "Download speaker model (199 MB)": "下载分人模型（199 MB）",
+  "Retry speaker model download": "重新下载分人模型",
+  "The language the speech model listens for. Live audio labels are preserved after the meeting; text correction and summaries still run.": "语音识别模型听取的语言。实时声音编号会保留到会后，文字校对和摘要仍会进行。"
 }

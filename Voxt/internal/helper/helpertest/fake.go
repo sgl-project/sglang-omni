@@ -558,7 +558,7 @@ func (f *fake) serve(m proto.Message) {
 		}
 		f.output(m)
 	default:
-		f.fail(m.ID, proto.CodeMethodNotFound, "Unknown method %s", m.Method)
+		f.meetingWindow(m)
 	}
 }
 

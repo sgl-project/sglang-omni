@@ -39,6 +39,7 @@
       {
         "key": "segment-mic",
         "who": "你",
+        "speaker_id": "me",
         "text": "First part",
         "me": true,
         "live": false,
@@ -48,6 +49,7 @@
       {
         "key": "segment-system",
         "who": "说话人 1",
+        "speaker_id": "s1",
         "text": "A complete answer.",
         "me": false,
         "live": false,
@@ -57,6 +59,7 @@
       {
         "key": "live/mic",
         "who": "你",
+        "speaker_id": "me",
         "text": "still listening",
         "me": true,
         "live": true,
@@ -66,6 +69,7 @@
       {
         "key": "live/system",
         "who": "对方",
+        "speaker_id": "",
         "text": "system live",
         "me": false,
         "live": true,

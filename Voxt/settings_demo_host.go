@@ -263,3 +263,7 @@ func (host *meetingDemoHost) openShortcutPromptLink(_ shortcutPromptServices, li
 func (host *meetingDemoHost) changeShortcutPrompt(path string) {
 	host.record("changeShortcutPrompt %s", path)
 }
+
+func (host *meetingDemoHost) setMeetingSpeakers(enabled bool) {
+	host.record("setMeetingSpeakers %t", enabled)
+}

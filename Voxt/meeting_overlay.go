@@ -266,10 +266,7 @@ func meetingOverlayTranscript(c *ui.Context, rows []meetingOverlayTranscriptRow,
 func meetingOverlayLine(c *ui.Context, row meetingOverlayTranscriptRow) {
 	ui.Column(c).Gap(2).Shrink(0).Children(func() {
 		if row.First {
-			whoColor := ovText2
-			if row.Me {
-				whoColor = ovText
-			}
+			whoColor := speakerColor(row.SpeakerID, true)
 			ui.Text(c, row.Who).FontSize(11).FontWeight(600).TextColor(whoColor)
 		}
 		color := ovText

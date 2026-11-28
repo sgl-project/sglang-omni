@@ -8,6 +8,7 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/asr"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/local"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/speaker"
 )
 
 // Services is base (the local models) with the remote language models and
@@ -25,6 +26,10 @@ type Services struct {
 
 	mu    sync.Mutex
 	ready map[local.Kind][]settings.Provider
+}
+
+func (s *Services) Speakers(ctx context.Context) (speaker.Stream, error) {
+	return local.OpenSpeakers(ctx, s.base)
 }
 
 // NewServices is base with the remote models SetReady lists.

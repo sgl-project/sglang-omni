@@ -29,3 +29,8 @@ mygo_windows_*.syso
 !*.txt
 !*.wav
 !*.log
+
+# Independent audio speaker runtime and its staged executable
+/speaker/.build/
+/speaker/.swiftpm/
+/resources/darwin-arm64/speaker/

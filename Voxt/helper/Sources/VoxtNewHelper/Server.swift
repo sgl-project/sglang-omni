@@ -283,6 +283,8 @@ final class Server: @unchecked Sendable {
         case Method.appConfigure:
             front.configure(try msg.decodeParams(AppConfigureParams.self))
             return Empty()
+        case Method.meetingWindow:
+            return await MeetingWindow.read(try msg.decodeParams(MeetingWindowParams.self))
         case Method.browserURL:
             return await Browser.url(try msg.decodeParams(BrowserURLParams.self), front: front)
         case Method.outputWatch:

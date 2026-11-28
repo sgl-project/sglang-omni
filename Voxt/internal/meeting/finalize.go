@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -34,9 +35,19 @@ func FinalizePass(ctx context.Context, cfg Config, mt store.Meeting, onProgress 
 	if len(sources) == 0 {
 		return nil
 	}
+	_, live, err := cfg.Store.Meeting(ctx, mt.ID)
+	if err != nil {
+		return err
+	}
+	if cfg.preserveLiveSpeakers && slices.ContainsFunc(live, func(row store.MeetingSegment) bool { return row.Source == store.SegmentSystem && row.Speaker != "" }) {
+		// An untimed ASR final, or MOSS's four slots, cannot faithfully
+		// replace eight established live identities. Keep these words and
+		// labels; retention, text correction and summaries still finish.
+		sources = nil
+	}
 	audioDir := filepath.Join(cfg.Dir, mt.Audio)
 	var holdRelease func()
-	if cfg.ModelHold != nil {
+	if cfg.ModelHold != nil && len(sources) > 0 {
 		holdRelease = cfg.ModelHold.Hold()
 		defer func() {
 			if holdRelease != nil {
@@ -85,6 +96,7 @@ func FinalizePass(ctx context.Context, cfg Config, mt store.Meeting, onProgress 
 		if !ok {
 			continue
 		}
+		keepLiveSpeakers(segs, src, live)
 		rows := make([]store.MeetingSegment, 0, len(segs))
 		for _, s := range segs {
 			rows = append(rows, segmentToStore(s, src))

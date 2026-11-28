@@ -46,10 +46,8 @@ func (a *app) meetingDiarizer(ctx context.Context) (asr.Diarizer, error) {
 	if !a.meetingMTDInstalled() {
 		return nil, nil
 	}
-	// MTD knows only zh and en: a meeting in another language keeps the
-	// selected model's transcription instead of a wrong-language one. An
-	// empty hint means the language is unknown (SpeechLang stays empty on
-	// purpose, #3398), so the same call.
+	// MTD knows only zh and en: keep unsupported or unknown languages on
+	// the selected model's transcription.
 	if l := cmp.Or(a.prefs.Features.Meeting.Lang, session.SpeechLang(a.prefs, i18n.Locale())); l != "" {
 		if spec, ok := omni.Lookup(models.ASRMoss); ok {
 			if _, fit := lang.Match(spec.Languages, l); !fit {
@@ -109,6 +107,11 @@ func (a *app) meetingTrackASR(ctx context.Context, src meeting.Source) (meeting.
 	// What dictation's speechContext gives an on-device model: no service template.
 	prompt := strings.TrimSpace(a.prefs.Dictionary.SpeechContext)
 	ta := meeting.TrackASR{Caps: caps, Lang: l, Prompt: prompt, Hints: hints, StreamReq: asr.StreamRequest{Lang: l, Prompt: prompt, Hints: hints}}
+	if caps.Stream && a.prefs.Features.Meeting.Speakers {
+		// Meeting finalization owns the full pass. Stream shutdown drains
+		// live words instead of re-decoding an entire meeting at each pause.
+		ta.StreamReq.LiveResult = true
+	}
 	if ft, ok := p.(asr.FileTranscriber); ok && caps.File {
 		ta.File = ft
 	}
@@ -116,9 +119,12 @@ func (a *app) meetingTrackASR(ctx context.Context, src meeting.Source) (meeting.
 		ta.Streamer = st
 	}
 	if va, ok := p.(local.VoiceActivity); ok {
-		if ms, ok := va.VAD().(vad.ModelStream); ok {
-			ta.VAD = ms
-		}
+		ta.VAD = va.VAD()
 	}
 	return ta, nil
+}
+
+// Live voice labels have their own audio-only model and do not replace ASR.
+func (a *app) liveMeetingSpeakers() bool {
+	return a.prefs.Features.Meeting.Speakers && meetingModeFrom(a.prefs.Features.Meeting).Diarize() && a.models != nil && a.models.Installed(models.SpeakerDiarization)
 }

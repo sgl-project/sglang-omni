@@ -26,9 +26,10 @@ import (
 const meetingLogSource = "meeting"
 
 type meetingState struct {
-	meetMgr   *meeting.Manager
-	meetSnap  meeting.Snapshot
-	meetingUI *meetingSettingsUI // settings_meeting.go
+	speakerReader meetingSpeakerReader
+	meetMgr       *meeting.Manager
+	meetSnap      meeting.Snapshot
+	meetingUI     *meetingSettingsUI // settings_meeting.go
 }
 
 func (a *app) openMeetings() {
@@ -53,8 +54,9 @@ func (a *app) openMeetings() {
 		ASR: func(ctx context.Context, src meeting.Source) (meeting.TrackASR, error) {
 			return a.meetingTrackASR(ctx, src)
 		},
-		Diarizer: a.meetingDiarizer,
-		VAD:      a.meetingVAD(),
+		Diarizer:     a.meetingDiarizer,
+		SpeakerModel: meetingSpeakerModel{services: a.local},
+		VAD:          a.meetingVAD(),
 		LLM: func(ctx context.Context, id string) (meeting.SummaryChat, error) {
 			chat, _, err := a.local.LLM(ctx, id)
 			return chat, err
@@ -121,6 +123,7 @@ func (a *app) meetingChanged(s meeting.Snapshot) {
 	if a.mv.read && (s.ID != prev.ID || s.State != prev.State) {
 		a.loadMeetings() // the meeting's row was written or its status changed (#3990)
 	}
+	a.syncMeetingSpeakers(prev)
 	a.followMeeting(s, prev)
 	a.syncMeetingOverlay()
 	a.syncHotkeys()

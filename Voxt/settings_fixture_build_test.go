@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -177,6 +178,14 @@ func buildMeetingSettingsFixture(t *testing.T, input settingsMeetingStateInput) 
 	installedModels := append([]local.Model{}, input.ReadyASR...)
 	installedModels = append(installedModels, input.ReadyLLM...)
 	a.local = &settingsFixtureLocal{installedModels: installedModels}
+	if a.modelStatus == nil {
+		a.modelStatus = map[string]models.Status{}
+	}
+	speakerStatus := models.Status{Installed: input.SpeakerReady, Downloading: input.SpeakerDownloading, Done: int64(input.SpeakerProgress), Total: 100}
+	if input.SpeakerFailed {
+		speakerStatus.Err = errors.New("fixture speaker download failed")
+	}
+	a.modelStatus[models.SpeakerDiarization] = speakerStatus
 	return a.meetingSettingsModel()
 }
 

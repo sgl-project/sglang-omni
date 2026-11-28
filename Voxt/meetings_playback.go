@@ -47,10 +47,7 @@ func meetingSegment(c *ui.Context, row meetingSegmentViewState, highlight int, m
 	button.Children(func() {
 		ui.Text(c, row.TimeText).FontSize(px(t, fsCaption)).TextColor(colors.Text3).FontFeatures("tnum").Width(px(t, 40)).Shrink(0)
 		ui.Column(c).Grow(1).MinWidth(0).Gap(px(t, 2)).Children(func() {
-			speaker := ui.Text(c, row.Speaker).FontSize(px(t, fsCaption)).FontWeight(600).TextColor(colors.Text2)
-			if row.Me {
-				speaker.TextColor(colors.AccentInk)
-			}
+			ui.Text(c, row.Speaker).FontSize(px(t, fsCaption)).FontWeight(600).TextColor(speakerColor(row.SpeakerID, t.Dark))
 			ui.Text(c, row.Text)
 			if row.Translation != "" {
 				ui.Text(c, row.Translation).TextColor(colors.Text2).FontSize(px(t, fsCaption))

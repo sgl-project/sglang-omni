@@ -2,6 +2,11 @@
   "name": "meeting-settings-capture-subtitles",
   "kind": "meeting-settings",
   "meeting_settings": {
+    "live_speakers": false,
+    "speaker_ready": true,
+    "speaker_downloading": false,
+    "speaker_progress": 0,
+    "speaker_failed": false,
     "capture_mode_options": [
       {
         "code": "",

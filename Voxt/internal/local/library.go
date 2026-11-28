@@ -9,6 +9,7 @@ import (
 	fammodels "github.com/hehehai/actnowkit/models"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/asr"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/models"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/speaker"
 )
 
 // ASROpener opens speech model id (a models catalogue id) from dir, its
@@ -23,8 +24,9 @@ type LLMOpener func(ctx context.Context, id, dir string) (Chat, error)
 // Openers are the runtimes behind the models; nil: that runtime is not
 // in this build (ErrNoRuntime).
 type Openers struct {
-	ASR ASROpener
-	LLM LLMOpener
+	ASR      ASROpener
+	LLM      LLMOpener
+	Speakers func(context.Context, string) (speaker.Stream, error)
 	// Unload stops what a runtime has loaded of model id, before its
 	// files are deleted (Library.Delete); nil: nothing to stop.
 	Unload func(id string)

@@ -42,7 +42,8 @@ const (
 	MethodAppConfigure = "app.configure" // request: which apps get AXManualAccessibility as they come to the front
 	MethodAppIcons     = "app.icons"     // request: apps' icons as PNG, for the lists that name apps
 
-	MethodBrowserURL = "browser.url" // request: the front tab's URL of a browser (Accessibility only)
+	MethodMeetingWindow = "meeting.window" // request: bounded Accessibility snapshot of a meeting app
+	MethodBrowserURL    = "browser.url"    // request: the front tab's URL of a browser (Accessibility only)
 
 	MethodScreenWindow   = "screen.window"   // request: a JPEG of an app's front window (Screen Recording)
 	MethodClipboardImage = "clipboard.image" // request: the picture on the clipboard as a JPEG
@@ -148,6 +149,8 @@ func ParamsFor(method string) any {
 		return new(PasteParams)
 	case MethodTextRead:
 		return new(ReadParams)
+	case MethodMeetingWindow:
+		return new(MeetingWindowParams)
 	case MethodBrowserURL:
 		return new(BrowserURLParams)
 	case MethodAppList:
@@ -233,6 +236,8 @@ func ResultFor(method string) any {
 		return new(PasteResult)
 	case MethodTextRead:
 		return new(ReadResult)
+	case MethodMeetingWindow:
+		return new(MeetingWindowResult)
 	case MethodBrowserURL:
 		return new(BrowserURLResult)
 	case MethodAppList:
@@ -267,7 +272,7 @@ var (
 		MethodHotkeyConfigure, MethodHotkeyStatus, MethodHotkeyRecord, MethodHotkeyCancelRecord,
 		MethodAppFrontmost, MethodAppList, MethodAppConfigure, MethodAppIcons,
 		MethodTextFocus, MethodTextSelection, MethodTextPaste, MethodTextRead,
-		MethodBrowserURL, MethodScreenWindow, MethodClipboardImage,
+		MethodMeetingWindow, MethodBrowserURL, MethodScreenWindow, MethodClipboardImage,
 		MethodOutputWatch, MethodOutputMute, MethodOutputRelease, MethodOutputRecover,
 		MethodSpeechRecognize, MethodSpeechAudio,
 	}

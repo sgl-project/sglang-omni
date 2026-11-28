@@ -627,3 +627,9 @@ These sessions are sensitive to load. While two other threads ran their models o
 - Rewrite's tone and wording (TestEvalRewrite checks facts, language, length and form; the answers are read by hand).
 - Translation into languages other than English.
 - `TestMacE2EOmni` covers the live path with the real helper on the speech sample; scripts/mac-regress.sh runs it.
+
+### Live meeting speaker labels
+
+Build the independent runtime with `scripts/build-speaker.sh`. Install the pinned speaker model through Meetings settings, then run on a Mac before release:
+`VOXTNEW_EVAL=1 VOXTNEW_SPEAKER_RUNTIME="$PWD/resources/darwin-arm64/speaker/voxtnew-speaker" VOXTNEW_EVAL_OUT=build/eval go test -count=1 -timeout 2m -run '^TestEvalMeetingLiveSpeakers$' -v .`.
+It streams three synthetic voices with different utterances through the real audio-only runtime and writes `meeting-live-speakers.md`, including per-turn confident-frame coverage. Speech recognition, UI, screen capture and OCR are excluded. The four-voice probe merged two similar female voices; this smoke check does not close that quality gap. Follow `manual-test.md` for real meetings and complete-App memory/responsiveness checks.

@@ -14,6 +14,7 @@ How to build Voxt from source, sign it during development and run its tests. To 
 Needs Go 1.27.4 (`GOTOOLCHAIN=auto` fetches it) and, to build the app, an Apple silicon Mac with macOS 15 or later, Xcode (the helper), and [uv](https://docs.astral.sh/uv/) or Python 3 for the Omni runtime's build tools (`scripts/build-omni.sh` builds `sglang_omni_mlx/native` and, the first time, the MLX commit it pins; git and CMake fetch MLX and the C++ dependencies from GitHub and metal-cpp from developer.apple.com, through the shell's `https_proxy` if needed). Run from `Voxt/`:
 
 ```sh
+scripts/build-speaker.sh             # the independent audio speaker process (Swift 6.2+), optional models downloaded in-app
 scripts/build-helper.sh              # the Swift helper, into resources/darwin-arm64/helper/
 scripts/build-omni.sh                # the Omni runtime (speech models), into resources/darwin-arm64/omni/
 go tool mygo dev                     # run with hot reload
@@ -120,6 +121,7 @@ This table lists every `VOXTNEW_*` variable that the Go code, the Swift helper o
 | `VOXTNEW_MOVE_AS` | App id that claims the models that `TestRealMoveToHub` moves. | Unset: the VoxtNew id |
 | `VOXTNEW_MOVE_FROM` | Old model directory that `TestRealMoveToHub` moves into the model library. | Unset: the test skips |
 | `VOXTNEW_MOVE_ONLY` | Comma-separated model ids: `TestRealMoveToHub` moves only these models. | Unset: all models |
+| `VOXTNEW_SPEAKER_RUNTIME` | Built independent Core ML speaker executable used by `TestEvalMeetingLiveSpeakers` on a Mac before release. | Unset: real speaker eval skipped |
 | `VOXTNEW_MTD_DIR` | MTD model snapshot that `TestEvalMTD` measures. | Unset: catalogue models only |
 | `VOXTNEW_MTD_DRAFT_DIR` | DFlash draft model snapshot that `TestEvalMTD` uses with the MTD model. | Unset: no draft |
 | `VOXTNEW_OMNI_MODELS` | Speech models for the latency test, as `id=folder;…`. | Set by `scripts/mac-latency.sh` |

@@ -37,6 +37,26 @@ func meetingCaptureSettings(c *ui.Context, state settingsMeetingViewState, actio
 // has, Automatic first) and the language it listens for.
 func meetingASRSettings(c *ui.Context, state settingsMeetingViewState, actions settingsMeetingActions) {
 	t := c.Theme()
+	speakers := state.LiveSpeakers
+	settingRow(c, "mt-speakers", i18n.T("Live speaker labels"), i18n.T("Identify up to eight remote speakers from audio, including with hidden meeting windows. Download the 199 MB speaker model on first use. Screen access only adds names."), func() {
+		if !state.SpeakerReady {
+			if state.SpeakerDownloading {
+				ui.Text(c, i18n.T("Downloading speaker model… %d%%", state.SpeakerProgress)).FontSize(px(t, fsCaption)).TextColor(t.TextMuted)
+				return
+			}
+			label := i18n.T("Download speaker model (199 MB)")
+			if state.SpeakerFailed {
+				label = i18n.T("Retry speaker model download")
+			}
+			if ghostButton(c.Key("mt-speaker-download"), label).Clicked() {
+				actions.setMeetingSpeakers(true)
+			}
+			return
+		}
+		if ui.Switch(c.Key("mt-speakers-sw"), &speakers).Label(i18n.T("Live speaker labels")).Changed() {
+			actions.setMeetingSpeakers(speakers)
+		}
+	})
 	speechModel := state.ASRSelected
 	settingRow(c, "mt-asr", i18n.T("Speech recognition"), "", func() {
 		if ui.Select(c.Key("mt-asr-sel"), &speechModel, settingsLanguageLabels(state.ASROptions)).Label(i18n.T("Speech model for meetings")).Width(px(t, 260)).Shrink(1).MinWidth(px(t, 160)).
@@ -45,7 +65,7 @@ func meetingASRSettings(c *ui.Context, state settingsMeetingViewState, actions s
 		}
 	})
 	spokenLanguage := state.SpokenLanguageSelected
-	settingRow(c, "mt-lang", i18n.T("Spoken language"), i18n.T("The language the speech model listens for. Choose one when the whole meeting is in it. For Speaker 1–4 labels, install MOSS-Transcribe-Diarize and choose Chinese or English here."), func() {
+	settingRow(c, "mt-lang", i18n.T("Spoken language"), i18n.T("The language the speech model listens for. Live audio labels are preserved after the meeting; text correction and summaries still run."), func() {
 		if ui.Select(c.Key("mt-lang-sel"), &spokenLanguage, settingsLanguageLabels(state.SpokenLanguageOptions)).Label(i18n.T("Spoken language in meetings")).Width(px(t, 260)).Shrink(1).MinWidth(px(t, 160)).Changed() {
 			actions.setMeetingLanguage(settingsLanguageCode(spokenLanguage, state.SpokenLanguageOptions))
 		}

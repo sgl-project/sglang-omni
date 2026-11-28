@@ -1399,3 +1399,27 @@ Developer ID 签名、公证、发布和更新的测试见 [release.md](release.
   - 第 4 步：第二次清理那行的 `cached` 不是 0，约等于指令的长度（1,000 多 tokens）；第一次只写入缓存，还是 0。
   - 第 5 步：照常出结果，“提示词缓存”不见了。
 - **不对时看**：日志里 `connection test of remote language model anthropic`；`llm.bad_request` 的 detail 是 Anthropic 返回的原话（`invalid_request_error: …`）。
+
+## 实时说话人、颜色和姓名
+
+在设置 → 会议打开“实时区分说话人”，首次使用下载约 199 MB 的独立分人模型。
+实时文字继续使用所选语音识别模型，分人使用本机 CPU 上的独立进程。
+系统声道最多八个声音编号；本机麦克风仍为“我”。姓名匹配额外使用辅助功能和屏幕读取，截图与 OCR 留在本机。
+只录音、字幕模式保持原来的行为。已有实时声音编号时，会后保留这份转录稿，继续文字校对和摘要，不以无时间对齐的转录或四人 MOSS 覆盖它；显式“重新转录”仍走原来的流程。
+
+1. 两位远端参会者在 Zoom 中交替发言，确认录制中出现不同编号和颜色。模型有约 1.04 秒的输入缓冲，计算和转录另计；首启还包含加载。
+2. 遮住、最小化会议窗口，禁止屏幕读取，再让同样的人换句子交替发言：编号与颜色仍须由声音给出；不得退回依赖可见绿框。
+3. 显示参会者卡片和发言绿框，确认姓名替换编号且颜色不变；隐藏或读取失败后不能凭旧绿框给另一个声音命名。
+4. 暂停、恢复和结束会议后检查同一人的颜色、姓名、保存及导出。快速接话导致一条转录混合多人、低置信度或重叠讲话时，该行保持未识别，不能强行归给一人。
+5. 单独检查相近声线、短句、多人重叠和八人以上的会议。四种合成声音中的两种女声仍曾合并，不能把三声音烟雾测试当成质量验收。
+6. 活动监视器记录 Voxt、helper、语音识别、Silero 与 speaker 进程的合计和峰值，并检查持续会议时的延迟、队列和按钮响应。下载大小不是运行内存；单独分人或无 UI 的管线数据也不能代替整套 App。
+7. 静音、风扇声和键盘声各保持至少一分钟，实时预览和保存的转录稿都不应出现字幕套话；再实际说出同一句字幕文字，确认不会因文字黑名单被误删。`TestTrackOpensSpeechDetectorAndGuardsPreview` 和 `TestFileTrackRejectsNoiseBeforeRecognition` 检查神经网络检测接入、预览以及文件片段的拦截。
+8. `TestCaptureFeedsSpeakersWhileASRSendIsBlocked` 检查声音分人绕过阻塞的 ASR；`TestSpeakerQueueIsBoundedWhileModelLoads` 检查加载或推理落后时有界退出；`TestManagerSpeakersWhileRecording` 检查隐藏窗口、迟到编号与保存的文字和翻译；`TestClientFramesAndCancellation` 检查独立进程的时间和内存预算。
+
+原生 Zoom 的视频格子可能报告 `AXTabGroup`，而“视频渲染”在角色描述里；
+`testZoomVideoTileRoleUsesItsCustomDescription` 覆盖这个布局。仅在本机读到一个姓名、
+且没有发言绿框，不能算多人姓名匹配验证通过。
+
+本机合成图像 OCR + 绿框识别：Swift `MeetingScreenTests`、`SpeakerBorderTests`。
+真实模型、不读取麦克风的三人交替验证：`TestEvalMeetingLiveSpeakers`，按 docs/eval.md 设置
+`VOXTNEW_EVAL=1`、`VOXTNEW_SPEAKER_RUNTIME` 和输出目录后运行。

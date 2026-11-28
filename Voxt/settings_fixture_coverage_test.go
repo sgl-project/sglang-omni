@@ -417,6 +417,18 @@ func checkSettingsMeetingAndPromptFixtures(t *testing.T, locale string, fixtures
 	if !normal.CorrectionStyleResetDisabled {
 		t.Errorf("%s: the default correction style should disable Reset", locale)
 	}
+	liveSpeakers := requireSettingsFixture(t, locale, fixtures, "meeting-settings-live-speakers").MeetingSettings
+	if !liveSpeakers.LiveSpeakers || !liveSpeakers.SpeakerReady || liveSpeakers.ASRDisabled || liveSpeakers.ASRSelected != "Fixture Speech Two" {
+		t.Errorf("%s: live speaker fixture replaced the selected ASR", locale)
+	}
+	downloading := requireSettingsFixture(t, locale, fixtures, "meeting-speakers-downloading").MeetingSettings
+	if !downloading.SpeakerDownloading || downloading.SpeakerReady || downloading.SpeakerProgress != 42 {
+		t.Errorf("%s: speaker download status missing", locale)
+	}
+	failed := requireSettingsFixture(t, locale, fixtures, "meeting-speakers-download-failed").MeetingSettings
+	if !failed.SpeakerFailed || failed.SpeakerReady || failed.SpeakerDownloading {
+		t.Errorf("%s: speaker retry status missing", locale)
+	}
 	customCorrection := requireSettingsFixture(t, locale, fixtures, "meeting-settings-custom-style").MeetingSettings
 	if customCorrection.CorrectionStyleResetDisabled || customCorrection.CorrectionStyle == "" {
 		t.Errorf("%s: the custom correction style should enable Reset", locale)

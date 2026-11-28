@@ -36,23 +36,26 @@ const (
 	// A speech model's speculative draft (Model.Draft): a helper model
 	// the user adds from the speech model's card, never a speech model
 	// of its own.
-	Draft Kind = "draft"
+	Draft   Kind = "draft"
+	Speaker Kind = "speaker" // dedicated audio diarization, configured in Meetings
 )
 
 // Runtime is what runs a model.
 type Runtime string
 
 const (
-	Omni Runtime = "omni" // sglang_omni_mlx/native's servers
-	MLX  Runtime = "mlx"  // the retired language models' (mlx-swift-lm, no longer in Voxt)
-	GGUF Runtime = "gguf" // the retired translation model's (llama.cpp, no longer in Voxt)
+	Omni   Runtime = "omni"   // sglang_omni_mlx/native's servers
+	MLX    Runtime = "mlx"    // the retired language models' (mlx-swift-lm, no longer in Voxt)
+	GGUF   Runtime = "gguf"   // the retired translation model's (llama.cpp, no longer in Voxt)
+	CoreML Runtime = "coreml" // independent audio speaker identification
 )
 
 // The catalogue's ids.
 const (
-	ASRAccurate = "asr.accurate"
-	ASRFast     = "asr.fast"
-	VADSilero   = "vad.silero"
+	ASRAccurate        = "asr.accurate"
+	SpeakerDiarization = "speaker.nemotron3"
+	ASRFast            = "asr.fast"
+	VADSilero          = "vad.silero"
 	// Voxt 1.x's other local speech models.
 	ASRQwen6bit     = "asr.qwen3-6bit"
 	ASRWhisperTurbo = "asr.whisper-turbo"
@@ -438,4 +441,5 @@ var catalog = []Model{
 		Family: "gemma4", Quant: "4bit", Bytes: 5179239349,
 		Repo: "mlx-community/gemma-4-e4b-it-4bit", Revision: "475b9088d29754a3379866cf5aeb6b41acd313c2",
 	},
+	nemotron3Model,
 }

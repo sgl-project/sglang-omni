@@ -3,6 +3,7 @@ package meeting
 import (
 	"context"
 	"fmt"
+	"maps"
 	"strings"
 	"sync"
 	"time"
@@ -24,7 +25,7 @@ type TrackASR struct {
 	Lang      string
 	Prompt    string
 	Hints     []string
-	VAD       vad.ModelStream // optional Silero for Speech
+	VAD       vad.Model // optional Silero; each track owns its detector
 }
 
 type trackTranscriber struct {
@@ -35,8 +36,11 @@ type trackTranscriber struct {
 	path     LivePath
 	live     *Live
 	cutter   Cutter
+	voice    *voiceRun
 	file     asr.FileTranscriber
 	fileReq  asr.FileRequest
+	detector vad.ModelStream
+	fileVAD  vad.Model
 	pcmBytes int64
 	timeBase time.Duration
 
@@ -62,19 +66,29 @@ func (m *Manager) newTrackTranscriber(ctx context.Context, src Source, job strin
 		if ta.Streamer == nil {
 			return nil, fmt.Errorf("meeting: stream ASR missing for %s", src)
 		}
+		if ta.VAD != nil {
+			tr.detector, err = ta.VAD.Open(ctx)
+			if err != nil && m.cfg.Warn != nil {
+				m.cfg.Warn(fmt.Sprintf("live speech detection unavailable: %v", err))
+			}
+		}
 		live := &Live{
 			Clock:    m.cfg.Now,
 			Streamer: ta.Streamer,
 			Req:      ta.StreamReq,
 			Source:   src,
-			Speech:   NewSpeech(asr.SampleRate, ta.VAD),
+			Speech:   NewSpeech(asr.SampleRate, tr.detector),
 			OnCommit: tr.emit,
 		}
 		if err := live.Open(ctx); err != nil {
+			if tr.detector != nil {
+				tr.detector.Close()
+			}
 			return nil, err
 		}
 		tr.live = live
 	default:
+		tr.fileVAD = ta.VAD
 		if ta.File == nil {
 			return nil, fmt.Errorf("meeting: file ASR missing for %s", src)
 		}
@@ -92,6 +106,9 @@ func (m *Manager) newTrackTranscriber(ctx context.Context, src Source, job strin
 		go tr.fileWorker(ctx)
 	}
 	tr.refreshTimeBase()
+	if src == SourceSystem {
+		tr.voice = m.speakerRun()
+	}
 	return tr, nil
 }
 
@@ -122,6 +139,9 @@ func (tr *trackTranscriber) onPCM(ctx context.Context, pcm []byte) error {
 }
 
 func (tr *trackTranscriber) finish(ctx context.Context) error {
+	if tr.detector != nil {
+		defer tr.detector.Close()
+	}
 	if tr.live != nil {
 		tr.mgr.updateLive(tr.src, "", tr.owner)
 		return tr.live.Finish(ctx)
@@ -172,6 +192,15 @@ func (tr *trackTranscriber) fileWorker(ctx context.Context) {
 }
 
 func (tr *trackTranscriber) transcribeFile(ctx context.Context, u Utterance) {
+	if tr.fileVAD != nil {
+		segments, err := tr.fileVAD.Speech(ctx, u.PCM, asr.SampleRate)
+		if err == nil && len(segments) == 0 {
+			return
+		}
+		if err != nil && tr.mgr.cfg.Warn != nil {
+			tr.mgr.cfg.Warn(fmt.Sprintf("utterance speech detection unavailable: %v", err))
+		}
+	}
 	req := tr.fileReq
 	req.Audio = u.PCM
 	res, err := tr.file.Transcribe(ctx, req)
@@ -237,6 +266,13 @@ func (m *Manager) commitSegment(seg Segment, expected *track) {
 		m.noteMicText() // the microphone works; it heard the speakers
 		return
 	}
+	if seg.Source == SourceSystem {
+		if seg.Speaker == "" {
+			seg.Speaker = m.acoustic.forRange(seg.Start, seg.End)
+		}
+		m.speakers.nameSegment(&seg)
+		m.snap.Speakers = maps.Clone(m.speakers.names)
+	}
 	idx := m.segIdx
 	m.segIdx++
 	seg.StoreIdx = idx // before the snapshot's copy: translations find lines by it
@@ -264,6 +300,19 @@ func (m *Manager) commitSegment(seg Segment, expected *track) {
 		defer m.segWrites.Done()
 		ctx := context.Background()
 		_ = m.cfg.Store.AppendSegments(ctx, seq, []store.MeetingSegment{seg.Row()})
+		// Audio classification can finish while the first insert is in
+		// flight. Recheck after it so an earlier UPDATE cannot be lost.
+		m.mu.Lock()
+		labels := map[int]string{}
+		if m.seq == seq {
+			for _, current := range m.snap.Segments {
+				if current.StoreIdx == seg.StoreIdx && current.Speaker != "" {
+					labels[current.StoreIdx] = current.Speaker
+				}
+			}
+		}
+		m.mu.Unlock()
+		m.writeSpeakerLabels(seq, labels)
 		if tr != nil && strings.TrimSpace(target) != "" {
 			tr.Enqueue([]Segment{seg})
 		}

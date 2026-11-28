@@ -9,6 +9,7 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/local"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/session"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/speaker"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/vad"
 )
@@ -89,11 +90,14 @@ type Snapshot struct {
 	Elapsed  time.Duration
 	// Levels are each track's last session.Bars input levels as bar
 	// heights (session.Level), oldest first: its waveform.
-	Levels    map[Source][]float64
-	Live      map[Source]string
-	Segments  []Segment
-	Translate string
-	Problem   *Problem
+	Levels       map[Source][]float64
+	Live         map[Source]string
+	Speakers     map[string]string
+	LiveSpeakers map[Source]string
+	SpeakerAt    time.Duration
+	Segments     []Segment
+	Translate    string
+	Problem      *Problem
 }
 
 // StartRequest names a new meeting.
@@ -117,6 +121,9 @@ type Config struct {
 	ModelHold local.Holder
 	// ASR resolves live recognition per track; nil keeps WAV-only capture (tests).
 	ASR func(ctx context.Context, src Source) (TrackASR, error)
+	// SpeakerModel identifies system-audio voices independently of ASR and
+	// meeting-window visibility; nil disables live acoustic labels.
+	SpeakerModel speaker.Model
 	// Diarizer resolves MOSS-Transcribe-Diarize for the system track's final
 	// pass; a nil diarizer keeps the selected model's plain transcription.
 	Diarizer func(ctx context.Context) (asr.Diarizer, error)
@@ -135,6 +142,9 @@ type Config struct {
 	// correctOverlap carries the first track's speculative correction
 	// from the final pass to CorrectTranscript; runFinalize arms it.
 	correctOverlap *correctionOverlap
+	// Automatic finalization preserves a live acoustic transcript instead
+	// of replacing its identities with an untimed or four-speaker pass.
+	preserveLiveSpeakers bool
 	// MainLanguage names the user's primary language for summary prompts;
 	// "" writes them in the transcript's language.
 	MainLanguage func() string

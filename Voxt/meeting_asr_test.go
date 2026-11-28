@@ -13,10 +13,31 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/local"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/meeting"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/models"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/omni"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/vad"
 )
 
 type meetingDiarizerFake struct{ fakeTranscriptions }
+
+type meetingVoiceProvider struct {
+	fakeTranscriptions
+	detector vad.Model
+}
+
+func (p *meetingVoiceProvider) VAD() vad.Model { return p.detector }
+
+func TestMeetingTrackASRPassesVADFactory(t *testing.T) {
+	a, _, _ := newTestApp(t)
+	model := &omni.VAD{} // a factory, never an already-open ModelStream
+	a.local = &fakeLocal{ASRP: &meetingVoiceProvider{detector: model}}
+	for _, source := range []meeting.Source{meeting.SourceMic, meeting.SourceSystem} {
+		track, err := a.meetingTrackASR(context.Background(), source)
+		if err != nil || track.VAD != model {
+			t.Fatalf("%s: detector %v, error %v", source, track.VAD, err)
+		}
+	}
+}
 
 func (f *meetingDiarizerFake) Diarize(context.Context, asr.FileRequest) (asr.Result, error) {
 	return asr.Result{}, nil
@@ -122,8 +143,7 @@ func TestMeetingTrackASRUsesDictionary(t *testing.T) {
 
 // MTD knows only zh and en: a meeting in another language keeps the
 // selected model's transcription instead of a forced wrong-language one.
-// An unknown language (English UI, no main language: no hint, #3398) is
-// not zh or en either.
+// An unknown language keeps the selected model's transcription.
 func TestMeetingDiarizerLanguageGate(t *testing.T) {
 	provider := &meetingDiarizerFake{}
 	for _, tc := range []struct {
@@ -158,6 +178,7 @@ type meetingGateLocal struct {
 	local.NotInstalled
 	opened     string
 	withSystem bool
+	stream     bool
 }
 
 func (l *meetingGateLocal) Installed(kind local.Kind) []local.Model {
@@ -180,6 +201,9 @@ func (l *meetingGateLocal) ASR(_ context.Context, id string) (asr.Provider, loca
 		return nil, local.Model{}, local.NotInstalledError(local.ASR, id)
 	}
 	l.opened = m.ID
+	if l.stream {
+		return fakeStreamer{}, m, nil
+	}
 	return &fakeTranscriptions{}, m, nil
 }
 
@@ -241,4 +265,25 @@ func TestMeetingTrackASRLanguageGate(t *testing.T) {
 			t.Errorf("opened %s, want System dictation", l.opened)
 		}
 	})
+}
+
+func TestMeetingLiveSpeakersKeepSelectedASR(t *testing.T) {
+	a, _, _ := newTestApp(t)
+	backend := &meetingGateLocal{stream: true}
+	a.local = backend
+	a.prefs.Features.Meeting.Speakers = true
+	a.prefs.Features.Meeting.ASR = models.ASRAccurate
+	for _, source := range []meeting.Source{meeting.SourceMic, meeting.SourceSystem} {
+		track, err := a.meetingTrackASR(context.Background(), source)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if backend.opened != models.ASRAccurate || !track.StreamReq.LiveResult {
+			t.Fatalf("%s replaced ASR or reran the full stream: %s %+v", source, backend.opened, track.StreamReq)
+		}
+	}
+	a.setMeetingSpeakers(false)
+	if a.prefs.Features.Meeting.Speakers || a.prefs.Features.Meeting.ASR != models.ASRAccurate {
+		t.Fatal("speaker toggle changed ASR")
+	}
 }
