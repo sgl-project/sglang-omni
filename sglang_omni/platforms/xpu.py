@@ -34,6 +34,12 @@ class XPUOmniPlatform(XpuDeviceMixin, OmniPlatform):
     def enable_code2wav_graph(self):
         return True
 
+    def dots_tts_tail_graph_batch_buckets(self) -> tuple[int, ...]:
+        return (1, 2, 3, 4, 8, 16)
+
+    def enable_dots_tts_patch_graph(self) -> bool:
+        return True
+
     def get_encoder_decoder_attention_backend(self) -> str | None:
         # note (jianan): intel_xpu requires graphs disabled for encoder-decoder
         # models; torch_native makes SGLang disable both graph phases.
