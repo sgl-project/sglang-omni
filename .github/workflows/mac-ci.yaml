@@ -210,7 +210,8 @@ jobs:
               "rollover": (
                   "      if (preview_refresh_enabled_) {\n"
                   "        finalizing_ = true;\n"
-                  "      }\n",
+                  "      }\n"
+                  "      DiscardPendingPauseHint(PauseHintDisposition::kSegmentRollover);\n",
                   "",
               ),
           }
