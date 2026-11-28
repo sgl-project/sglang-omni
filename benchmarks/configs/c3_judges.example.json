@@ -1,0 +1,15 @@
+{
+  "judges": [
+    {
+      "name": "qwen3.8-27b",
+      "model": "qwen3.8-27b",
+      "model_revision": null,
+      "base_url": "http://127.0.0.1:30000/v1",
+      "api_key_env": null,
+      "max_concurrency": 8,
+      "enable_thinking": false,
+      "temperature": 0.0,
+      "max_tokens": 4096
+    }
+  ]
+}

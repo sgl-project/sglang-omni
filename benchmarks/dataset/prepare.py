@@ -21,6 +21,8 @@ Usage:
     python -m benchmarks.dataset.prepare --dataset socialomni
     python -m benchmarks.dataset.prepare --dataset duplex-mpe
     python -m benchmarks.dataset.prepare --dataset duplex-mpe-mini
+    python -m benchmarks.dataset.prepare --dataset c3
+    python -m benchmarks.dataset.prepare --dataset c3-mini
 """
 
 from __future__ import annotations
@@ -29,6 +31,8 @@ import argparse
 import logging
 from pathlib import Path
 
+from benchmarks.c3.registry import C3_DATASET_ID, C3_DATASET_REVISION
+from benchmarks.dataset.c3 import download_c3_dataset
 from benchmarks.dataset.duplex_mpe import (
     DUPLEX_MPE_DATASET_ID,
     DUPLEX_MPE_DATASET_REVISION,
@@ -74,6 +78,8 @@ DATASETS: dict[str, str] = {
     "socialomni": SOCIALOMNI_DATASET_ID,
     "duplex-mpe": DUPLEX_MPE_DATASET_ID,
     "duplex-mpe-mini": f"{DUPLEX_MPE_DATASET_ID}:mini",
+    "c3": C3_DATASET_ID,
+    "c3-mini": f"{C3_DATASET_ID}:mini",
 }
 
 
@@ -108,6 +114,28 @@ def download_dataset(
             destination_dir=Path(local_dir or default_dir),
             revision=DUPLEX_MPE_DATASET_REVISION,
             mini=is_mini_subset,
+            quiet=quiet,
+        )
+        return
+    elif dataset_id == C3_DATASET_ID:
+        if revision not in (None, C3_DATASET_REVISION):
+            raise ValueError(
+                f"C3 must use the pinned dataset revision {C3_DATASET_REVISION}"
+            )
+        else:
+            pass
+        if separator and split != "mini":
+            raise ValueError(f"Unsupported C3 subset: {split!r}")
+        else:
+            pass
+        is_c3_mini = separator == ":" and split == "mini"
+        default_c3_dir = (
+            "benchmarks/cache/c3_mini" if is_c3_mini else "benchmarks/cache/c3"
+        )
+        download_c3_dataset(
+            destination_dir=Path(local_dir or default_c3_dir),
+            revision=C3_DATASET_REVISION,
+            mini=is_c3_mini,
             quiet=quiet,
         )
         return
@@ -222,7 +250,7 @@ def main() -> None:
         "--local-dir",
         default=None,
         help=(
-            "Materialized dataset directory for socialomni or duplex-mpe "
+            "Materialized dataset directory for socialomni, duplex-mpe, or c3 "
             "(defaults under benchmarks/cache/)."
         ),
     )

@@ -201,6 +201,7 @@ python -m benchmarks.eval.benchmark_omni_seedtts \
 | `eval/benchmark_omni_videomme.py` | Video-MME (video understanding) | Qwen3-Omni | `/v1/chat/completions` |
 | `eval/benchmark_omni_videoamme.py` | Video-AMME (video + audio question understanding) | Qwen3-Omni | `/v1/chat/completions` |
 | `eval/benchmark_omni_socialomni.py` | SocialOmni fixed-prefix speaker, turn-entry, and response evaluation | Qwen3-Omni | `/v1/chat/completions` |
+| `eval/benchmark_omni_c3.py` | C3 bilingual spoken ambiguity, omission, coreference, and multi-turn evaluation | Qwen3-Omni, MiniCPM-o | `/v1/chat/completions` |
 | `eval/benchmark_asr_seedtts.py` | ASR concurrency scaling on SeedTTS EN/ZH | Qwen3-ASR, Fun-ASR | `/v1/audio/transcriptions` |
 | `eval/benchmark_asr_stt_benchmark.py` | ASR concurrency scaling on the Pipecat STT benchmark set (EN) | Qwen3-ASR, Fun-ASR | `/v1/audio/transcriptions` |
 | `eval/benchmark_asr_longform.py` | ASR concurrency scaling on LongLibriHeavy 30/60 s and Meanwhile (EN) | Qwen3-ASR, Fun-ASR | `/v1/audio/transcriptions` |
@@ -709,6 +710,88 @@ Phases can also run independently via `--phase {generate,asr,judge,score}` again
 }
 ```
 
+## C3 (Bilingual Complex Spoken Dialogue Benchmark)
+
+[C3](https://arxiv.org/abs/2507.22968) ([Project Page](https://step-out.github.io/C3-web/) | [GitHub](https://github.com/step-out/C3) | [Hugging Face](https://huggingface.co/datasets/ChengqianMa/C3)) evaluates English and Chinese Spoken Dialogue Models on `/v1/chat/completions` across five linguistic and paralinguistic dimensions: **phonological ambiguity** (pauses, homophones/heterographs, heteronyms, lexical tones, stress, intonation), **semantic ambiguity** (lexical polysemy and syntactic attachment), **omission** (detection and completion), **coreference** (detection and resolution), and **multi-turn context maintenance** (sequential multi-round audio turns with generated assistant history). Every spoken `.mp3` prompt embeds the complete spoken instruction and dialogue audio (`24 kHz` mono), so the benchmark sends pure `input_audio` turns without supplying text transcripts or reference annotations to the evaluated model.
+
+The dataset downloader pins Hugging Face revision `451b53144ab4276a6a020609c16e324bf91e8410` (`1,079` total instances across `1,586` `.mp3` recordings) and verifies both `SHA256SUMS` and every selected audio clip's SHA-256 digest. Official `auto` and `full` evaluations reject local datasets whose digests do not match the pinned revision unless `--allow-unverified-dataset` is explicitly passed (which relabels the metric to `c3_unverified_dataset_macro_accuracy` and disables `paper_metric_scope_complete`; `--mini`, `--subtasks`, and `single_turn` subset runs similarly record `dataset_matches_expected_revision` and report `c3_unverified_dataset_macro_accuracy` whenever `SHA256SUMS` is unverified).
+
+By default (`--scope auto`), `benchmark_omni_c3.py` evaluates all `1,045` automated understanding and multi-turn instances (`744` English across `11` subtasks + `301` Chinese across `10` subtasks) and excludes the `34` speech-production phonological generation items (`12` English + `22` Chinese) that require human expert listening annotation (`c3_auto_macro_accuracy` reports `phonological` as `understanding_only` and is not conflated with the full `1,079`-item paper overall). A deterministic `2`-per-subtask smoke subset (`42` automated instances under `--scope auto --mini`) is materialized separately via `c3-mini`:
+
+```bash
+# 1a. Deterministic smoke subset (2 instances per subtask -> benchmarks/cache/c3_mini)
+python -m benchmarks.dataset.prepare --dataset c3-mini --local-dir benchmarks/cache/c3_mini
+
+python -m benchmarks.eval.benchmark_omni_c3 \
+    --dataset-root benchmarks/cache/c3_mini \
+    --output-dir benchmarks/results/c3_mini_qwen3_omni \
+    --mini \
+    --model Qwen/Qwen3-Omni-30B-A3B-Instruct \
+    --base-url http://127.0.0.1:8000 \
+    --judge-config benchmarks/configs/c3_judges.example.json
+
+# 1b. Full automated C3-Auto evaluation (1,045 instances -> materialize benchmarks/cache/c3 first)
+python -m benchmarks.dataset.prepare --dataset c3 --local-dir benchmarks/cache/c3
+
+python -m benchmarks.eval.benchmark_omni_c3 \
+    --dataset-root benchmarks/cache/c3 \
+    --output-dir benchmarks/results/c3_auto_qwen3_omni \
+    --scope auto \
+    --model Qwen/Qwen3-Omni-30B-A3B-Instruct \
+    --base-url http://127.0.0.1:8000 \
+    --judge-config benchmarks/configs/c3_judges.example.json
+```
+
+Phases can execute independently via `--phase {generate,judge,score}` against the same `--output-dir` and the same selection flags (`--scope`, `--language`, `--subtasks`, `--mini`, `--max-samples-per-subtask`). `generate` writes `run.json` and `predictions.json` (plus `inference_failures.json` on failures), `judge` writes `judge_manifest.json` and `judgments.json` (plus structured `judge_failures.json`, preserving all previously required judges unless a new `--output-dir` is chosen), and `score` validates those authoritative manifests and emits `c3_results.json` and `RESULTS.md` with a shared `scoring_attempt_id`, exiting non-zero whenever any selected instance, LLM judgment, or required human annotation is missing or failed.
+
+To run the full `1,079`-instance paper scope (`c3_paper_full_macro_accuracy`, including the `34` human-scored phonological generation items), generate with `--scope full --modalities text,audio` (or add `--export-generation-audio` to upgrade `auto` to `full`), judge the `1,045` automated items, have human annotators listen to `<output-dir>/generation_audio/<lang>/<subtask>/<index>.wav`, and pass `--manual-generation-annotations annotations.json` during `--phase score` (where `annotations.json` maps each selected human-generation `instance_id`, such as `"en/phonological_generation/0"`, to `{"correct": true, "prediction_sha256": "<from predictions.json>", "generated_audio_sha256": "<from predictions.json>", "annotator_id": "optional_name"}`):
+
+```bash
+# 2a. Generate all 1,079 instances and export verified WAVs for the 34 generation items
+python -m benchmarks.eval.benchmark_omni_c3 \
+    --dataset-root benchmarks/cache/c3 \
+    --output-dir benchmarks/results/c3_full_qwen3_omni \
+    --phase generate --scope full --modalities text,audio \
+    --model Qwen/Qwen3-Omni-30B-A3B-Instruct \
+    --base-url http://127.0.0.1:8000
+
+# 2b. Judge the 1,045 automated items, then score offline once human generation labels are ready
+python -m benchmarks.eval.benchmark_omni_c3 \
+    --dataset-root benchmarks/cache/c3 \
+    --output-dir benchmarks/results/c3_full_qwen3_omni \
+    --phase judge --scope full \
+    --judge-config benchmarks/configs/c3_judges.example.json
+
+python -m benchmarks.eval.benchmark_omni_c3 \
+    --dataset-root benchmarks/cache/c3 \
+    --output-dir benchmarks/results/c3_full_qwen3_omni \
+    --phase score --scope full \
+    --manual-generation-annotations /path/to/manual_generation_annotations.json
+```
+
+Following the official C3 aggregation rules, `omission` and `coreference` average their two branches (`detection` and `completion`/`resolution`), each language's overall macro score averages its five phenomena equally, and multi-judge configurations average across judges. Reference `C3-Auto` (`1,045` instances: `744` English + `301` Chinese, `temperature=0.0`, `seed=1`, `--text-only` on NVIDIA H20, dual-judged by `Qwen/Qwen3.8-27B` at `dbdc473dea0d6a9763042881cc33d6058d1742d2` with `enable_thinking=false` and `zai-org/GLM-4-32B-0414` at `077b5c2f5c43bd3239fd605a0600229e8facbd4a`):
+
+| Model (Revision) | Language | Phonological | Semantic | Omission | Coreference | Multi-turn | `c3_auto_macro_accuracy` |
+|---|---|---|---|---|---|---|---|
+| `Qwen/Qwen3-Omni-30B-A3B-Instruct` (`26291f79`) | `en` (`744`) | 52.94% | 61.76% | 13.24% | 90.83% | 75.00% | **58.75%** |
+| `Qwen/Qwen3-Omni-30B-A3B-Instruct` (`26291f79`) | `zh` (`301`) | 23.33% | 10.59% | 60.00% | 65.83% | 90.79% | **50.11%** |
+| `openbmb/MiniCPM-o-4_5` (`1f761131`) | `en` (`744`) | 26.47% | 48.04% | 19.61% | 85.19% | 64.71% | **48.80%** |
+| `openbmb/MiniCPM-o-4_5` (`1f761131`) | `zh` (`301`) | 6.67% | 2.97% | 41.43% | 65.00% | 86.84% | **40.58%** |
+
+The dataset is released under CC BY 4.0 and code under MIT; cite:
+
+```bibtex
+@inproceedings{ma2025c3,
+  title     = {C3: A Bilingual Benchmark for Spoken Dialogue Models Exploring Challenges in Complex Conversations},
+  author    = {Ma, Chengqian and Tao, Wei and Guo, Yiwen},
+  booktitle = {Proceedings of the 2025 Conference on Empirical Methods in Natural Language Processing},
+  year      = {2025},
+  publisher = {Association for Computational Linguistics},
+  doi       = {10.18653/v1/2025.emnlp-main.1160},
+  pages     = {22789--22807}
+}
+```
+
 ## SocialOmni
 
 SocialOmni has two levels. Level 1 contains 2,000 four-choice speaker
@@ -939,6 +1022,8 @@ python -m benchmarks.dataset.prepare --dataset videoamme-ci-50  # Video-AMME CI 
 python -m benchmarks.dataset.prepare --dataset socialomni --local-dir /path/to/socialomni
 python -m benchmarks.dataset.prepare --dataset duplex-mpe       # full Duplex-MPE (2,000 pairs / 4,000 streams)
 python -m benchmarks.dataset.prepare --dataset duplex-mpe-mini  # 20-pair (40-stream) Duplex-MPE smoke subset
+python -m benchmarks.dataset.prepare --dataset c3               # full C3 (1,079 instances / 1,586 clips)
+python -m benchmarks.dataset.prepare --dataset c3-mini          # 2-per-subtask C3 smoke subset
 ```
 
 Most datasets are pre-warmed into the default Hugging Face cache via
