@@ -71,6 +71,11 @@ type sessionCardViewState struct {
 	CanLanguage      bool `json:"can_language"`
 	ShowThinking     bool `json:"show_thinking"`
 	CanThink         bool `json:"can_think"`
+	// Speech: a card-enabled Transcribe or Translate session shows its
+	// recording and recognised text in the card (liveCard); WorkingText
+	// says what it does after recording.
+	Speech      bool   `json:"speech,omitempty"`
+	WorkingText string `json:"working_text,omitempty"`
 }
 
 // sessionCardInput is the JSON-safe form of one original sent with the answer.
@@ -131,6 +136,10 @@ type sessionCardProjectionInput struct {
 	SizeStep          int
 	BoxSessionID      string
 	BoxThumbnailCount int
+	// LiveCard: the session shows in the card from its first snapshot
+	// (liveCard); Note is the pill's note for it while it records.
+	LiveCard bool
+	Note     string
 	// Chat lays a single answer out as a chat turn: the Rewrite card.
 	Chat bool
 	// LivePreviews are the pictures the live follow-up sends, after the card's.
@@ -158,6 +167,9 @@ func buildSessionCardViewState(translator *i18n.Translator, input sessionCardPro
 		snapshot.Partial, snapshot.Draft = "", ""
 	}
 	if !card.open {
+		if input.LiveCard {
+			return buildSessionSpeechCardViewState(translator, input, snapshot)
+		}
 		state := sessionCardViewState{SizeStep: input.SizeStep, Sessions: input.Sessions}
 		if input.Writing || input.Chat {
 			state.ID, state.Kind = snapshot.ID, string(snapshot.Kind)
@@ -363,6 +375,10 @@ func continueTipFor(translator *i18n.Translator, keys string) string {
 }
 
 func updateSessionCardLiveState(translator *i18n.Translator, card *sessionCardViewState, input sessionCardProjectionInput) {
+	if input.LiveCard && !input.Answer.open {
+		*card = buildSessionCardViewState(translator, input)
+		return
+	}
 	card.Attachment, card.ThumbnailCount = sessionCardAttachment(input)
 	follow := input.Own && input.Snapshot.ID != input.Answer.redo
 	card.Recording = follow && input.Snapshot.State == session.Recording
@@ -395,8 +411,8 @@ type sessionCardProjectionKey struct {
 	copyKey, insertKey                    bool
 	sessions                              string
 	empty, keepsHistory                   bool
-	redoWriting                           bool
-	problemCode, attachment               string
+	redoWriting, liveCard                 bool
+	problemCode, attachment, note         string
 	thumbnailCount, inputCount            int
 	// highlights is the card's dictionary spans by identity: they are
 	// set with the text, or after it (openAnswer).
@@ -436,6 +452,7 @@ func sessionCardKeyFor(input sessionCardProjectionInput) sessionCardProjectionKe
 		copyKey: input.CopyKey, insertKey: input.InsertKey,
 		sessions: fmt.Sprint(input.Sessions), empty: input.Empty, keepsHistory: input.KeepsHistory,
 		redoWriting: sessionCardRedoWriting(input), attachment: attachment, thumbnailCount: thumbnailCount, inputCount: len(card.previews) + len(input.LivePreviews), highlights: highlights, chat: input.Chat, reveal: input.Reveal,
+		liveCard: input.LiveCard, note: input.Note,
 	}
 }
 
@@ -457,7 +474,10 @@ func (a *app) sessionCardProjectionInput() sessionCardProjectionInput {
 		Snapshot: snapshot, Answer: a.answer, Sessions: a.sessionChips(), Empty: a.emptyCard, KeepsHistory: a.prefs.Privacy.KeepHistory,
 		Own: a.cardSessionLive(), Writing: a.writingAnswer(),
 		HideLiveText: a.prefs.Overlay.HideLiveText, ShownDraft: a.shownDraft(snapshot),
-		SizeStep: a.prefs.Features.CardSize(string(kind)), BoxSessionID: a.boxSessionID(), BoxThumbnailCount: len(a.box.thumbs),
+		SizeStep: a.prefs.Features.CardSize(string(kind)), BoxSessionID: a.boxSessionID(), BoxThumbnailCount: len(a.box.thumbs), LiveCard: a.liveCard(),
+	}
+	if input.LiveCard && a.pillNote.id == snapshot.ID {
+		input.Note = a.pillNote.text
 	}
 	if !a.answer.open {
 		input.Chat = a.boxWriting() // the first turn, sent, above its answer

@@ -15,6 +15,7 @@ Rewrite continue with a new selection	L	TestRewriteFollowUpNewSelection	none
 Image input: window screenshot and clipboard image	L	TestWindowScreenshotEndToEnd	No test of an unreadable selection with the image switch on
 Image input: window screenshot and clipboard image	L	TestClipboardImageEndToEnd	none
 Answer card	L	TestAnswerCardMarkdown	none
+Answer card	L	TestCardFirstOverlay	Real recording and cross-app paste are checked by hand only
 Answer card	L	TestCardThinkingLevel	none
 Answer card	L	TestRewriteNoCard	none
 Recording overlay and live text	L	TestSessionEscapeAndFailures	Overlay position within a display and full-screen Space behavior are checked by hand only

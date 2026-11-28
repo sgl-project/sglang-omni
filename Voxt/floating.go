@@ -72,7 +72,7 @@ func showFloating(w *mygo.Window, x, y int) {
 // activateTarget brings the app with pid back to the front (at most
 // 600 ms), for a paste after a click on an ordinary VoxtNew window.
 // Call it from a goroutine: it waits.
-func activateTarget(pid int) (bool, time.Duration) {
+var activateTarget = func(pid int) (bool, time.Duration) {
 	return macx.Activate(pid, 600*time.Millisecond, mygo.RunOnMain)
 }
 

@@ -10,6 +10,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 ### Changed
 - **Local Qwen3-ASR's result comes even sooner after you stop** (#4747): while you speak, the speech model recognises the recording so far in the background every 8 seconds, and the result after Stop starts from that and from the live preview, picking the preview up again after a word that differs; the GPU stays at speed while you record. On an M4 MacBook Air with the 1.7B model and Faster transcription, 40 dictations of 4 to 50 seconds came in 0.29 s on average instead of 0.53 s, with the same text but for a few punctuation marks.
 - **Long dictations answer sooner too** (#4747): the stretches recognised while you speak (from 20 seconds on) now reuse what the live preview has worked out, with a dictionary of any size (before, more than 30 terms turned them off), and a stretch still being recognised at Stop no longer holds the result up. On 18 dictations of 20 to 50 seconds, the result came in 0.33 s on average instead of 0.47 s, and with a dictionary of 463 terms in 0.42 s instead of 0.53 s without the stretches.
+- **Transcribe and Translate open in the answer card from the start** (#4167): with Show the result in a card on, the card opens when recording starts and shows the waveform, the selected text and the recognised text, then the result, instead of the pill handing over to a card at the end. The card never takes the keyboard, so clicking or dragging it leaves the text where you were typing. The live card floats without taking the front, Close returns it to the target app, and the finished answer card resumes the usual front behavior. A failed recording still shows Retry, and closing the card while it records cancels the session.
 
 ### Fixed
 - **The transcription preview stays where you drag it** (#4701): dragged while new words came in, the preview jumped back toward where the drag started, and the screen's edge pulled it back before you let go. It now grows where you have it; dragged past the screen's edge, it returns to the screen once you let go.
@@ -22,6 +23,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 #### 变更
 - **本地 Qwen3-ASR 松键后出结果更快了**（#4747）：你说话时，语音识别模型每 8 秒在后台把已录的部分识别一遍，松键后的结果从这份结果和实时预览接着算，预览中途有字对不上也能接回去；录音期间 GPU 保持在高速状态。M4 MacBook Air 上用 1.7B 模型并开启“转录加速”，40 段 4 到 50 秒的口述平均 0.29 秒出结果，原来 0.53 秒，文字除了个别标点都相同。
 - **长口述也更快出结果**（#4747）：说话时就识别好的分段（20 秒起）现在会复用实时预览算好的部分，词典多大都行（原来超过 30 个词条就不分段），松键时还在识别的那一段也不再拖住结果。18 段 20 到 50 秒的口述平均 0.33 秒出结果，原来 0.47 秒；词典有 463 个词条时 0.42 秒，不分段要 0.53 秒。
+- **转录和翻译从录音开始就显示在答案卡片里**（#4167）：开启“在卡片中显示结果”后，卡片在开始录音时就出现，依次显示波形、选中的文字、识别中的文字和结果，不再先用浮窗录音、结束时再切到卡片。卡片不会抢键盘焦点，点击或拖动它后文字仍输入到原来的位置。录音卡片只悬浮在原 App 上方，不抢前台；关闭后回到原 App，结果出来后的答案卡片恢复原有的前台行为。录音失败时仍可重试；录音中关闭卡片会取消本次会话。
 
 #### 修复
 - **拖动转录预览时不再跳回去**（#4701）：边说边拖时，每来一批新字，预览会朝拖动开始的位置跳一下；拖到屏幕边缘，还没松手就被拉回来。现在它在拖到的位置上变大；拖出屏幕边缘的，松手后才回到屏幕内。

@@ -251,14 +251,24 @@ func (a *app) canFollowUp() bool {
 	return card.open && ok && card.problem == nil && !a.sess.State.Live() && !bgLive
 }
 
+func (a *app) giveAnswerFrontBack(live bool) {
+	target := a.answer.target.PID
+	if live {
+		target = a.sess.Target.PID
+	}
+	a.giveFrontBack(target)
+}
+
 // closeAnswer closes the answer card (and cancels a follow-up, another
 // language, or the backgrounded answer, on its way).
 func (a *app) closeAnswer() {
-	if a.cardSessionLive() || a.writingAnswer() || a.bgVisible() && a.bgSess.State.Live() {
+	live := a.liveCard()
+	if live {
+		a.cancelSession() // a card-first Transcribe or Translate, still recording or working
+	} else if a.cardSessionLive() || a.writingAnswer() || a.bgVisible() && a.bgSess.State.Live() {
 		a.cancelCardSession()
 	}
-	target := a.answer.target.PID
-	defer a.giveFrontBack(target) // after the card's window went: VoxtNew in front with no window
+	defer a.giveAnswerFrontBack(live) // after the card's window went: VoxtNew in front with no window
 	a.answer, a.followUp, a.emptyCard = answerCard{}, "", false
 	if a.box.open { // the card that showed it
 		a.dropBox()

@@ -371,7 +371,10 @@ func (r *run) listen() (string, bool) {
 		if r.typedOnly() {
 			return "", true
 		}
-		r.m.end(r, Cancelled, func(s *Snapshot) { s.Problem = &Problem{Code: ProblemTooShort} }, nil)
+		r.m.end(r, Cancelled, func(s *Snapshot) {
+			s.Problem = &Problem{Code: ProblemTooShort}
+			s.Card = false
+		}, nil)
 		return "", false
 	}
 	r.head.ask(said)
