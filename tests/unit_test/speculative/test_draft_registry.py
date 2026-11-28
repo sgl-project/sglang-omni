@@ -416,6 +416,113 @@ def test_serve_gives_the_default_draft_by_the_launched_model_path_and_tp_size(
         assert engine_keys == {}
 
 
+@pytest.mark.parametrize(
+    ("tp_size", "serves_draft"), [(2, True), (4, True), (8, False)]
+)
+def test_serve_gives_a_tensor_parallel_thinker_its_default_mtp_up_to_its_tp_size(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    tp_size: int,
+    serves_draft: bool,
+) -> None:
+    """Ming-3.0-audio-flash's thinker runs on two GPUs or more, so its MTP default allows TP 4."""
+    monkeypatch.setattr(current_platform, "is_cuda", lambda: True)
+    config_path = tmp_path / "ming3_audio.yaml"
+    config_path.write_text(
+        yaml.safe_dump(
+            {
+                "config_cls": "Ming3AudioPipelineConfig",
+                "model_path": "inclusionAI/Ming-3.0-audio-flash",
+            }
+        )
+    )
+    with mock.patch("sglang_omni.cli.serve.launch_server") as launch_server:
+        result = CliRunner().invoke(
+            app,
+            [
+                "serve",
+                "--config",
+                str(config_path),
+                "--thinker.tp_size",
+                str(tp_size),
+                "--thinker.gpu",
+                str(list(range(tp_size))),
+            ],
+        )
+    assert result.exit_code == 0, result.output
+    (launched,) = launch_server.call_args.args
+    (draft,) = [
+        draft
+        for draft in DRAFT_REGISTRY
+        if draft.model_path == "inclusionAI/Ming-3.0-audio-flash"
+        and draft.is_default_on
+    ]
+    engine_keys = engine_draft_keys(launched.stage_named("thinker").engine)
+    if serves_draft:
+        assert engine_keys == registered_keys(draft)
+    else:
+        assert engine_keys == {}
+
+
+@pytest.mark.parametrize(
+    ("max_running_requests", "algorithm_flags", "serves_default"),
+    [
+        (32, [], True),
+        (64, [], False),
+        (64, ["--thinker.engine.speculative_algorithm", "NEXTN"], False),
+    ],
+)
+def test_serve_gives_the_default_mtp_only_up_to_its_running_requests(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    max_running_requests: int,
+    algorithm_flags: list[str],
+    serves_default: bool,
+) -> None:
+    """At TP 2, MTP leaves no KV cache for 64 running requests, so only an explicit NEXTN serves it there."""
+    monkeypatch.setattr(current_platform, "is_cuda", lambda: True)
+    config_path = tmp_path / "ming3_audio.yaml"
+    config_path.write_text(
+        yaml.safe_dump(
+            {
+                "config_cls": "Ming3AudioPipelineConfig",
+                "model_path": "inclusionAI/Ming-3.0-audio-flash",
+            }
+        )
+    )
+    with mock.patch("sglang_omni.cli.serve.launch_server") as launch_server:
+        result = CliRunner().invoke(
+            app,
+            [
+                "serve",
+                "--config",
+                str(config_path),
+                "--thinker.tp_size",
+                "2",
+                "--thinker.gpu",
+                "[0, 1]",
+                "--thinker.engine.max_running_requests",
+                str(max_running_requests),
+                *algorithm_flags,
+            ],
+        )
+    assert result.exit_code == 0, result.output
+    (launched,) = launch_server.call_args.args
+    (draft,) = [
+        draft
+        for draft in DRAFT_REGISTRY
+        if draft.model_path == "inclusionAI/Ming-3.0-audio-flash"
+        and draft.is_default_on
+    ]
+    engine_keys = engine_draft_keys(launched.stage_named("thinker").engine)
+    if serves_default:
+        assert engine_keys == registered_keys(draft)
+    elif algorithm_flags:
+        assert engine_keys == {"speculative_algorithm": "NEXTN"}
+    else:
+        assert engine_keys == {}
+
+
 @pytest.mark.parametrize("algorithm", ["NEXTN", "DSPARK"])
 def test_serve_gives_the_default_draft_only_to_a_stage_under_its_algorithm(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, algorithm: str
