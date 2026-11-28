@@ -706,7 +706,7 @@ uv<span class="w"> </span>pip<span class="w"> </span>install<span class="w"> </s
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="nv">CUDA_VISIBLE_DEVICES</span><span class="o">=</span><span class="m">0</span>,1<span class="w"> </span>sgl-omni<span class="w"> </span>serve<span class="w"> </span>--model-path<span class="w"> </span>MiniMaxAI/MiniMax-Music3<span class="w"> </span>--port<span class="w"> </span><span class="m">8000</span>
 </pre></div>
 </div>
-<p>Default optimizations that are on without further flags: backbone decode device graph, RVQ depth device graph, compiled DIT blocks, compiled DAV decoder, and batched seeded sampling.</p>
+<p>Default optimizations that are on without further flags: backbone decode device graph, RVQ depth device graph, compiled DIT blocks, compiled DAV decoder, batched seeded sampling, and AR async decode, which launches the next frame before the host reads the current one. Async decode leaves the audio byte-identical; <code class="docutils literal notranslate"><span class="pre">--minimax_music3_ar.factory.enable_async_decode</span> <span class="pre">false</span></code> turns it off.</p>
 <p>Classifier-free guidance is on in both stages and has no flag. See <a class="reference internal" href="#guidance"><span class="std std-ref">Guidance</span></a> for what it costs you, because the AR half changes how much a request occupies.</p>
 </section>
 <section id="ascend-npu">

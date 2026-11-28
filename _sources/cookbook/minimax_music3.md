@@ -45,7 +45,7 @@ CUDA_VISIBLE_DEVICES=0 sgl-omni serve --model-path MiniMaxAI/MiniMax-Music3 --po
 CUDA_VISIBLE_DEVICES=0,1 sgl-omni serve --model-path MiniMaxAI/MiniMax-Music3 --port 8000
 ```
 
-Default optimizations that are on without further flags: backbone decode device graph, RVQ depth device graph, compiled DIT blocks, compiled DAV decoder, and batched seeded sampling.
+Default optimizations that are on without further flags: backbone decode device graph, RVQ depth device graph, compiled DIT blocks, compiled DAV decoder, batched seeded sampling, and AR async decode, which launches the next frame before the host reads the current one. Async decode leaves the audio byte-identical; `--minimax_music3_ar.factory.enable_async_decode false` turns it off.
 
 Classifier-free guidance is on in both stages and has no flag. See [Guidance](#guidance) for what it costs you, because the AR half changes how much a request occupies.
 
