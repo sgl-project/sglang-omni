@@ -134,6 +134,8 @@ minicpm-o = [
     "onnx>=1.18.0",
 ]
 
+haru = ["haru-speech==0.1.1"]
+
 # Drama 3 vocoder imports dac and audiotools. These stay out of the base
 # dependencies, so `uv pip install -e .` for other models is unchanged.
 # descript-audiotools pins protobuf<3.20; tool.uv.override-dependencies keeps

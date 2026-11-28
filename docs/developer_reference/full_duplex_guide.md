@@ -6,7 +6,7 @@ SGLang-Omni serves live voice conversations on `/v1/realtime` with three interac
 
 | Strategy | How the conversation works | Reference system | GPUs | Launch | Benchmark `ENGINE` | CI label |
 | --- | --- | --- | --- | --- | --- | --- |
-| Native full duplex | One model listens and speaks at the same time and decides itself when to talk | MiniCPM-o 4.5; also PersonaPlex and Nemotron VoiceChat | 1 | [MiniCPM-o](#native-full-duplex-minicpm-o) | `minicpmo` (default) | `run-native-duplex` |
+| Native full duplex | One model listens and speaks at the same time and decides itself when to talk | MiniCPM-o 4.5; also PersonaPlex, Nemotron VoiceChat, and Haru-4B | 1 | [MiniCPM-o](#native-full-duplex-minicpm-o), [Haru-4B](#native-full-duplex-haru-4b) | `minicpmo` (default) | `run-native-duplex` |
 | Turn-based | One omni model answers each user turn; the server's VAD ends the turn, and speaking over a reply interrupts it | Qwen3-Omni-30B-A3B-Instruct | 2 H100 or 1 H200 | [Qwen3-Omni](#turn-based-qwen3-omni) | `qwen3-omni` | `run-turn-based-duplex` |
 | Cascaded | Separate ASR, LLM and TTS services, composed by the server with VAD, conversation history, turn taking and interruption | Qwen3-ASR-1.7B, Inkling-2-Mini and Qwen3-TTS-12Hz-1.7B-Base | 1 or 2, by profile | [Streaming cascade](#streaming-cascade) | `cascade` | `run-cascaded-duplex` |
 
@@ -167,6 +167,21 @@ The protocol follows the {ref}`MiniCPM-o steps <full-duplex-protocol>`, with the
 | Prompt | `instructions` | Not accepted: the model uses its checkpoint's system prompt, and a session that sends `instructions` is refused |
 
 The whole session is one response, and every unit brings 80 ms of agent audio, silent while the model listens. The session variant only accepts `/v1/realtime` requests; use the default pipeline for offline recordings.
+
+### Native Full Duplex: Haru-4B
+
+On Linux with one CUDA GPU, install the Haru extra and start the realtime server. `--model-path` also accepts a local checkpoint directory containing `config.json`, `model.safetensors`, and `tokenizer.json`.
+
+```bash
+uv pip install --prerelease=allow -e '.[haru]'
+sgl-omni serve --model-path higurashi-ai/Haru-4B --enable-realtime --port 8000
+```
+
+The server warms up one brief session before reporting ready. The WebSocket at `/v1/realtime` accepts 24 kHz mono PCM16 and streams 24 kHz speech with text. Haru processes each 3,200-sample frame as it arrives. `sglang.unit.done` acknowledges each 400 ms of input. Ending input pads the last unit with silence.
+
+Set a character prompt in `session.instructions` and upload a reference voice as a base64 PCM16 WAV in `session.sglang.reference_audio`. `session.sglang.sampling` accepts `temperature`, `top_k`, `top_p`, `guidance_scale`, `seed`, `speak_first`, `eop_bias`, and `dry`. With `speak_first` enabled, the server sends the initial audio frame after `session.updated`.
+
+`response.cancel` ends the current response. The next input frame continues the same model session and starts a new response.
 
 ### Turn-Based: Qwen3-Omni
 

@@ -127,7 +127,7 @@ class CoordinatorAdapter(InteractionAdapter):
             async for output in self.client.session_outputs(self.session_identity):
                 if (
                     self.active_unit is None
-                    or output.input_seq != self.active_unit.index
+                    or output.input_seq != self.active_unit.pipeline_sequence
                 ):
                     continue
                 elif output.kind == "input_done":
@@ -188,11 +188,15 @@ class CoordinatorAdapter(InteractionAdapter):
             pass
         self.active_unit = unit
         self.unit_completion = asyncio.get_running_loop().create_future()
+        start_ms = samples_to_ms(unit.start_sample, self.input_sample_rate_hz)
+        end_ms = samples_to_ms(
+            unit.start_sample + unit.real_samples, self.input_sample_rate_hz
+        )
         timed_chunk = TimedChunk(
             "audio",
-            samples_to_ms(unit.start_sample, self.input_sample_rate_hz),
-            samples_to_ms(unit.real_samples, self.input_sample_rate_hz),
-            unit.index,
+            start_ms,
+            end_ms - start_ms,
+            unit.pipeline_sequence,
             (
                 unit.pcm
                 if not unit.images

@@ -101,9 +101,11 @@ class SessionRuntime:
         self.pending_frames: dict[int, list[tuple[float, bytes]]] = {}
         self.ready_observations: dict[int, SessionUnitReadyObservation] | None = None
         self.next_unit_index = 0
+        self.next_frame_sequence = 0
         # note (wenyao): A turn-based session ends turns with its own VAD, so holding audio until a unit fills would end turns up to a unit late.
         self.forwards_partial_units = capabilities.interaction == "turn_based"
         self.open_unit_samples = 0
+        self.open_unit_padding_samples = 0
         self.open_unit_start_sample = 0
         self.cleared_unit_receipt: Unit | None = None
         self.is_input_ended = False
@@ -230,7 +232,8 @@ class SessionRuntime:
             candidate, granted = self.negotiation.negotiate(
                 self.config, self.state, patch
             )
-            if self.state == "CREATED":
+            is_opening = self.state == "CREATED"
+            if is_opening:
                 adapter = self.adapter_factory()
                 adapter.set_limits(self.limits)
                 self.is_admitting = True
@@ -279,6 +282,11 @@ class SessionRuntime:
                     copy.deepcopy(public_config),
                 )
             )
+            if is_opening:
+                for event in self.adapter.startup_output():
+                    await self.emit(event)
+            else:
+                pass
 
     async def open_adapter(
         self,
@@ -352,21 +360,25 @@ class SessionRuntime:
                 )
             else:
                 pass
-            pending_unit_count_before = (
-                self.uncut_unit_bytes // self.capabilities.native_unit_bytes
-            )
+            frame_samples = self.capabilities.native_input_frame_samples
+            if frame_samples is not None:
+                ready_bytes = frame_samples * PCM16_BYTES_PER_SAMPLE
+                next_ready_index = self.next_frame_sequence
+                pending_bytes_before = len(self.pending_pcm)
+            else:
+                ready_bytes = self.capabilities.native_unit_bytes
+                next_ready_index = self.next_unit_index
+                pending_bytes_before = self.uncut_unit_bytes
             self.pending_pcm.extend(pcm)
             self.accepted_samples += len(pcm) // PCM16_BYTES_PER_SAMPLE
             self.next_append_sequence += 1
-            pending_unit_count_after = (
-                self.uncut_unit_bytes // self.capabilities.native_unit_bytes
-            )
+            pending_unit_count_before = pending_bytes_before // ready_bytes
             newly_ready_unit_count = (
-                pending_unit_count_after - pending_unit_count_before
-            )
+                pending_bytes_before + len(pcm)
+            ) // ready_bytes - pending_unit_count_before
             if newly_ready_unit_count:
                 self.mark_ready_units(
-                    self.next_unit_index + pending_unit_count_before,
+                    next_ready_index + pending_unit_count_before,
                     newly_ready_unit_count,
                 )
             else:
@@ -436,6 +448,7 @@ class SessionRuntime:
                 )
                 self.next_unit_index += 1
                 self.open_unit_samples = 0
+                self.open_unit_padding_samples = 0
                 if self.is_unit_in_flight:
                     self.cleared_unit_receipt = receipt
                 else:
@@ -496,16 +509,23 @@ class SessionRuntime:
             else:
                 pass
             self.is_input_ended = True
-            pending_unit_count = (
-                self.uncut_unit_bytes // self.capabilities.native_unit_bytes
-            )
-            has_partial_unit = bool(
-                self.uncut_unit_bytes % self.capabilities.native_unit_bytes
-            )
+            frame_samples = self.capabilities.native_input_frame_samples
+            if frame_samples is not None:
+                next_ready_index = self.next_frame_sequence
+                pending_unit_count, partial_samples = divmod(
+                    self.pending_samples, frame_samples
+                )
+                has_partial_unit = bool(partial_samples)
+            else:
+                next_ready_index = self.next_unit_index
+                pending_unit_count, partial_bytes = divmod(
+                    self.uncut_unit_bytes, self.capabilities.native_unit_bytes
+                )
+                has_partial_unit = bool(partial_bytes)
             if has_partial_unit:
-                self.mark_ready_units(self.next_unit_index + pending_unit_count, 1)
+                self.mark_ready_units(next_ready_index + pending_unit_count, 1)
             elif not pending_unit_count:
-                self.mark_ready_units(self.next_unit_index, 1)
+                self.mark_ready_units(next_ready_index, 1)
             else:
                 pass
             self.end_event_id = event_id
@@ -591,8 +611,70 @@ class SessionRuntime:
             receipt = None
         return unit, receipt
 
+    def cut_native_input_frame(self, frame_samples: int) -> tuple[Unit, Unit | None]:
+        """Dispatch whole model frames and acknowledge one enclosing wire unit."""
+        real_samples = min(frame_samples, self.pending_samples)
+        start_sample = self.accepted_samples - self.pending_samples
+        frame_bytes = real_samples * PCM16_BYTES_PER_SAMPLE
+        pcm = bytes(self.pending_pcm[:frame_bytes])
+        del self.pending_pcm[:frame_bytes]
+        if self.open_unit_samples == 0:
+            self.open_unit_start_sample = start_sample
+        else:
+            pass
+        self.open_unit_samples += real_samples
+        has_input_ended = self.is_input_ended and not self.pending_pcm
+        needs_padding = has_input_ended and self.capabilities.tail_policy == "pad"
+        if needs_padding and self.open_unit_samples:
+            padding_samples = frame_samples - real_samples
+            self.open_unit_padding_samples += padding_samples
+            self.padding_samples += padding_samples
+            pcm += bytes(padding_samples * PCM16_BYTES_PER_SAMPLE)
+        else:
+            pass
+        has_full_unit = (
+            self.open_unit_samples + self.open_unit_padding_samples
+        ) * PCM16_BYTES_PER_SAMPLE == self.capabilities.native_unit_bytes
+        is_eos = has_input_ended and (
+            has_full_unit or not needs_padding or self.open_unit_samples == 0
+        )
+        ready_observation = (
+            self.ready_observations.pop(self.next_frame_sequence, None)
+            if self.ready_observations is not None
+            else None
+        )
+        unit = Unit(
+            self.next_unit_index,
+            start_sample,
+            pcm,
+            real_samples,
+            is_eos,
+            tuple(self.granted["output_modalities"]),
+            ready_observation=ready_observation,
+            input_sequence=self.next_frame_sequence,
+        )
+        self.next_frame_sequence += 1
+        if (has_full_unit or is_eos) and self.open_unit_samples:
+            receipt = replace(
+                unit,
+                start_sample=self.open_unit_start_sample,
+                real_samples=self.open_unit_samples,
+            )
+            self.next_unit_index += 1
+            self.open_unit_samples = 0
+            self.open_unit_padding_samples = 0
+        else:
+            receipt = None
+        return unit, receipt
+
     async def pump(self) -> None:
         assert self.adapter is not None
+        frame_samples = self.capabilities.native_input_frame_samples
+        ready_bytes = (
+            frame_samples * PCM16_BYTES_PER_SAMPLE
+            if frame_samples is not None
+            else self.capabilities.native_unit_bytes
+        )
         try:
             while self.state == "OPEN":
                 await self.input_ready.wait()
@@ -606,8 +688,7 @@ class SessionRuntime:
                         and (
                             not self.pending_pcm
                             if self.forwards_partial_units
-                            else len(self.pending_pcm)
-                            < self.capabilities.native_unit_bytes
+                            else len(self.pending_pcm) < ready_bytes
                         )
                     ):
                         continue
@@ -618,6 +699,8 @@ class SessionRuntime:
                     ):
                         self.pending_commits -= 1
                         unit = None
+                    elif frame_samples is not None:
+                        unit, receipt = self.cut_native_input_frame(frame_samples)
                     else:
                         unit, receipt = self.cut_next_unit()
                     self.is_unit_in_flight = True

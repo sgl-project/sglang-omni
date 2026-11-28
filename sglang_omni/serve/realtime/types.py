@@ -129,6 +129,7 @@ class Capabilities:
     # note (Junnan Li): Frame cap per unit, indexed by the session's max_slice_nums minus one.
     image_frames_per_unit: tuple[int, ...] = (1,)
     default_max_slice_nums: int = 1
+    native_input_frame_samples: int | None = None
 
     def __post_init__(self) -> None:
         if self.interaction not in get_args(Interaction):
@@ -141,6 +142,17 @@ class Capabilities:
             raise ValueError("positive rates and cadence required")
         elif self.input_sample_rate_hz * self.native_unit_ms % MS_PER_SECOND:
             raise ValueError("native cadence must contain whole samples")
+        elif self.native_input_frame_samples is not None and (
+            self.interaction != "native"
+            or self.input_modalities != ("audio",)
+            or type(self.native_input_frame_samples) is not int
+            or self.native_input_frame_samples <= 0
+            or self.native_unit_bytes
+            % (self.native_input_frame_samples * PCM16_BYTES_PER_SAMPLE)
+        ):
+            raise ValueError(
+                "audio-only native input frames must divide the native unit"
+            )
         elif self.max_image_bytes <= 0 or min(self.image_frames_per_unit) <= 0:
             raise ValueError("positive image byte and frame limits required")
         elif not 1 <= self.default_max_slice_nums <= len(self.image_frames_per_unit):
@@ -224,10 +236,15 @@ class Unit:
     output_modalities: tuple[str, ...] | None = None
     images: tuple[bytes, ...] = ()
     ready_observation: SessionUnitReadyObservation | None = None
+    input_sequence: int | None = None
 
     @property
     def unit_id(self) -> str:
         return f"unit_{self.index}"
+
+    @property
+    def pipeline_sequence(self) -> int:
+        return self.index if self.input_sequence is None else self.input_sequence
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -256,6 +273,10 @@ class InteractionAdapter:
         self, session_id: str, config: SessionConfiguration, emit: OutputSink
     ) -> None:
         raise NotImplementedError
+
+    def startup_output(self) -> tuple[OutputEvent, ...]:
+        """Return output prepared at admission, after session.updated."""
+        return ()
 
     async def process(self, unit: Unit) -> int | tuple[int, int]:
         raise NotImplementedError
