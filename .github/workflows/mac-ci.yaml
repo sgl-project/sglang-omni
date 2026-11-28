@@ -295,3 +295,171 @@ jobs:
           set -o pipefail
           go test -count=1 -run 'TestMacE2ESessionLocal' -v . | tee "$RUNNER_TEMP/mac-e2e-session.txt"
           ! grep -- '--- SKIP' "$RUNNER_TEMP/mac-e2e-session.txt"
+
+  # Temporary: reports what the runner behind Mac Metal CI's labels is; drop before merging.
+  # It may be a contributor's own Mac, so the probe reads only CI paths and runs MLX only as the GPU reports itself.
+  runner-probe:
+    name: self-hosted runner probe
+    if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch'
+    runs-on: [self-hosted, macOS, ARM64]
+    timeout-minutes: 20
+    steps:
+      # Each step reports everything it can, and a failed step does not hide the ones after it.
+      - name: Host, disk and toolchain
+        run: |
+          set +e
+          echo "runner=${RUNNER_NAME} os=${RUNNER_OS} arch=${RUNNER_ARCH} user=$(id -un) home=${HOME} temp=${RUNNER_TEMP}"
+          sw_vers
+          uname -a
+          for name in hw.model machdep.cpu.brand_string hw.ncpu hw.perflevel0.physicalcpu hw.perflevel1.physicalcpu hw.memsize kern.hv_vmm_present kern.boottime; do
+            echo "${name}: $(sysctl -n "${name}" 2>&1)"
+          done
+          uptime
+          df -h / "${HOME}" "${RUNNER_TEMP}"
+          cache_root="${MLX_CI_CACHE_ROOT:-${HOME}/.cache/sglang-omni-mlx-ci}"
+          echo "MLX_CI_CACHE_ROOT=${MLX_CI_CACHE_ROOT:-<unset>}; Mac Metal CI cache in ${cache_root}:"
+          du -sh "${cache_root}"/* 2>&1
+          system_profiler SPHardwareDataType 2>&1 | grep -v -i -E "serial|uuid|udid"
+          system_profiler SPDisplaysDataType 2>&1 | grep -E "Chipset Model|Total Number of Cores|Metal"
+          echo "workflow DEVELOPER_DIR=${DEVELOPER_DIR} exists=$(test -d "${DEVELOPER_DIR}" && echo yes || echo no)"
+          unset DEVELOPER_DIR
+          ls -d /Applications/Xcode*.app 2>&1
+          xcode-select -p
+          xcodebuild -version 2>&1
+          xcrun --sdk macosx --show-sdk-version 2>&1
+          xcrun -sdk macosx metal --version 2>&1
+          for tool in brew uv ccache cmake python3 swift go git git-lfs; do
+            echo "${tool}: $(command -v "${tool}" || echo missing)"
+          done
+
+      - name: Metal device
+        continue-on-error: true
+        run: |
+          unset DEVELOPER_DIR
+          cat > "${RUNNER_TEMP}/metal_probe.swift" <<'EOF'
+          import Metal
+
+          guard let device = MTLCreateSystemDefaultDevice() else {
+              print("no Metal device")
+              exit(1)
+          }
+          print("name: \(device.name)")
+          if #available(macOS 14.0, *) {
+              print("architecture: \(device.architecture.name)")
+          }
+          print("unified memory: \(device.hasUnifiedMemory)")
+          print("recommended working set GB: \(Double(device.recommendedMaxWorkingSetSize) / 1e9)")
+          print("max buffer GB: \(Double(device.maxBufferLength) / 1e9)")
+          let families: [(String, MTLGPUFamily)] = [("apple7", .apple7), ("apple8", .apple8), ("apple9", .apple9), ("metal3", .metal3)]
+          for (familyName, family) in families {
+              print("\(familyName): \(device.supportsFamily(family))")
+          }
+          EOF
+          xcrun swift "${RUNNER_TEMP}/metal_probe.swift"
+
+      - uses: astral-sh/setup-uv@v6
+
+      - name: MLX on this GPU
+        continue-on-error: true
+        run: |
+          set +e
+          uv venv -q -p 3.12 "${RUNNER_TEMP}/probe-venv"
+          VIRTUAL_ENV="${RUNNER_TEMP}/probe-venv" uv pip install -q mlx==0.32.5
+          cat > "${RUNNER_TEMP}/mlx_probe.py" <<'EOF'
+          import time
+
+          import mlx.core as mx
+
+          REPEATS = 20
+          MATRIX_SIZE = 4096
+          QUANTIZED_SIZE = 4096
+          QUANTIZED_GROUP_SIZE = 64
+          QUANTIZED_BITS = 4
+          ATTENTION_HEADS = 16
+          ATTENTION_HEAD_DIMENSION = 128
+          ATTENTION_KEY_LENGTH = 2048
+
+          print(f"MLX {mx.__version__}, architecture {mx.device_info()['architecture']}, NAX {mx.metal.is_nax_available()}")
+          mx.random.seed(0)
+          cases = []
+          for dtype in (mx.float16, mx.bfloat16):
+              left = mx.random.normal((MATRIX_SIZE, MATRIX_SIZE)).astype(dtype)
+              right = mx.random.normal((MATRIX_SIZE, MATRIX_SIZE)).astype(dtype)
+              cases.append(
+                  (
+                      f"{dtype} {MATRIX_SIZE} matmul",
+                      lambda left=left, right=right: left @ right,
+                      lambda left=left, right=right: left.astype(mx.float32) @ right.astype(mx.float32),
+                      2 * MATRIX_SIZE**3,
+                  )
+              )
+          weight = mx.random.normal((QUANTIZED_SIZE, QUANTIZED_SIZE)).astype(mx.float16)
+          quantized_weight, scales, biases = mx.quantize(weight, group_size=QUANTIZED_GROUP_SIZE, bits=QUANTIZED_BITS)
+          dequantized_weight = mx.dequantize(quantized_weight, scales, biases, group_size=QUANTIZED_GROUP_SIZE, bits=QUANTIZED_BITS)
+          for rows in (1, 512):
+              activations = mx.random.normal((rows, QUANTIZED_SIZE)).astype(mx.float16)
+              cases.append(
+                  (
+                      f"4-bit affine quantized matmul, {rows} rows",
+                      lambda activations=activations: mx.quantized_matmul(
+                          activations, quantized_weight, scales, biases, transpose=True, group_size=QUANTIZED_GROUP_SIZE, bits=QUANTIZED_BITS
+                      ),
+                      lambda activations=activations: activations.astype(mx.float32) @ dequantized_weight.astype(mx.float32).T,
+                      2 * rows * QUANTIZED_SIZE**2,
+                  )
+              )
+          scale = ATTENTION_HEAD_DIMENSION**-0.5
+          keys = mx.random.normal((1, ATTENTION_HEADS, ATTENTION_KEY_LENGTH, ATTENTION_HEAD_DIMENSION)).astype(mx.float16)
+          values = mx.random.normal((1, ATTENTION_HEADS, ATTENTION_KEY_LENGTH, ATTENTION_HEAD_DIMENSION)).astype(mx.float16)
+          for query_length in (1, 512):
+              queries = mx.random.normal((1, ATTENTION_HEADS, query_length, ATTENTION_HEAD_DIMENSION)).astype(mx.float16)
+              cases.append(
+                  (
+                      f"attention, {query_length} queries over {ATTENTION_KEY_LENGTH} keys",
+                      lambda queries=queries: mx.fast.scaled_dot_product_attention(queries, keys, values, scale=scale),
+                      lambda queries=queries: mx.softmax(
+                          (queries.astype(mx.float32) * scale) @ keys.astype(mx.float32).swapaxes(-1, -2), axis=-1
+                      )
+                      @ values.astype(mx.float32),
+                      4 * ATTENTION_HEADS * query_length * ATTENTION_KEY_LENGTH * ATTENTION_HEAD_DIMENSION,
+                  )
+              )
+          for label, compute, compute_reference, flop_count in cases:
+              try:
+                  output = compute()
+                  mx.eval(output)
+                  start_seconds = time.perf_counter()
+                  for _ in range(REPEATS):
+                      mx.eval(compute())
+                  milliseconds = (time.perf_counter() - start_seconds) / REPEATS * 1e3
+                  with mx.stream(mx.cpu):
+                      reference = compute_reference()
+                      relative_error = mx.max(mx.abs(output.astype(mx.float32) - reference)) / mx.max(mx.abs(reference))
+                      mx.eval(relative_error)
+                  print(f"{label}: {milliseconds:.3f} ms, {flop_count / milliseconds / 1e9:.2f} TFLOPS, relative error {relative_error.item():.2e}")
+              except RuntimeError as error:
+                  print(f"{label}: failed: {error}")
+          kernel = mx.fast.metal_kernel(
+              name="probe_add_one",
+              input_names=["values"],
+              output_names=["result"],
+              source="uint index = thread_position_in_grid.x; result[index] = values[index] + 1;",
+          )
+          result = kernel(
+              inputs=[mx.arange(8, dtype=mx.float32)],
+              grid=(8, 1, 1),
+              threadgroup=(8, 1, 1),
+              output_shapes=[(8,)],
+              output_dtypes=[mx.float32],
+          )[0]
+          print(f"metal_kernel: {result.tolist()}")
+          EOF
+          # A run that hangs the GPU is stopped after 300 s.
+          perl -e 'alarm shift; exec @ARGV' 300 "${RUNNER_TEMP}/probe-venv/bin/python" "${RUNNER_TEMP}/mlx_probe.py"
+          echo "exit status $?"
+
+      - name: Download speed from Hugging Face
+        run: |
+          # Qwen3-ASR-0.6B-4bit's weights (0.7 GB) at the revision models.json pins.
+          url=https://huggingface.co/mlx-community/Qwen3-ASR-0.6B-4bit/resolve/313d850181767edf09f00a9c289becca70e58cd0/model.safetensors
+          curl -L -s -o /dev/null --max-time 90 -w '%{size_download} %{time_total}\n' "${url}" | awk '{printf "%.0f MB in %.1f s: %.1f MB/s\n", $1 / 1e6, $2, $1 / 1e6 / $2}'
