@@ -130,7 +130,7 @@ func TestDictionaryAddEditDelete(t *testing.T) {
 	}
 }
 
-// TestDictionarySettingsTips: the settings dialog's ⓘ say where a term
+// TestDictionarySettingsTips: the row titles' help says where a term
 // goes, in both languages, with the numbers the composer uses.
 func TestDictionarySettingsTips(t *testing.T) {
 	_, tt := dictTester(t)
@@ -138,23 +138,25 @@ func TestDictionarySettingsTips(t *testing.T) {
 		t.Fatalf("the switches show on the page: %q", firstTexts(tt))
 	}
 	click(t, tt, "Dictionary settings")
-	tips := func(wants ...string) {
+	tips := func(title string, wants ...string) {
 		t.Helper()
-		labels := strings.Join(tt.AccessLabels(), "\n")
+		hoverTitle(t, tt, title)
 		for _, want := range wants {
-			if !strings.Contains(labels, want) {
-				t.Errorf("no %q in %q", want, tt.AccessLabels())
+			if !has(tt, want) {
+				t.Errorf("no %q in %q", want, firstTexts(tt))
 			}
 		}
 	}
-	tips("Terms go to the speech model as words to expect.",
+	tips("Speech hints", "Terms go to the speech model as words to expect.")
+	tips("Glossary for the language model",
 		fmt.Sprintf("With more than %d terms", compose.GlossaryAllUpTo),
-		fmt.Sprintf("only those in the text, up to %d.", compose.MaxGlossaryTerms),
-		"If you correct a word, it suggests your spelling.")
+		fmt.Sprintf("only those in the text, up to %d.", compose.MaxGlossaryTerms))
+	tips("Learn from my corrections", "If you correct a word, it suggests your spelling.")
 	i18n.SetLocale("zh-Hans")
 	defer i18n.SetLocale("en")
 	frames(tt)
-	tips("让语音识别更容易认出这些词",
+	tips("识别热词", "让语音识别更容易认出这些词")
+	tips("语言模型术语表",
 		fmt.Sprintf("超过 %d 个时，只用文中出现的", compose.GlossaryAllUpTo),
 		fmt.Sprintf("最多 %d 个", compose.MaxGlossaryTerms))
 }

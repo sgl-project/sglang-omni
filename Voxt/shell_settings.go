@@ -304,8 +304,11 @@ func modelsSettingsSection(c *ui.Context, state *settingsModelsViewState, action
 		}
 	})
 	models := &state.Models
-	sectionTitle(c, i18n.T("On this Mac"))
-	caption(c, i18n.T("Free, and your audio stays on this Mac."))
+	title := i18n.T("On this Mac")
+	help := i18n.T("Free, and your audio stays on this Mac.")
+	if settingsSearchShows(title, help) {
+		sectionTitleTip(c, title, help)
+	}
 	modelCards(c, models.ASR, actions)
 	if models.Dictation != nil {
 		modelCard(c, *models.Dictation, actions)

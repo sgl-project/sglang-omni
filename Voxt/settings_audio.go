@@ -34,9 +34,12 @@ type settingsAudioLocalUI struct {
 func audioSettings(c *ui.Context, state settingsAudioViewState, actions settingsAudioActions, local *settingsAudioLocalUI) {
 	t := c.Theme()
 	k := tok(t)
+	title := i18n.T("Microphones")
+	help := i18n.T("Voxt uses the first connected microphone in the list, or the system default.")
 	ui.Row(c).Gap(px(t, sp2)).AlignItems(ui.Center).Margin(px(t, sp2), 0, 0, 0).Children(func() {
-		sectionTitleText(c, i18n.T("Microphones"))
-		infoTip(c.Key("audio-mics-info"), i18n.T("Voxt uses the first connected microphone in the list, or the system default."))
+		if settingsSearchShows(title, help) {
+			sectionTitleText(c, title).Focusable().Tooltip(help)
+		}
 		ui.Spacer(c)
 		if iconButton(c.Key("audio-refresh"), icons.Refresh, i18n.T("Refresh microphones")).Disabled(!state.HelperReady).Clicked() {
 			actions.loadDevices()

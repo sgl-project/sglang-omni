@@ -271,7 +271,7 @@ func remoteFixtureDebugInput(feature string) llmDebugStateInput {
 	return llmDebugStateInput{
 		ModelNames: []string{"Fixture service · fixture-model"}, Presets: presets,
 		SavedPrompt: "Fixture saved prompt",
-		UI: &llmDebugState{llmDebugUI: llmDebugUI{model: "Fixture service · fixture-model", preset: feature, filled: feature, prompt: "Fixture edited prompt", input: "Fixture input", instruction: "Make it shorter"},
+		UI: &llmDebugState{llmDebugUI: llmDebugUI{model: "Fixture service · fixture-model", preset: feature, filled: llmDebugPresetKey(llmDebugPreset{feature: feature}), prompt: "Fixture edited prompt", input: "Fixture input", instruction: "Make it shorter"},
 			res: &llmDebugResult{answer: "Fixture answer", took: 1200 * time.Millisecond, msgs: []compose.Message{{Role: "system", Content: "Fixture system"}, {Role: "user", Content: "Fixture input"}}}},
 	}
 }
@@ -346,7 +346,7 @@ func localizeRemoteDebugInput(input *llmDebugStateInput, translator *i18n.Transl
 			selected.model = input.ModelNames[0]
 		}
 		selected.preset = input.Selected.title
-		selected.filled = input.Selected.title
+		selected.filled = llmDebugPresetKey(input.Selected)
 	}
 }
 

@@ -118,8 +118,15 @@ func llmDebugCanRun(feature string, ui *llmDebugState) bool {
 }
 
 func llmDebugLocalState(state llmDebugViewState) llmDebugUI {
-	return llmDebugUI{model: state.Form.Model, preset: state.Form.Preset, filled: state.Form.Filled,
+	local := llmDebugUI{model: state.Form.Model, preset: state.Form.Preset, filled: state.Form.Filled,
 		prompt: state.Form.Prompt, input: state.Form.Input, instruction: state.Form.Instruction}
+	for _, preset := range state.PresetStates {
+		if llmDebugPresetKey(llmDebugPreset{feature: preset.Feature, group: preset.Group}) == local.filled {
+			local.saved = preset.SavedPrompt
+			break
+		}
+	}
+	return local
 }
 
 // llmDebugStateForLocal recomputes fixture-derived state after a demo edit,
@@ -129,8 +136,9 @@ func llmDebugStateForLocal(state llmDebugViewState, local *llmDebugUI) llmDebugV
 		if preset.Title != local.preset {
 			continue
 		}
-		if local.filled != local.preset {
-			local.prompt, local.filled = preset.SavedPrompt, local.preset
+		presetKey := llmDebugPresetKey(llmDebugPreset{feature: preset.Feature, group: preset.Group})
+		if local.filled != presetKey || local.saved != preset.SavedPrompt {
+			local.fillPreset(presetKey, preset.SavedPrompt)
 			state.Result = nil
 		}
 		state.SavedPrompt = preset.SavedPrompt

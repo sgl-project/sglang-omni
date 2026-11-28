@@ -8,6 +8,8 @@
     "edited": false,
     "can_run": false,
     "running": false,
-    "form": {}
+    "form": {
+      "filled": "\u0000"
+    }
   }
 }

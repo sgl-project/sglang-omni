@@ -46,6 +46,58 @@ func TestLLMDebugRuns(t *testing.T) {
 	}
 }
 
+// TestLLMDebugDraftSurvivesLocaleSwitch: changing the display language
+// must not change the request, replace an edited prompt with the saved one,
+// or send that saved one.
+func TestLLMDebugDraftSurvivesLocaleSwitch(t *testing.T) {
+	srv, requests := mockOpenAI(t, "Hello there.")
+	useKeys(t, &memKeys{m: map[string]string{"llm." + llm.Custom: "sk-mock-123"}})
+	a, _, tt := newTestApp(t)
+	tt.SetSize(windowWidth, 2400)
+	a.updateSettings(func(s *settings.Settings) {
+		s.General.Language = "en"
+		s.Providers.LLM = []settings.Provider{{ID: llm.Custom, Endpoint: srv.URL + "/v1", Model: "mock-model"}}
+		s.Features.Transcribe.Prompt = "SAVED-LOCALE-PROMPT"
+	})
+	defer func() {
+		a.updateSettings(func(s *settings.Settings) { s.General.Language = "en" })
+		frames(tt)
+	}()
+	a.readUnreadKeys()
+	a.navigate(llmDebugPath)
+	frames(tt)
+	a.llmDbg.prompt = "EDITED-LOCALE-DRAFT"
+	a.llmDbg.input = "um hello there"
+	frames(tt)
+
+	a.updateSettings(func(s *settings.Settings) { s.General.Language = "zh-Hans" })
+	frames(tt)
+	if model := a.llmDebugModel(); a.llmDbg.preset != "转录" || model.Form.Prompt != "EDITED-LOCALE-DRAFT" || !model.Edited {
+		t.Fatalf("Chinese replaced the edited draft: preset %q, state %+v", a.llmDbg.preset, model)
+	}
+	a.updateSettings(func(s *settings.Settings) { s.General.Language = "en" })
+	frames(tt)
+	if model := a.llmDebugModel(); model.Form.Prompt != "EDITED-LOCALE-DRAFT" || !model.Edited {
+		t.Fatalf("English did not restore the same edited draft: %+v", model)
+	}
+	click(t, tt, "Run")
+	frames(tt)
+	got := requests()
+	if len(got) != 1 || !strings.Contains(got[0], "EDITED-LOCALE-DRAFT") || strings.Contains(got[0], "SAVED-LOCALE-PROMPT") {
+		t.Fatalf("Run did not send the edited draft: requests %q, result %+v", got, a.llmDbg.res)
+	}
+
+	a.llmDbg.preset = "Rewrite"
+	frames(tt)
+	a.llmDbg.prompt = "EDITED-REWRITE-LOCALE-DRAFT"
+	frames(tt)
+	a.updateSettings(func(s *settings.Settings) { s.General.Language = "zh-Hans" })
+	frames(tt)
+	if model := a.llmDebugModel(); a.llmDbg.preset != "改写" || model.Form.Prompt != "EDITED-REWRITE-LOCALE-DRAFT" || !model.Edited {
+		t.Fatalf("Chinese changed the selected request or replaced its draft: preset %q, state %+v", a.llmDbg.preset, model)
+	}
+}
+
 // TestLLMDebugPromptGrows: the debug page's prompt field is as high as
 // its text, however long, under the page's one scroll bar, as Your rules
 // on a feature's page; it was 160 high with a scroll bar of its own
@@ -75,21 +127,20 @@ func TestLLMDebugPromptGrows(t *testing.T) {
 
 // TestLLMDebugButtonsFit: the way to the debug page, at the foot of
 // Language models, and the debug page's Open Language models are buttons
-// on the left, under the page's caption; they filled the column, their
-// labels centred, and did not look clickable (#3644).
+// on the left; they filled the column, their labels centred, and did not
+// look clickable (#3644).
 func TestLLMDebugButtonsFit(t *testing.T) {
 	a, _, tt := newTestApp(t)
 	tt.SetSize(windowWidth, 2400)
-	for _, c := range []struct{ path, caption, label string }{
-		{remotePath, "Voxt sends the language model the recognised or selected text, never your audio.", "Try prompts on a model…"},
-		{llmDebugPath, "Try a prompt on your own text. Nothing is saved until you click Use this prompt.", "Open Language models"},
+	for _, c := range []struct{ path, label string }{
+		{remotePath, "Try prompts on a model…"},
+		{llmDebugPath, "Open Language models"},
 	} {
 		a.navigate(c.path)
 		frames(tt)
-		cap, ok1 := tt.Find(c.caption)
-		r, ok2 := tt.Find(c.label)
-		if !ok1 || !ok2 || r.X-cap.X > 32 || r.W > cap.W/2 {
-			t.Errorf("%s: %q at %+v, the caption at %+v", c.path, c.label, r, cap)
+		r, ok := tt.Find(c.label)
+		if !ok || r.X > windowWidth/2 || r.W > windowWidth/2 {
+			t.Errorf("%s: %q at %+v", c.path, c.label, r)
 		}
 	}
 }
@@ -99,7 +150,7 @@ func TestLLMDebugButtonsFit(t *testing.T) {
 // Open Language models (#3781). Esc in an open menu closes only the menu.
 func TestLLMDebugPresetUsesItsSavedPrompt(t *testing.T) {
 	useKeys(t, &memKeys{m: map[string]string{"llm." + llm.Custom: "sk-mock-123"}})
-	a, _, _ := newTestApp(t)
+	a, _, tt := newTestApp(t)
 	a.updateSettings(func(s *settings.Settings) {
 		s.Providers.LLM = []settings.Provider{{ID: llm.Custom, Endpoint: "http://localhost/v1", Model: "mock-model"}}
 		s.Features.Transcribe.Prompt = "Transcribe saved"
@@ -107,6 +158,9 @@ func TestLLMDebugPresetUsesItsSavedPrompt(t *testing.T) {
 	})
 	a.readUnreadKeys()
 	a.navigate(llmDebugPath)
+	if !has(tt, "Nothing is saved until you click Use this prompt.") {
+		t.Error("the page does not say when the edited prompt is saved")
+	}
 	model := a.llmDebugModel()
 	if model.SavedPrompt != "Transcribe saved" || model.Edited {
 		t.Fatalf("initial prompt %q, edited %v", model.SavedPrompt, model.Edited)
@@ -118,6 +172,88 @@ func TestLLMDebugPresetUsesItsSavedPrompt(t *testing.T) {
 	}
 	if len(model.PresetStates) != 3 || model.PresetStates[0].SavedPrompt != "Transcribe saved" || model.PresetStates[2].SavedPrompt != "Rewrite saved" {
 		t.Fatalf("preset prompts %+v", model.PresetStates)
+	}
+	a.llmDbg.prompt = "Rewrite draft"
+	a.llmDbg.preset = "Transcribe"
+	model = a.llmDebugModel()
+	a.llmDbg.prompt = "Transcribe draft"
+	a.llmDbg.preset = "Rewrite"
+	model = a.llmDebugModel()
+	if model.SavedPrompt != "Rewrite saved" || !model.Edited || a.llmDbg.prompt != "Rewrite draft" {
+		t.Fatalf("rewrite draft was not preserved: %+v, local prompt %q", model, a.llmDbg.prompt)
+	}
+	a.llmDbg.preset = "Transcribe"
+	model = a.llmDebugModel()
+	if model.SavedPrompt != "Transcribe saved" || !model.Edited || a.llmDbg.prompt != "Transcribe draft" {
+		t.Fatalf("transcribe draft was not preserved: %+v, local prompt %q", model, a.llmDbg.prompt)
+	}
+	if a.prefs.Features.Transcribe.Prompt != "Transcribe saved" || a.prefs.Features.Rewrite.Prompt != "Rewrite saved" {
+		t.Fatal("switching presets saved a draft")
+	}
+}
+
+// TestLLMDebugUneditedPresetReadsLatestSavedPrompt: an unedited preset,
+// including one edited back to its saved value, must not restore a cached
+// prompt over a newer setting saved elsewhere.
+func TestLLMDebugUneditedPresetReadsLatestSavedPrompt(t *testing.T) {
+	useKeys(t, &memKeys{m: map[string]string{"llm." + llm.Custom: "sk-mock-123"}})
+	a, _, _ := newTestApp(t)
+	a.updateSettings(func(s *settings.Settings) {
+		s.Providers.LLM = []settings.Provider{{ID: llm.Custom, Endpoint: "http://localhost/v1", Model: "mock-model"}}
+		s.Features.Transcribe.Prompt = "Transcribe old"
+		s.Features.Rewrite.Prompt = "Rewrite saved"
+	})
+	a.readUnreadKeys()
+	a.navigate(llmDebugPath)
+	if model := a.llmDebugModel(); model.SavedPrompt != "Transcribe old" || a.llmDbg.prompt != "Transcribe old" {
+		t.Fatalf("initial prompt %+v, local prompt %q", model, a.llmDbg.prompt)
+	}
+	a.llmDbg.preset = "Rewrite"
+	_ = a.llmDebugModel()
+	a.updateSettings(func(s *settings.Settings) {
+		s.Features.Transcribe.Prompt = "Transcribe new"
+	})
+	a.llmDbg.preset = "Transcribe"
+	model := a.llmDebugModel()
+	if model.SavedPrompt != "Transcribe new" || model.Edited || a.llmDbg.prompt != "Transcribe new" {
+		t.Fatalf("the unedited preset restored a stale prompt: model %+v, local prompt %q", model, a.llmDbg.prompt)
+	}
+	if a.prefs.Features.Transcribe.Prompt != "Transcribe new" {
+		t.Fatal("reading the preset overwrote the newer saved prompt")
+	}
+
+	a.llmDbg.prompt = "Transcribe draft"
+	a.llmDbg.preset = "Rewrite"
+	_ = a.llmDebugModel()
+	a.llmDbg.preset = "Transcribe"
+	_ = a.llmDebugModel()
+	if a.llmDbg.prompt != "Transcribe draft" {
+		t.Fatalf("the edited draft was not cached: %q", a.llmDbg.prompt)
+	}
+	a.llmDbg.prompt = "Transcribe new"
+	a.llmDbg.preset = "Rewrite"
+	_ = a.llmDebugModel()
+	a.updateSettings(func(s *settings.Settings) {
+		s.Features.Transcribe.Prompt = "Transcribe newest"
+	})
+	a.llmDbg.preset = "Transcribe"
+	model = a.llmDebugModel()
+	if model.SavedPrompt != "Transcribe newest" || model.Edited || a.llmDbg.prompt != "Transcribe newest" {
+		t.Fatalf("the return-to-saved preset restored a stale draft: model %+v, local prompt %q", model, a.llmDbg.prompt)
+	}
+	if a.prefs.Features.Transcribe.Prompt != "Transcribe newest" {
+		t.Fatal("reading the return-to-saved preset overwrote the newer saved prompt")
+	}
+
+	a.updateSettings(func(s *settings.Settings) {
+		s.Features.Transcribe.Prompt = "Transcribe same-preset save"
+	})
+	model = a.llmDebugModel()
+	if model.SavedPrompt != "Transcribe same-preset save" || model.Edited || a.llmDbg.prompt != "Transcribe same-preset save" {
+		t.Fatalf("the unchanged preset kept a stale prompt: model %+v, local prompt %q", model, a.llmDbg.prompt)
+	}
+	if a.prefs.Features.Transcribe.Prompt != "Transcribe same-preset save" {
+		t.Fatal("reading the unchanged preset overwrote the newer saved prompt")
 	}
 }
 

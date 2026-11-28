@@ -378,7 +378,7 @@ func TestPermissionsSettings(t *testing.T) {
 	if a.shownPath() != "/settings/permissions" {
 		t.Fatalf("shown %s", a.shownPath())
 	}
-	for _, s := range []string{"Microphone", "Accessibility", "Speech Recognition", "Not asked yet", "Check again"} {
+	for _, s := range []string{"Microphone", "Accessibility", "Speech Recognition", "Not asked yet", "Check again", "After changing a permission, you may need to reopen Voxt."} {
 		if !has(tt, s) {
 			t.Errorf("section lacks %q", s)
 		}

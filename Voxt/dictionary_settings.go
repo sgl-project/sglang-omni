@@ -2,8 +2,8 @@ package main
 
 // The Dictionary settings dialog: whether the dictionary is used, where
 // its terms go (speech hints, the language model's glossary) and where
-// suggestions come from (corrections, Scan history). Each switch carries
-// what it does in its ⓘ (docs/behavior.md 7.10a).
+// suggestions come from (corrections, Scan history). Each switch's row
+// title carries its help (docs/behavior.md 7.10a).
 
 import (
 	"github.com/egoist/mygo/ui"

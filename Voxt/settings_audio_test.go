@@ -19,9 +19,8 @@ import (
 // pointer to rest on it, and Escape puts it away. Before, it showed only
 // on hover and a click did nothing.
 func TestInfoTipClick(t *testing.T) {
-	a, _, tt := newTestApp(t)
-	a.navigate("/settings/audio")
-	const tip = "Voxt uses the first connected microphone in the list, or the system default."
+	const tip = "A little more help for this control."
+	tt := ui.NewTester(func(c *ui.Context) { infoTip(c, tip) }, windowWidth, windowHeight)
 	shown := func() int { // the ⓘ's own label counts once
 		frames(tt)
 		n := 0
@@ -42,6 +41,28 @@ func TestInfoTipClick(t *testing.T) {
 	tt.Key(0, ui.KeyEscape)
 	if shown() != closed {
 		t.Error("Escape left the tip open")
+	}
+}
+
+// TestMicrophonesTitleHelp keeps the microphone selection rule on the real
+// Audio page's section title and in settings search.
+func TestMicrophonesTitleHelp(t *testing.T) {
+	a, _, tt := newTestApp(t)
+	a.navigate("/settings/audio")
+	frames(tt)
+	const help = "Voxt uses the first connected microphone in the list, or the system default."
+	if _, ok := tt.Find(help); ok {
+		t.Fatal("the microphone help has a separate control instead of the section title")
+	}
+	hoverTitle(t, tt, "Microphones")
+	if !hasExact(tt, help) {
+		t.Fatalf("the real Audio page has no microphone selection help: %q", firstTexts(tt))
+	}
+	a.settingsForm.search = "first connected"
+	frames(tt)
+	hoverTitle(t, tt, "Microphones")
+	if !hasExact(tt, help) || has(tt, "Nothing in this section matches your search.") {
+		t.Fatalf("settings search cannot find the microphone selection help: %q", firstTexts(tt))
 	}
 }
 

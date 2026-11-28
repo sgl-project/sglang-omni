@@ -51,6 +51,14 @@ func TestModelsPage(t *testing.T) {
 	a.navigate(modelsPath)
 	frames(tt)
 	frames(tt)
+	a.settingsForm.search = "audio stays"
+	frames(tt)
+	hoverTitle(t, tt, "On this Mac")
+	if !hasExact(tt, "Free, and your audio stays on this Mac.") || has(tt, "Nothing in this section matches your search.") {
+		t.Fatalf("the Speech models page has no local-audio privacy help: %q", firstTexts(tt))
+	}
+	a.settingsForm.search = ""
+	frames(tt)
 	texts := tt.Texts()
 	localModelTexts := texts
 	if online := slices.Index(texts, "Online services"); online >= 0 {

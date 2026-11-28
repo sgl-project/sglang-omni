@@ -21,6 +21,7 @@ func TestPrivacySendWindow(t *testing.T) {
 	openPrivacy(t, a, tt)
 	tt.Scroll(float32(windowWidth)*0.6, 900, 0, -10000)
 	frames(tt)
+	hoverTitle(t, tt, "Send a screenshot")
 	if !has(tt, "sends a screenshot of the window with the text") {
 		t.Fatalf("no explanation: %q", firstTexts(tt))
 	}
@@ -41,6 +42,7 @@ func TestPrivacySendWindow(t *testing.T) {
 func TestPrivacyHistoryExplainsReopen(t *testing.T) {
 	a, _, tt := newTestApp(t)
 	openPrivacy(t, a, tt)
+	hoverTitle(t, tt, "Keep a history")
 	if !has(tt, "the menu bar and Dock menus do not list cards to reopen") {
 		t.Fatalf("no Reopen card privacy explanation: %q", firstTexts(tt))
 	}
@@ -80,6 +82,7 @@ func TestPrivacySendClipboardImage(t *testing.T) {
 		t.Fatal("on by default")
 	}
 	openPrivacy(t, a, tt)
+	hoverTitle(t, tt, "Send a copied image")
 	if !has(tt, "sends the image you copied to the language model") {
 		t.Fatalf("no explanation: %q", firstTexts(tt))
 	}

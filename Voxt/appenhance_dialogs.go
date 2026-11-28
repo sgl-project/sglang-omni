@@ -115,7 +115,6 @@ func appEnhancementBrowsersDialogView(c *ui.Context, state *appEnhancementBrowse
 			caption(c, state.OthersText).TextColor(colors.Text3)
 		}
 		ui.Box(c).Height(1).Background(colors.Line).Shrink(0).Margin(px(theme, sp1), 0)
-		caption(c, i18n.T("Add another browser by its bundle ID."))
 		ui.Row(c).Gap(px(theme, sp2)).AlignItems(ui.Center).Wrap().Children(func() {
 			ui.TextInput(c.Key("ae-br-id"), &local.brID).Label(i18n.T("Bundle ID")).Placeholder("com.example.browser").Font("monospace").Grow(1).Basis(px(theme, 180)).MinWidth(0)
 			ui.TextInput(c.Key("ae-br-name"), &local.brName).Label(i18n.T("Name")).Placeholder(i18n.T("Name")).Width(px(theme, 140))

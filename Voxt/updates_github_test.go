@@ -472,6 +472,8 @@ func TestReleaseAbout(t *testing.T) {
 	srv := &ghServer{list: todayReleases}
 	a, tt := newReleaseApp(t, srv)
 	a.navigate("/settings/about")
+	scrollSettingsToText(tt, "Check automatically")
+	hoverTitle(t, tt, "Check automatically")
 	for _, s := range []string{"Check for updates", "Not checked yet.", "Check automatically", "Once a day. An Update button shows when a new version is out.", "Beta updates"} {
 		if !has(tt, s) {
 			t.Errorf("about lacks %q: %q", s, firstTexts(tt))

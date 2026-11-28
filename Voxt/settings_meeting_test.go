@@ -39,6 +39,7 @@ func TestMeetingSpeechSettings(t *testing.T) {
 	a.mvUI.setOpen = true
 	frames(tt)
 	const speakerGuidance = "The language the speech model listens for. Choose one when the whole meeting is in it. For Speaker 1–4 labels, install MOSS-Transcribe-Diarize and choose Chinese or English here."
+	hoverTitle(t, tt, "Spoken language")
 	if !has(tt, speakerGuidance) {
 		t.Fatalf("spoken-language help does not explain speaker labels: %q", tt.Texts())
 	}

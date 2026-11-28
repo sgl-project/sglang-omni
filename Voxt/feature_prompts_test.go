@@ -285,10 +285,12 @@ func TestTranslateBuiltinPromptKeepsTarget(t *testing.T) {
 func TestTranslateWarnsPromptIgnoresTarget(t *testing.T) {
 	const warning = "Your prompt does not use {{TARGET_LANGUAGE}}, so this menu does nothing."
 	a, tt := promptPageTester(t, "/translate")
-	for _, s := range []string{"Target language", "Automatic is English, or Chinese when your main language is English."} {
-		if !has(tt, s) {
-			t.Errorf("no %q", s)
-		}
+	if !has(tt, "Target language") {
+		t.Fatal("no Target language row")
+	}
+	focusTitle(t, tt, "Target language")
+	if !has(tt, "Automatic is English, or Chinese when your main language is English.") {
+		t.Error("no Target language help")
 	}
 	if has(tt, warning) {
 		t.Fatal("warning with the built-in prompt")

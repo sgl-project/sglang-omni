@@ -193,10 +193,13 @@ func TestSloganHint(t *testing.T) {
 // cap, and without one, a link to add it.
 func TestHomeSlogan(t *testing.T) {
 	a, tt := homeTester(t)
-	for _, s := range []string{"Speak anywhere and Voxt types at your cursor", "Press", "Right ⌥", "to start"} {
+	for _, s := range []string{"Press", "Right ⌥", "to start"} {
 		if !hasExact(tt, s) {
 			t.Errorf("no %q in %q", s, tt.Texts())
 		}
+	}
+	if hasExact(tt, "Speak anywhere and Voxt types at your cursor") {
+		t.Error("the old product slogan is still visible")
 	}
 	a.updateSettings(func(s *settings.Settings) {
 		s.Features.Transcribe.Hotkeys = []settings.Hotkey{{Keys: "Option+Space", Trigger: settings.TriggerLong}, {Keys: "Fn"}}
@@ -596,7 +599,7 @@ func TestWidePageCentered(t *testing.T) {
 	a.navigate("/home")
 	a.historyChanged()
 	frames(tt)
-	slogan, ok1 := tt.Find("Speak anywhere and Voxt types at your cursor")
+	slogan, ok1 := tt.Find("Press")
 	guide, ok2 := tt.Find("Setup guide")
 	model, ok3 := tt.Find("fixture-speech-model")
 	if !ok1 || !ok2 || !ok3 {

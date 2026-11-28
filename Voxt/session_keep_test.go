@@ -222,8 +222,13 @@ func TestSessionHistoryHints(t *testing.T) {
 	}
 	scrollToText(tt, "Open Privacy")
 	click(t, tt, "Open Privacy")
-	if a.shownPath() != "/settings/privacy" || !has(tt, covers) {
+	if a.shownPath() != "/settings/privacy" {
 		t.Fatalf("Privacy: %s %q", a.shownPath(), tt.Texts())
+	}
+	openPrivacy(t, a, tt)
+	hoverTitle(t, tt, "Keep a history")
+	if !has(tt, covers) {
+		t.Fatalf("Privacy help: %q", tt.Texts())
 	}
 	a.updateSettings(func(s *settings.Settings) { s.Features.SessionsOn = false })
 	if has(tt, covers) {

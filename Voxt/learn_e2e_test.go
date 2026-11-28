@@ -277,7 +277,7 @@ func TestLearnNeverLogsTheEdit(t *testing.T) {
 }
 
 // TestLearnSwitch: both settings and the page's menu save the setting, and
-// the settings help says how long the field is read, from the watch's constant.
+// the settings title's help says how long the field is read.
 func TestLearnSwitch(t *testing.T) {
 	for _, test := range []struct {
 		name string
@@ -302,14 +302,10 @@ func TestLearnSwitch(t *testing.T) {
 					t.Fatalf("no switch: %q", tt.AccessLabels())
 				}
 				want := i18n.T("For %d seconds after inserting, Voxt reads the text around it. If you correct a word, it suggests your spelling. Nothing it reads is saved or sent.", learn.WatchSeconds)
-				r, ok := tt.Find(want)
-				if !ok || !strings.Contains(want, fmt.Sprintf("For %d seconds", learn.WatchSeconds)) {
-					t.Fatalf("no ⓘ %q in %q", want, tt.AccessLabels())
+				if !strings.Contains(want, fmt.Sprintf("For %d seconds", learn.WatchSeconds)) {
+					t.Fatalf("help %q does not use the watch's duration", want)
 				}
-				tt.Move(r.X+r.W/2, r.Y+r.H/2)
-				frames(tt)
-				tt.Advance(time.Second)
-				frames(tt)
+				hoverTitle(t, tt, name)
 				if !hasExact(tt, want) {
 					t.Fatalf("no tip %q in %q", want, firstTexts(tt))
 				}
