@@ -128,6 +128,11 @@ type Transcribe struct {
 	// Stop, so that what was said last can correct them; 0: only the text
 	// left (DefaultRecleanSentences, no page).
 	RecleanSentences int `json:"recleanSentences"`
+	// LiveCleanLocal lets the live clean-up run when the language model is
+	// served on this Mac (a loopback address), where its requests share the
+	// GPU with the speech model while the user speaks. Off by default (no
+	// page): behavior.md 5.31b has the measurements.
+	LiveCleanLocal bool `json:"liveCleanLocal,omitempty"`
 }
 
 // note (luojiaxuan): DefaultRecleanSentences is Transcribe.RecleanSentences's

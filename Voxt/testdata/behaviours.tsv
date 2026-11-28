@@ -5,6 +5,7 @@ Transcribe	M	TestMacHelperCaptureFile	none
 Transcript clean-up by the language model	L	TestStopAnswerEndToEnd	No check of a real model's answer format
 Transcript clean-up by the language model	L	TestSkipLLMEndToEnd	none
 Transcript clean-up while the user speaks	L	TestLivePolishLeavesNothingAfterStop	The wait after Stop with a real speech model and a remote language model is measured by hand on a Mac
+Transcript clean-up while the user speaks	L	TestLivePolishLocalWhenAllowed	The wait after Stop with a language model on this Mac is measured by hand, on one Mac and one 4B model
 Spoken translation	L	TestTranslateSpeechCard	none
 Selection translation, both directions	L	TestTranslateSelectionEndToEnd	No check that the result is in the target language
 Translation follow-up and fallback model	L	TestTranslateContinue	none
