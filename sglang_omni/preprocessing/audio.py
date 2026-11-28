@@ -122,8 +122,7 @@ def parse_wav_bytes(
     else:
         pass
 
-    header = data[:12]
-    riff, _, wave = struct.unpack("<4sI4s", header)
+    riff, _, wave = struct.unpack_from("<4sI4s", data)
     if riff != b"RIFF" or wave != b"WAVE":
         raise ValueError(f"Not a RIFF/WAVE file: {source}")
     else:
@@ -133,7 +132,8 @@ def parse_wav_bytes(
     channels = None
     sample_rate = None
     bits_per_sample = None
-    data_bytes = b""
+    wav_bytes = memoryview(data)
+    sample_bytes = wav_bytes[:0]
 
     offset = 12
     while offset < len(data):
@@ -141,59 +141,54 @@ def parse_wav_bytes(
             break
         else:
             pass
-        chunk_header = data[offset : offset + 8]
-        chunk_id, chunk_size = struct.unpack("<4sI", chunk_header)
+        chunk_id, chunk_size = struct.unpack_from("<4sI", data, offset)
         offset += 8
 
         if offset + chunk_size > len(data):
             break
         else:
             pass
-        chunk_data = data[offset : offset + chunk_size]
-        offset += chunk_size
-        if chunk_size % 2 == 1:
-            offset += 1
-        else:
-            pass
-
         if chunk_id == b"fmt ":
-            if len(chunk_data) >= 16:
-                fmt_tag, channels, sample_rate, _, _, bits_per_sample = struct.unpack(
-                    "<HHIIHH", chunk_data[:16]
+            if chunk_size >= 16:
+                fmt_tag, channels, sample_rate, _, _, bits_per_sample = (
+                    struct.unpack_from("<HHIIHH", data, offset)
                 )
             else:
                 pass
         elif chunk_id == b"data":
-            data_bytes = chunk_data
+            sample_bytes = wav_bytes[offset : offset + chunk_size]
         else:
             pass
+        offset += chunk_size + chunk_size % 2
 
     if fmt_tag is None or sample_rate is None or bits_per_sample is None:
         raise ValueError(f"Missing fmt chunk in WAV: {source}")
     else:
         pass
-    if not data_bytes:
+    if not sample_bytes:
         raise ValueError(f"Missing data chunk in WAV: {source}")
     else:
         pass
 
     if fmt_tag == 3:  # IEEE float
         if bits_per_sample == 32:
-            audio = np.frombuffer(data_bytes, dtype="<f4")
+            # note (0oSigma): Keep the returned view from retaining the entire WAV, including unused chunks.
+            audio = np.frombuffer(bytes(sample_bytes), dtype="<f4")
         elif bits_per_sample == 64:
-            audio = np.frombuffer(data_bytes, dtype="<f8").astype(np.float32)
+            audio = np.frombuffer(sample_bytes, dtype="<f8").astype(np.float32)
         else:
             raise ValueError(f"Unsupported float WAV bit depth: {bits_per_sample}")
     elif fmt_tag == 1:  # PCM
         if bits_per_sample == 16:
-            audio_i16 = np.frombuffer(data_bytes, dtype="<i2")
-            audio = (audio_i16.astype(np.float32) / 32768.0).astype(np.float32)
+            pcm_samples = np.frombuffer(sample_bytes, dtype="<i2")
+            audio = np.multiply(pcm_samples, 1.0 / 32768.0, dtype=np.float32)
         elif bits_per_sample == 32:
-            audio_i32 = np.frombuffer(data_bytes, dtype="<i4")
-            audio = (audio_i32.astype(np.float32) / 2147483648.0).astype(np.float32)
+            pcm_samples = np.frombuffer(sample_bytes, dtype="<i4")
+            audio = np.multiply(pcm_samples, 1.0 / 2147483648.0, dtype=np.float32)
         elif bits_per_sample == 8:
-            audio_u8 = np.frombuffer(data_bytes, dtype="u1")
-            audio = ((audio_u8.astype(np.float32) - 128.0) / 128.0).astype(np.float32)
+            pcm_samples = np.frombuffer(sample_bytes, dtype="u1")
+            audio = np.subtract(pcm_samples, 128.0, dtype=np.float32)
+            audio /= 128.0
         else:
             raise ValueError(f"Unsupported PCM WAV bit depth: {bits_per_sample}")
     elif fmt_tag in (6, 7):  # G.711 A-law / mu-law
@@ -203,7 +198,7 @@ def parse_wav_bytes(
         else:
             try:
                 audio, _ = soundfile.read(
-                    io.BytesIO(data_bytes),
+                    io.BytesIO(sample_bytes),
                     format="RAW",
                     subtype="ULAW" if fmt_tag == 7 else "ALAW",
                     samplerate=sample_rate,

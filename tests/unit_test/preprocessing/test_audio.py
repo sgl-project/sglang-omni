@@ -62,6 +62,21 @@ def test_every_wav_the_parser_read_decodes_unchanged(subtype: str) -> None:
     np.testing.assert_array_equal(decoded, parsed)
 
 
+def test_wav_parser_reads_samples_between_padded_metadata_chunks() -> None:
+    waveform = tone(1)
+    wav = encode_audio(waveform, "WAV", "PCM_16", SAMPLE_RATE)
+    data_chunk_offset = wav.index(b"data", 12)
+    metadata_chunk = struct.pack("<4sI", b"JUNK", 3) + b"abc\x00"
+    body = wav[8:data_chunk_offset] + metadata_chunk + wav[data_chunk_offset:]
+    body += metadata_chunk
+    padded_wav = struct.pack("<4sI", b"RIFF", len(body)) + body
+
+    parsed, sample_rate = parse_wav_bytes(padded_wav)
+
+    assert sample_rate == SAMPLE_RATE
+    np.testing.assert_array_equal(parsed, libsndfile_mono(wav))
+
+
 @pytest.mark.parametrize("sample_rate", [0, 2**31])
 def test_a_g711_wav_with_an_unreadable_sample_rate_raises_value_error(
     sample_rate: int,
