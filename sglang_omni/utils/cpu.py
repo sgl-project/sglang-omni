@@ -20,6 +20,7 @@ from sglang_omni.utils.gpu_memory import (
 logger = logging.getLogger(__name__)
 
 GPU_LOCAL_CPUS_ENV = "SGLANG_OMNI_BIND_GPU_LOCAL_CPUS"
+LAUNCHER_CPUS_ENV = "SGLANG_OMNI_LAUNCHER_CPUS"
 _CGROUP_ROOT = Path("/sys/fs/cgroup")
 _PROC_SELF_CGROUP = Path("/proc/self/cgroup")
 PCI_DEVICES_ROOT = Path("/sys/bus/pci/devices")
