@@ -21,13 +21,14 @@ from sglang_omni.models.whisper_asr.sglang_model import (
     WhisperDecoderLayer,
     WhisperForConditionalGeneration,
 )
+from sglang_omni.platforms.device_graph import DeviceGraphBackend, ReplayableGraph
 
 logger = logging.getLogger(__name__)
 
 
 @dataclass(kw_only=True)
 class DensePrefillGraph:
-    graph: torch.cuda.CUDAGraph
+    graph: ReplayableGraph
     logits: torch.Tensor
 
 
@@ -166,27 +167,27 @@ class WhisperDensePrefillRunner:
         return torch.matmul(last_hidden_states, self.model.lm_head.weight.T).float()
 
     @torch.inference_mode()
-    def capture(self) -> None:
+    def capture(self, graph_backend: DeviceGraphBackend) -> None:
         """Capture every (requests, prompt length) shape, largest first."""
-        memory_pool = torch.cuda.graph_pool_handle()
-        stream = torch.cuda.Stream(device=self.device)
+        device_module = torch.get_device_module(self.device)
+        memory_pool = graph_backend.graph_pool_handle()
+        stream = device_module.Stream(device=self.device)
         # Capture writes K/V into slot 0 of the pool, which never holds a request.
         self.prompt_cache_loc.zero_()
         self.encoder_cache_loc.zero_()
         for request_count in range(self.max_requests, 0, -1):
             for prompt_length in self.prompt_lengths:
-                stream.wait_stream(torch.cuda.current_stream(self.device))
-                with torch.cuda.stream(stream):
+                stream.wait_stream(device_module.current_stream(self.device))
+                with device_module.stream(stream):
                     for _ in range(2):
                         self.forward_static(request_count, prompt_length)
-                torch.cuda.current_stream(self.device).wait_stream(stream)
-                graph = torch.cuda.CUDAGraph()
-                with torch.cuda.graph(graph, pool=memory_pool, stream=stream):
+                device_module.current_stream(self.device).wait_stream(stream)
+                with graph_backend.capture(pool=memory_pool, stream=stream) as graph:
                     logits = self.forward_static(request_count, prompt_length)
                 self.graphs[(request_count, prompt_length)] = DensePrefillGraph(
                     graph=graph, logits=logits
                 )
-        torch.cuda.synchronize(self.device)
+        device_module.synchronize(self.device)
         logger.info(
             f"Captured Whisper dense prefill graphs for up to {self.max_requests} "
             f"requests, prompt lengths {self.prompt_lengths}"

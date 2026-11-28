@@ -4,6 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 import torch
+from sglang.srt.layers.logits_processor import LogitsProcessorOutput
 from sglang.srt.layers.radix_attention import RadixAttention
 from sglang.srt.mem_cache.memory_pool import KVWriteLoc
 from sglang.srt.model_executor.forward_batch_info import CaptureHiddenMode, ForwardMode
@@ -16,6 +17,7 @@ from sglang_omni.models.whisper_asr.dense_prefill import (
     WhisperDensePrefillRunner,
 )
 from sglang_omni.models.whisper_asr.sglang_model import WhisperForConditionalGeneration
+from sglang_omni.platforms import current_platform
 
 
 class RecordingPool:
@@ -150,6 +152,47 @@ def test_dense_prefill_matches_reference_and_preserves_per_request_kv(
         torch.testing.assert_close(cross_values, expected_values.reshape(-1, 2, 4))
 
 
+@pytest.mark.parametrize("forward_mode", [ForwardMode.EXTEND, ForwardMode.DECODE])
+def test_the_model_replays_its_own_graphs_for_a_batch_they_hold(
+    monkeypatch: pytest.MonkeyPatch, forward_mode: ForwardMode
+) -> None:
+    monkeypatch.setattr(sglang_model, "LogitsProcessor", lambda config: None)
+    model = WhisperForConditionalGeneration(
+        WhisperConfig(
+            d_model=8,
+            encoder_layers=1,
+            decoder_layers=1,
+            encoder_attention_heads=2,
+            decoder_attention_heads=2,
+            encoder_ffn_dim=16,
+            decoder_ffn_dim=16,
+            vocab_size=32,
+            max_source_positions=8,
+            max_target_positions=8,
+        )
+    )
+    prefill_output = LogitsProcessorOutput(next_token_logits=torch.zeros(1, 32))
+    decode_output = LogitsProcessorOutput(next_token_logits=torch.ones(1, 32))
+    model.dense_prefill_runner = SimpleNamespace(
+        prompt_length_of=lambda batch: (
+            4 if batch.forward_mode == ForwardMode.EXTEND else None
+        ),
+        run=lambda batch, prompt_length: prefill_output,
+    )
+    model.decode_graph_runner = SimpleNamespace(
+        can_run=lambda batch: batch.forward_mode.is_decode(),
+        replay=lambda batch: decode_output,
+    )
+    output = model.forward(
+        torch.zeros(4, dtype=torch.int64),
+        torch.arange(4),
+        SimpleNamespace(forward_mode=forward_mode),
+    )
+    assert output is (
+        prefill_output if forward_mode == ForwardMode.EXTEND else decode_output
+    )
+
+
 @pytest.mark.parametrize(
     "overrides",
     [
@@ -190,14 +233,19 @@ def test_dense_prefill_rejects_batches_outside_capture_contract(
 
 
 @pytest.mark.accelerator
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+@pytest.mark.skipif(
+    current_platform.device_type not in ("cuda", "xpu")
+    or not torch.get_device_module(current_platform.device_type).is_available(),
+    reason="CUDA or XPU required",
+)
 @pytest.mark.parametrize("request_count", [1, 3])
 @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
 @torch.inference_mode()
-def test_dense_prefill_cuda_capture_replay_kv_and_output_lifetime(
+def test_dense_prefill_device_capture_replay_kv_and_output_lifetime(
     monkeypatch: pytest.MonkeyPatch, request_count: int, dtype: torch.dtype
 ) -> None:
     """Real graph replay must write the selected KV slots and own its output."""
+    device = current_platform.device_type
     torch.manual_seed(37)
     config = WhisperConfig(
         d_model=8,
@@ -218,10 +266,10 @@ def test_dense_prefill_cuda_capture_replay_kv_and_output_lifetime(
         attention_dropout=0.0,
         activation_dropout=0.0,
     )
-    reference = ReferenceWhisper(config).eval().to(device="cuda", dtype=dtype)
+    reference = ReferenceWhisper(config).eval().to(device=device, dtype=dtype)
     monkeypatch.setattr(sglang_model, "LogitsProcessor", lambda config: None)
     model = (
-        WhisperForConditionalGeneration(config).eval().to(device="cuda", dtype=dtype)
+        WhisperForConditionalGeneration(config).eval().to(device=device, dtype=dtype)
     )
     model.load_weights(reference.state_dict().items())
 
@@ -229,8 +277,8 @@ def test_dense_prefill_cuda_capture_replay_kv_and_output_lifetime(
         def __init__(self) -> None:
             self.buffers = {
                 attention.layer_id: (
-                    torch.full((96, 2, 4), float("nan"), device="cuda", dtype=dtype),
-                    torch.full((96, 2, 4), float("nan"), device="cuda", dtype=dtype),
+                    torch.full((96, 2, 4), float("nan"), device=device, dtype=dtype),
+                    torch.full((96, 2, 4), float("nan"), device=device, dtype=dtype),
                 )
                 for layer in model.model.decoder.layers
                 for attention in (layer.self_attn.attn, layer.encoder_attn.attn)
@@ -245,21 +293,20 @@ def test_dense_prefill_cuda_capture_replay_kv_and_output_lifetime(
     runner = WhisperDensePrefillRunner(
         model, pool, encoder_token_count=8, max_requests=3, prompt_lengths=(4,)
     )
-    runner.capture()
+    runner.capture(current_platform.get_device_graph_backend(torch.device(device)))
     assert len(runner.graphs) == 3
-    assert all(
-        isinstance(item.graph, torch.cuda.CUDAGraph) for item in runner.graphs.values()
-    )
-    encoder_states = torch.randn(request_count, 8, 8, device="cuda", dtype=dtype)
+    graph_type = torch.cuda.CUDAGraph if device == "cuda" else torch.xpu.XPUGraph
+    assert all(isinstance(item.graph, graph_type) for item in runner.graphs.values())
+    encoder_states = torch.randn(request_count, 8, 8, device=device, dtype=dtype)
     batch = SimpleNamespace(
         batch_size=request_count,
         forward_mode=ForwardMode.EXTEND,
-        input_ids=torch.randint(0, 32, (request_count * 4,), device="cuda"),
-        positions=torch.arange(4, device="cuda").repeat(request_count),
-        out_cache_loc=torch.randperm(request_count * 4, device="cuda") + 11,
-        encoder_out_cache_loc=torch.randperm(request_count * 8, device="cuda") + 31,
+        input_ids=torch.randint(0, 32, (request_count * 4,), device=device),
+        positions=torch.arange(4, device=device).repeat(request_count),
+        out_cache_loc=torch.randperm(request_count * 4, device=device) + 11,
+        encoder_out_cache_loc=torch.randperm(request_count * 8, device=device) + 31,
         encoder_cached=[False] * request_count,
-        encoder_lens=torch.full((request_count,), 8, device="cuda"),
+        encoder_lens=torch.full((request_count,), 8, device=device),
         encoder_lens_cpu=[8] * request_count,
         mm_inputs=[
             SimpleNamespace(mm_items=[SimpleNamespace(precomputed_embeddings=states)])
