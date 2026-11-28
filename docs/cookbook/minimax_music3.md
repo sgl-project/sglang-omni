@@ -337,6 +337,10 @@ with client.audio.speech.with_streaming_response.create(
 </audio>
 
 
+### Streaming
+
+`"stream": true` works as described in [TTS streaming](../basic_usage/tts.md#streaming). Audio is sent as each 200-frame window is decoded, so on one H200 the first sound arrives about 4 seconds after the request instead of after the whole song. A `wav` stream stays stereo and carries the same samples as a full `wav` response; a `pcm` stream is mono, like a full `pcm` response.
+
 ### Writing the caption
 
 The caption is the strongest control you have. Vague captions give generic arrangements; naming instruments, tempo and production character gives you the track you asked for.
@@ -668,7 +672,7 @@ That flatness is also why guidance is cheap in time and expensive in memory. The
 | `seed` | int | `0` | Non-negative 64-bit integer. Fixes the output for a given request |
 | `max_new_tokens` | int | `9000` | Cap on audio frames, 25 per second. Maximum 9,000 (six minutes). The model may finish earlier |
 | `response_format` | string | `"wav"` | Output container |
-| `stream` | bool | `false` | Must be `false`; this model's external API is non-streaming |
+| `stream` | bool | `false` | Stream the song while it is generated; requires `response_format` `pcm` or `wav` |
 
 Reaching the cap returns the audio generated so far. Ending on the audio-end token stops the song early.
 
@@ -682,7 +686,6 @@ The request is refused rather than silently ignored, so a mistake is visible imm
 | `voice` | There is no speaker to select; the vocal comes from the caption |
 | `ref_audio`, `ref_text`, `language`, `task_type` | No reference-audio conditioning and no language tag in this contract |
 | `speed` | Only `1.0`. Tempo belongs in the caption, e.g. "at 92 BPM" |
-| `stream: true` | Not supported. This model's external API is non-streaming |
 
 ## Notes
 

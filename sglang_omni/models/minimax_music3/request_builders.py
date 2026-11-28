@@ -133,8 +133,9 @@ def build_ttm_state(payload: StagePayload) -> MiniMaxMusic3State:
         )
     else:
         pass
-    if params.get("stream", False):
-        raise ValueError("MiniMax Music 3 only supports stream=false")
+    stream_audio = params.get("stream", False)
+    if not isinstance(stream_audio, bool):
+        raise ValueError("MiniMax Music 3 stream must be a boolean")
     else:
         pass
     state = MiniMaxMusic3State(
@@ -143,6 +144,7 @@ def build_ttm_state(payload: StagePayload) -> MiniMaxMusic3State:
         prompt=build_prompt(caption, lyrics),
         seed=parse_seed(tts_params.get("seed")),
         max_audio_frames=parse_max_frames(params.get("max_new_tokens")),
+        stream_audio=stream_audio,
     )
     return state
 

@@ -714,6 +714,10 @@ class Client:
             chunk.sample_rate = sample_rate
         else:
             pass
+        if data.get("keep_audio_channels") is True:
+            chunk.keep_audio_channels = True
+        else:
+            pass
 
     @staticmethod
     def build_usage_info(data: Mapping[str, object]) -> UsageInfo | None:

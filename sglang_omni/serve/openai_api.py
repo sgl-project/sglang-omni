@@ -2180,7 +2180,11 @@ async def speech_audio_response(
     output_sample_rate: int | None = None,
 ) -> StreamingResponse:
     """Stream PCM/WAV bytes or SSE after the first audio sets the headers."""
-    audio_stream = SpeechAudioStream(output_sample_rate=output_sample_rate, speed=speed)
+    audio_stream = SpeechAudioStream(
+        output_sample_rate=output_sample_rate,
+        speed=speed,
+        allow_native_channels=response_format == "wav",
+    )
     stream_outcome = SpeechStreamOutcome(
         request_id=request_id, finish_reason=UNKNOWN_FINISH_REASON
     )
@@ -2277,7 +2281,9 @@ async def speech_audio_response(
         active_request = True
         try:
             if stream_format == "audio" and response_format == "wav":
-                yield create_streaming_wav_header(audio_stream.sample_rate)
+                yield create_streaming_wav_header(
+                    audio_stream.sample_rate, audio_stream.channels
+                )
             else:
                 pass
             yield first_audio_bytes
@@ -2322,7 +2328,7 @@ async def speech_audio_response(
     headers = {
         "X-Request-Id": request_id,
         "X-Sample-Rate": str(audio_stream.sample_rate),
-        "X-Channels": "1",
+        "X-Channels": str(audio_stream.channels),
         "X-Bit-Depth": "16",
     }
     if stream_format == "sse":
@@ -2333,6 +2339,7 @@ async def speech_audio_response(
             response_format=response_format,
             enable_speech_sse_named_events=enable_speech_sse_named_events,
             headers=headers,
+            channels=audio_stream.channels,
         )
     else:
         headers["X-SGLang-Omni-Speech-Id"] = request_id

@@ -33,8 +33,10 @@ PCM_CHANNELS = 1
 STREAMING_WAV_SIZE = 0xFFFFFFFF
 
 
-def create_streaming_wav_header(sample_rate: int) -> bytes:
-    """Describe a mono PCM stream whose final size is not known yet."""
+def create_streaming_wav_header(
+    sample_rate: int, channels: int = PCM_CHANNELS
+) -> bytes:
+    """Describe a PCM stream whose final size is not known yet."""
     return struct.pack(
         "<4sI4s4sIHHIIHH4sI",
         b"RIFF",
@@ -43,10 +45,10 @@ def create_streaming_wav_header(sample_rate: int) -> bytes:
         b"fmt ",
         16,
         1,
-        PCM_CHANNELS,
+        channels,
         sample_rate,
-        sample_rate * PCM_CHANNELS * PCM_SAMPLE_WIDTH_BYTES,
-        PCM_CHANNELS * PCM_SAMPLE_WIDTH_BYTES,
+        sample_rate * channels * PCM_SAMPLE_WIDTH_BYTES,
+        channels * PCM_SAMPLE_WIDTH_BYTES,
         PCM_SAMPLE_WIDTH_BYTES * 8,
         b"data",
         STREAMING_WAV_SIZE,
@@ -55,10 +57,16 @@ def create_streaming_wav_header(sample_rate: int) -> bytes:
 
 @dataclass(kw_only=True)
 class SpeechAudioStream:
-    """Encode mono PCM while preserving resampling state across audio chunks."""
+    """Encode PCM while preserving resampling state across audio chunks.
+
+    Streams are mono unless allow_native_channels is set and the producer marks
+    its first chunk keep_audio_channels; then a two-channel stream stays stereo.
+    """
 
     output_sample_rate: int | None
     speed: float
+    allow_native_channels: bool = False
+    channels: int = field(default=PCM_CHANNELS, init=False)
     emitted_samples: int = field(default=0, init=False)
     source_sample_rate: int | None = field(default=None, init=False)
     resampler: soxr.ResampleStream | None = field(default=None, init=False)
@@ -74,9 +82,18 @@ class SpeechAudioStream:
         assert source_sample_rate > 0
         if self.source_sample_rate is None:
             self.source_sample_rate = source_sample_rate
+            if (
+                self.allow_native_channels
+                and chunk.keep_audio_channels
+                and np.ndim(chunk.audio_data) == 2
+                and np.shape(chunk.audio_data)[0] == 2
+            ):
+                self.channels = 2
+            else:
+                pass
             if self.sample_rate != source_sample_rate:
                 self.resampler = soxr.ResampleStream(
-                    source_sample_rate, self.sample_rate, num_channels=1
+                    source_sample_rate, self.sample_rate, num_channels=self.channels
                 )
             else:
                 pass
@@ -90,9 +107,14 @@ class SpeechAudioStream:
             chunk.audio_data,
             emitted_samples=self.emitted_samples,
             is_terminal=chunk.finish_reason is not None,
+            keep_channels=self.channels > 1,
         )
         if audio is None:
             return None
+        else:
+            pass
+        if self.channels > 1:
+            return self.encode_channels(audio, source_sample_rate)
         else:
             pass
         if self.speed != 1.0:
@@ -105,6 +127,25 @@ class SpeechAudioStream:
             pass
         return encode_pcm(audio, self.sample_rate) or None
 
+    def encode_channels(
+        self, audio: np.ndarray, source_sample_rate: int
+    ) -> bytes | None:
+        """Encode a [channels, samples] delta as interleaved PCM."""
+        if self.speed != 1.0:
+            audio = np.stack(
+                [
+                    apply_speed(channel, self.speed, source_sample_rate)[0]
+                    for channel in audio
+                ]
+            )
+        else:
+            pass
+        if self.resampler is not None:
+            audio = self.resampler.resample_chunk(np.ascontiguousarray(audio.T)).T
+        else:
+            pass
+        return encode_pcm(audio, self.sample_rate) or None
+
     def finish(self) -> bytes | None:
         if self.is_finished:
             return None
@@ -113,9 +154,13 @@ class SpeechAudioStream:
         if self.resampler is None:
             return None
         else:
-            audio = self.resampler.resample_chunk(
-                np.empty(0, dtype=np.float32), last=True
-            )
+            if self.channels > 1:
+                tail = np.empty((0, self.channels), dtype=np.float32)
+                audio = self.resampler.resample_chunk(tail, last=True).T
+            else:
+                audio = self.resampler.resample_chunk(
+                    np.empty(0, dtype=np.float32), last=True
+                )
             return encode_pcm(audio, self.sample_rate) or None
 
 
@@ -127,6 +172,7 @@ def create_speech_sse_response(
     response_format: Literal["pcm", "wav"],
     enable_speech_sse_named_events: bool,
     headers: dict[str, str],
+    channels: int = PCM_CHANNELS,
 ) -> ClosableStreamingResponse:
     """Wrap PCM chunks in SSE events with terminal metadata."""
 
@@ -145,14 +191,14 @@ def create_speech_sse_response(
                 audio_packets: tuple[bytes, ...]
                 if not emitted_audio and response_format == "wav":
                     audio_packets = (
-                        create_streaming_wav_header(sample_rate),
+                        create_streaming_wav_header(sample_rate, channels),
                         pcm_bytes,
                     )
                 else:
                     audio_packets = (pcm_bytes,)
 
                 duration_seconds += len(pcm_bytes) / (
-                    PCM_SAMPLE_WIDTH_BYTES * PCM_CHANNELS * sample_rate
+                    PCM_SAMPLE_WIDTH_BYTES * channels * sample_rate
                 )
                 for audio_packet in audio_packets:
                     delta = {

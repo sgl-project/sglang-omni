@@ -39,6 +39,17 @@ def test_build_ttm_state_accepts_the_supported_contract() -> None:
     assert state.prompt is not None and state.prompt.endswith("<|audio_start|>")
 
 
+def test_build_ttm_state_carries_the_stream_choice_to_the_acoustic_stage() -> None:
+    assert build_ttm_state(payload(params={"stream": True})).stream_audio
+    assert not build_ttm_state(payload(params={"stream": False})).stream_audio
+    assert not build_ttm_state(payload()).stream_audio
+
+
+def test_build_ttm_state_rejects_a_non_boolean_stream() -> None:
+    with pytest.raises(ValueError, match="stream must be a boolean"):
+        build_ttm_state(payload(params={"stream": "yes"}))
+
+
 @pytest.mark.parametrize("value", [0, 9001, 1.5, True])
 def test_build_ttm_state_rejects_invalid_frame_limits(value: object) -> None:
     with pytest.raises(ValueError, match="max_new_tokens"):
