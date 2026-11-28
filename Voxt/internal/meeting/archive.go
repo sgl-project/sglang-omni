@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"path/filepath"
 	"sync"
@@ -12,12 +13,34 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/asr"
 )
 
-// Archive writes per-source WAV files under a meeting folder.
+// Archive writes per-source WAV files under a meeting folder. Frames with
+// a capture time (PCMParams.HostMS) are placed by it, so the same
+// position in every file is the same moment: the first timed frame of a
+// period (the meeting's start, each resume) sets the origin, a gap is
+// padded with silence and an overlap is cut, and Close pads the files to
+// one length (a track the meeting stopped, by a change of mode, goes on
+// in silence).
 type Archive struct {
 	dir string
 	mu  sync.Mutex
 	w   map[Source]*wavWriter
+	// origin is the host time (ms) at sample base of every file; 0 until
+	// the period's first timed frame.
+	origin float64
+	base   int64
+	timed  bool // a frame had a capture time
 }
+
+// archiveSlack is the misplacement left alone (capture-time jitter,
+// clock drift): 20 ms.
+const archiveSlack = asr.SampleRate / 50
+
+// archiveMaxGap is how far a frame may land past the longest file, or
+// before where its own file ends: further is a clock that went wrong, and
+// the frame is appended as it comes. Past the longest file, not past its
+// own: a track that starts late (Recording switched to Meeting after an
+// hour) still lines up.
+var archiveMaxGap int64 = 30 * 60 * asr.SampleRate
 
 func newArchive(dir string) *Archive {
 	return &Archive{dir: dir, w: map[Source]*wavWriter{}}
@@ -28,29 +51,82 @@ func (a *Archive) path(src Source) string {
 }
 
 // Write appends PCM16 mono frames to src's WAV.
-func (a *Archive) Write(src Source, pcm []byte) error {
+func (a *Archive) Write(src Source, pcm []byte) error { return a.WriteAt(src, pcm, 0) }
+
+// WriteAt writes PCM16 mono frames to src's WAV where hostMS (the
+// capture time of their first sample) places them; 0 appends them.
+func (a *Archive) WriteAt(src Source, pcm []byte, hostMS float64) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	w, ok := a.w[src]
-	if !ok {
-		if err := os.MkdirAll(a.dir, 0o755); err != nil {
-			return err
-		}
-		f, err := os.OpenFile(a.path(src), os.O_CREATE|os.O_RDWR, 0o644)
-		if err != nil {
-			return err
-		}
-		w = &wavWriter{f: f}
-		if err := w.writeHeader(); err != nil {
-			return errors.Join(err, f.Close())
-		}
-		a.w[src] = w
-	}
-	if _, err := w.f.Seek(0, io.SeekEnd); err != nil {
+	w, err := a.writer(src)
+	if err != nil {
 		return err
 	}
-	_, err := w.f.Write(pcm)
-	return err
+	if hostMS > 0 {
+		a.timed = true
+		if a.origin == 0 {
+			a.origin = hostMS
+		}
+		want := a.base + int64(math.Round((hostMS-a.origin)*asr.SampleRate/1000))
+		switch d := want - w.samples; {
+		case d > archiveSlack && want-a.longest() <= archiveMaxGap:
+			if err := w.silence(d); err != nil {
+				return err
+			}
+		case d < -archiveSlack && d >= -archiveMaxGap:
+			pcm = pcm[2*min(-d, int64(len(pcm)/2)):]
+		}
+	}
+	return w.append(pcm)
+}
+
+// NewPeriod starts a period after a pause: every file is padded to the
+// longest one, where the period's first timed frame lands.
+func (a *Archive) NewPeriod() error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	longest := a.longest()
+	for _, w := range a.w {
+		if err := w.silence(longest - w.samples); err != nil {
+			return err
+		}
+	}
+	a.base, a.origin = longest, 0
+	return nil
+}
+
+// longest is the end of the longest file, in samples (the period's base
+// when none is longer).
+func (a *Archive) longest() int64 {
+	n := a.base
+	for _, w := range a.w {
+		n = max(n, w.samples)
+	}
+	return n
+}
+
+func (a *Archive) writer(src Source) (*wavWriter, error) {
+	if w, ok := a.w[src]; ok {
+		return w, nil
+	}
+	if err := os.MkdirAll(a.dir, 0o755); err != nil {
+		return nil, err
+	}
+	f, err := os.OpenFile(a.path(src), os.O_CREATE|os.O_RDWR, 0o644)
+	if err != nil {
+		return nil, err
+	}
+	w := &wavWriter{f: f}
+	if err := w.writeHeader(); err != nil {
+		return nil, errors.Join(err, f.Close())
+	}
+	info, err := f.Stat()
+	if err != nil {
+		return nil, errors.Join(err, f.Close())
+	}
+	w.samples = max(info.Size()-44, 0) / 2
+	a.w[src] = w
+	return w, nil
 }
 
 // Close finalises headers and closes files.
@@ -58,6 +134,14 @@ func (a *Archive) Close() error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	var first error
+	if a.timed {
+		longest := a.longest()
+		for _, w := range a.w {
+			if err := w.silence(longest - w.samples); err != nil && first == nil {
+				first = err
+			}
+		}
+	}
 	for _, w := range a.w {
 		if err := w.finalize(); err != nil && first == nil {
 			first = err
@@ -69,7 +153,33 @@ func (a *Archive) Close() error {
 }
 
 type wavWriter struct {
-	f *os.File
+	f       *os.File
+	samples int64 // in the data chunk
+}
+
+func (w *wavWriter) append(pcm []byte) error {
+	if len(pcm) == 0 {
+		return nil
+	}
+	if _, err := w.f.Seek(0, io.SeekEnd); err != nil {
+		return err
+	}
+	n, err := w.f.Write(pcm)
+	w.samples += int64(n / 2)
+	return err
+}
+
+// silence appends n samples of silence (none for n ≤ 0).
+func (w *wavWriter) silence(n int64) error {
+	zeros := make([]byte, 2*min(max(n, 0), asr.SampleRate))
+	for n > 0 {
+		k := min(n, int64(len(zeros)/2))
+		if err := w.append(zeros[:2*k]); err != nil {
+			return err
+		}
+		n -= k
+	}
+	return nil
 }
 
 func (w *wavWriter) writeHeader() error {

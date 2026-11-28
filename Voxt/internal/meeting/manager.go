@@ -217,6 +217,12 @@ func (m *Manager) Resume(ctx context.Context, id string) error {
 		return fmt.Errorf("meeting: not paused")
 	}
 	m.timeline.NoteResume()
+	if m.archive != nil {
+		// The pause's tracks have stopped: the files line up again here.
+		if err := m.archive.NewPeriod(); err != nil && m.cfg.Warn != nil {
+			m.cfg.Warn("meeting: aligning the recordings after a pause: " + err.Error())
+		}
+	}
 	m.state = StateRecording
 	m.snap.State = StateRecording
 	sources := m.mode.Sources()

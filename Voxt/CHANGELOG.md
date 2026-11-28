@@ -84,6 +84,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **Cancel meeting stops the recording first**: cancelling while recording deleted the meeting but left the microphone and system audio captures open, and the overlay went on showing a recording of a meeting that was gone. The captures now stop before the meeting goes, and the overlay closes.
 - **Changing a meeting's mode keeps it recording**: switching from Meeting to Recording or Subtitles while recording stopped every track, so the meeting went on with nothing recorded; switching to Meeting stopped the track the meeting already had. The tracks both modes have now carry on without a gap, and when the new one cannot start (system audio not allowed, say) the meeting stays in its mode.
 - **Transcribe inserts only the cleaned text, also when the model ignores the output contract** (#4604): with the language-model clean-up on, a model that thinks out loud — explaining how it read a doubtful word or removed a stutter before or after the final text — had its deliberation inserted along with the cleaned sentence whenever it did not wrap the text in the contract's tags. A tag-less answer to the built-in clean-up now keeps only the cleaned text's sentences, before or after; and while the answer streams, a finished deliberation sentence never shows in the draft. With your own clean-up prompt, the answer is yours: a heading, an expansion or a translation shows and stays whole.
+- **A meeting's two recordings line up in time**: the microphone and system audio recordings are aligned by when they were captured.
 
 ### 中文
 
@@ -140,6 +141,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **取消会议会先停止录音**：录音中取消会议，会议被删掉，麦克风和系统音频却还在采集，浮窗也还显示在录一个已经不存在的会议。现在先停止采集，再删除会议并关闭浮窗。
 - **会议中切换模式不再停录**：录音时从「会议」切到「录音」或「字幕」，所有音轨都会停下，会议继续计时却什么都没录；切到「会议」时，原有的音轨也会停下。现在两种模式都有的音轨不中断；新音轨启动不了（比如未允许系统音频）时，会议保持原来的模式继续录。
 - **转录只插入整理后的文字，模型不遵守输出约定时也一样**（#4604）：开着语言模型整理时，有的模型会先「想出声」——在最终文字之前或之后解释它怎么判断拿不准的词、怎么去掉结巴；如果它没用约定的标签包住最终文字，这些解释会连同整理后的句子一起被插进去。现在内置整理的无标签回答只保留属于整理结果的句子，前后的解释都不会被插入；答案流式返回时，已经写完的解释句不会出现在草稿里。如果你自己写了整理提示词，回答就按你的提示词来：标题、扩写、翻译都原样显示和保留。
+- **会议的两路录音在时间上对齐**：麦克风和系统声音的录音按采集时间对齐。
 
 ## [2.1.3] - 2026-11-22
 

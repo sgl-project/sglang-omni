@@ -104,10 +104,12 @@ final class SystemTap: @unchecked Sendable {
     }
 
     /// Starts the IOProc: each buffer goes to deliver, on the tap's queue.
-    func start(_ deliver: @escaping @Sendable (AVAudioPCMBuffer) -> Void) throws {
+    /// Each buffer comes with the host time of its first sample, if known.
+    func start(_ deliver: @escaping @Sendable (AVAudioPCMBuffer, UInt64?) -> Void) throws {
         let format = format
-        try check(AudioDeviceCreateIOProcIDWithBlock(&procID, aggregateID, queue) { _, input, _, _, _ in
-            if let b = AVAudioPCMBuffer(pcmFormat: format, bufferListNoCopy: input, deallocator: nil) { deliver(b) }
+        try check(AudioDeviceCreateIOProcIDWithBlock(&procID, aggregateID, queue) { _, input, inputTime, _, _ in
+            let host = inputTime.pointee.mFlags.contains(.hostTimeValid) ? inputTime.pointee.mHostTime : nil
+            if let b = AVAudioPCMBuffer(pcmFormat: format, bufferListNoCopy: input, deallocator: nil) { deliver(b, host) }
         }, "the IOProc")
         try check(AudioDeviceStart(aggregateID, procID), "starting")
     }

@@ -26,6 +26,30 @@ func stringProperty(_ object: AudioObjectID, _ selector: AudioObjectPropertySele
     return s as String
 }
 
+/// How long sound takes between a device's host time stamps and the air,
+/// in ms: the device's, its safety offset's and its first stream's latency,
+/// plus the IO buffer for an output (written a buffer ahead). Measured on a
+/// MacBook's speakers and microphone, the two sum to the echo's lag.
+func ioLatencyMs(_ device: AudioObjectID, input: Bool) -> Double {
+    let scope = input ? kAudioDevicePropertyScopeInput : kAudioDevicePropertyScopeOutput
+    var rate = 0.0
+    guard property(device, kAudioDevicePropertyNominalSampleRate, &rate), rate > 0 else { return 0 }
+    var latency: UInt32 = 0, safety: UInt32 = 0, buffer: UInt32 = 0, streamLatency: UInt32 = 0
+    _ = property(device, kAudioDevicePropertyLatency, scope: scope, &latency)
+    _ = property(device, kAudioDevicePropertySafetyOffset, scope: scope, &safety)
+    if !input { _ = property(device, kAudioDevicePropertyBufferFrameSize, &buffer) }
+    var address = AudioObjectPropertyAddress(mSelector: kAudioDevicePropertyStreams, mScope: scope, mElement: kAudioObjectPropertyElementMain)
+    var size: UInt32 = 0
+    if AudioObjectGetPropertyDataSize(device, &address, 0, nil, &size) == noErr, size >= UInt32(MemoryLayout<AudioObjectID>.size) {
+        var stream = AudioObjectID(0)
+        size = UInt32(MemoryLayout<AudioObjectID>.size)
+        if AudioObjectGetPropertyData(device, &address, 0, nil, &size, &stream) == noErr {
+            _ = property(stream, kAudioStreamPropertyLatency, &streamLatency)
+        }
+    }
+    return Double(latency + safety + buffer + streamLatency) * 1000 / rate
+}
+
 private func inputChannelCount(_ device: AudioObjectID) -> Int {
     var address = AudioObjectPropertyAddress(mSelector: kAudioDevicePropertyStreamConfiguration,
                                              mScope: kAudioDevicePropertyScopeInput, mElement: kAudioObjectPropertyElementMain)

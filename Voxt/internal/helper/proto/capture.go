@@ -88,6 +88,10 @@ type PCMParams struct {
 	Seq    int    `json:"seq"`
 	Offset int    `json:"offset"`
 	Data   []byte `json:"data"`
+	// HostMS is when the frame's first sample was captured, in ms of the
+	// host clock that capture.start and capture.system share; 0 when the
+	// input gives no time (the test-only file inputs).
+	HostMS float64 `json:"hostMs,omitempty"`
 }
 
 // RestartedParams: the job's audio engine was rebuilt (Reason

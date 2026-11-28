@@ -61,17 +61,17 @@ func (m *Manager) runTrack(ctx context.Context, src Source, audio session.Audio)
 	go func() {
 		defer close(pumped)
 		for {
-			data, ok := pcm.pop()
+			chunk, ok := pcm.pop()
 			if !ok {
 				return
 			}
 			m.mu.Lock()
 			if m.tracks[src] == tr && m.archive != nil {
-				_ = m.archive.Write(src, data)
+				_ = m.archive.WriteAt(src, chunk.data, chunk.hostMS)
 			}
 			m.mu.Unlock()
 			if tx != nil {
-				_ = tx.onPCM(ctx, data)
+				_ = tx.onPCM(ctx, chunk.data)
 			}
 		}
 	}()
@@ -87,7 +87,7 @@ func (m *Manager) runTrack(ctx context.Context, src Source, audio session.Audio)
 				if !m.timeline.acceptJob(src, ev.PCM.Job) {
 					return
 				}
-				pcm.push(ev.PCM.Data)
+				pcm.push(pcmChunk{data: ev.PCM.Data, hostMS: ev.PCM.HostMS})
 			}
 			if ev.Level != nil {
 				if !m.timeline.acceptJob(src, ev.Level.Job) {
@@ -185,14 +185,20 @@ func (t *track) stop() {
 // goroutine; it never blocks push, as a dropped chunk is lost audio.
 type pcmQueue struct {
 	mu     sync.Mutex
-	chunks [][]byte
+	chunks []pcmChunk
 	closed bool
 	ready  chan struct{}
 }
 
 func newPCMQueue() *pcmQueue { return &pcmQueue{ready: make(chan struct{}, 1)} }
 
-func (q *pcmQueue) push(b []byte) {
+// pcmChunk is a capture.pcm frame's audio and capture time.
+type pcmChunk struct {
+	data   []byte
+	hostMS float64
+}
+
+func (q *pcmQueue) push(b pcmChunk) {
 	q.mu.Lock()
 	q.chunks = append(q.chunks, b)
 	q.mu.Unlock()
@@ -214,7 +220,7 @@ func (q *pcmQueue) wake() {
 }
 
 // pop waits for the next chunk; false once closed and drained.
-func (q *pcmQueue) pop() ([]byte, bool) {
+func (q *pcmQueue) pop() (pcmChunk, bool) {
 	for {
 		q.mu.Lock()
 		if len(q.chunks) > 0 {
@@ -226,7 +232,7 @@ func (q *pcmQueue) pop() ([]byte, bool) {
 		closed := q.closed
 		q.mu.Unlock()
 		if closed {
-			return nil, false
+			return pcmChunk{}, false
 		}
 		<-q.ready
 	}
