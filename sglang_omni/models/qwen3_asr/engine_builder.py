@@ -87,6 +87,8 @@ class Qwen3ASREngineBuilder(AsrEngineBuilder[Qwen3ASRRequestData]):
     model_arch_override = "Qwen3ASRForConditionalGeneration"
     supports_breakable_prefill_cuda_graph = True
     supports_full_prefill_cuda_graph = True
+    # note (Xuanfei): measured on B200, where the full prefill graph on FlashInfer serves faster than the breakable graph on trtllm_mha.
+    full_prefill_substitute_sm_versions = frozenset({100})
 
     def __init__(
         self,
