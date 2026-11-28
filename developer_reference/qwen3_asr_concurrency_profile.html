@@ -59,7 +59,7 @@
     <link rel="icon" href="../_static/logo.ico"/>
     <link rel="index" title="Index" href="../genindex.html" />
     <link rel="search" title="Search" href="../search.html" />
-    <link rel="next" title="Full-Duplex Guide" href="full_duplex_guide.html" />
+    <link rel="next" title="Qwen3-ASR DFlash Benchmarks" href="qwen3_asr_dflash_benchmarks.html" />
     <link rel="prev" title="Request-level profiler" href="profiler.html" />
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <meta name="docsearch:language" content="en"/>
@@ -364,6 +364,7 @@
 <li class="toctree-l1"><a class="reference internal" href="reference_encode_service.html">Reference Encode Service</a></li>
 <li class="toctree-l1"><a class="reference internal" href="profiler.html">Request-level profiler</a></li>
 <li class="toctree-l1 current active"><a class="current reference internal" href="#">Qwen3-ASR High-Concurrency Benchmark and Bottleneck Profile</a></li>
+<li class="toctree-l1"><a class="reference internal" href="qwen3_asr_dflash_benchmarks.html">Qwen3-ASR DFlash Benchmarks</a></li>
 <li class="toctree-l1"><a class="reference internal" href="full_duplex_guide.html">Full-Duplex Guide</a></li>
 <li class="toctree-l1"><a class="reference internal" href="tts_bench.html">TTS benchmark runbook</a></li>
 <li class="toctree-l1"><a class="reference internal" href="tts_model_integration.html">TTS Model Integration</a></li>
@@ -614,6 +615,9 @@
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#results-current-vs-baseline-back-to-back-same-host-window">Results — current vs baseline (back-to-back, same host window)</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#bottleneck-decomposition-profiled-passes-en">Bottleneck decomposition (profiled passes, EN)</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#environment">Environment</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#scheduling-defaults">Scheduling defaults</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#capacity-sweep">Capacity sweep</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#long-audio-capacity">Long-audio capacity</a></li>
 </ul>
             </nav>
         </div>
@@ -1059,6 +1063,180 @@ torch 2.11.0+cu130, sglang 0.5.16, transformers 5.12.1, model snapshot
 branch’s commit; note the fingerprint’s <code class="docutils literal notranslate"><span class="pre">git.dirty</span></code> flag also counts
 untracked run-output directories.</p>
 </section>
+<section id="scheduling-defaults">
+<h2>Scheduling defaults<a class="headerlink" href="#scheduling-defaults" title="Link to this heading">#</a></h2>
+<p>Async decode is enabled by default, allowing the shared one-step-lookahead path
+to overlap host-side result processing with the next GPU decode forward. Without
+a draft it covers every decode batch size, even a single request; with the
+DFlash draft a single request decodes synchronously (see <a class="reference internal" href="../cookbook/qwen3_asr.html#dflash-speculative-decoding"><span class="std std-ref">DFlash configuration</span></a>).
+Use <code class="docutils literal notranslate"><span class="pre">--asr.factory.enable_async_decode</span> <span class="pre">false</span></code> to disable it, or set the
+crossover with <code class="docutils literal notranslate"><span class="pre">--asr.factory.async_decode_min_batch_size</span></code>.
+The request builders also use the shared LM prefill-admission gate: prefill
+starts when 16 built requests are ready or after the oldest ready request waits
+40 ms. Once request-build work drains, a ready prefill is released immediately
+if decode is idle; while decode is active, it continues coalescing until the
+same request target or deadline. By default with a DFlash draft, a ready
+prefill is released as soon as request-build work drains, whether or not decode
+is active; set <code class="docutils literal notranslate"><span class="pre">--asr.factory.prefill_coalesce_after_builds_during_decode</span> <span class="pre">true</span></code>
+to keep coalescing during decode.</p>
+</section>
+<section id="capacity-sweep">
+<h2>Capacity sweep<a class="headerlink" href="#capacity-sweep" title="Link to this heading">#</a></h2>
+<p>These measurements predate the default DFlash rollout. They explain the request-build and capacity defaults; they are not a benchmark of the current DFlash configuration.</p>
+<p>The request-build, admission, and CUDA-graph policy defaults come from a
+measured sweep (issue #1324 Q-PR5): <code class="docutils literal notranslate"><span class="pre">request_build_max_workers</span></code> {2, 4, 8} ×
+<code class="docutils literal notranslate"><span class="pre">request_build_max_pending</span></code> {16, 32, 64} × <code class="docutils literal notranslate"><span class="pre">max_running_requests</span></code> {16, 32, 64}
+with matching CUDA-graph coverage, each configuration a full SeedTTS EN
+concurrency sweep (1–64, three repeats plus warmup) on one 141 GB GPU with the
+pre-LM encoder enabled and its embedding cache disabled (unique-input regime).
+Requests/s by client concurrency:</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>config (workers/pending/running)</p></th>
+<th class="head text-right"><p>c=8</p></th>
+<th class="head text-right"><p>c=16</p></th>
+<th class="head text-right"><p>c=32</p></th>
+<th class="head text-right"><p>c=64</p></th>
+<th class="head text-right"><p>shed at c=64</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>2 / 16 / 32</p></td>
+<td class="text-right"><p>39.1</p></td>
+<td class="text-right"><p>47.5</p></td>
+<td class="text-right"><p>52.3</p></td>
+<td class="text-right"><p>51.0</p></td>
+<td class="text-right"><p>704/3264</p></td>
+</tr>
+<tr class="row-odd"><td><p>4 / 16 / 32</p></td>
+<td class="text-right"><p>47.6</p></td>
+<td class="text-right"><p>60.3</p></td>
+<td class="text-right"><p>70.4</p></td>
+<td class="text-right"><p>55.4</p></td>
+<td class="text-right"><p>301/3264</p></td>
+</tr>
+<tr class="row-even"><td><p>8 / 16 / 32</p></td>
+<td class="text-right"><p>48.5</p></td>
+<td class="text-right"><p>75.6</p></td>
+<td class="text-right"><p>89.7</p></td>
+<td class="text-right"><p>64.6</p></td>
+<td class="text-right"><p>173/3264</p></td>
+</tr>
+<tr class="row-odd"><td><p>8 / 16 / 16</p></td>
+<td class="text-right"><p>57.6</p></td>
+<td class="text-right"><p>75.4</p></td>
+<td class="text-right"><p>42.2</p></td>
+<td class="text-right"><p>46.7</p></td>
+<td class="text-right"><p>250/3264</p></td>
+</tr>
+<tr class="row-even"><td><p>8 / 32 / 32</p></td>
+<td class="text-right"><p>57.7</p></td>
+<td class="text-right"><p>76.5</p></td>
+<td class="text-right"><p>87.1</p></td>
+<td class="text-right"><p>65.1</p></td>
+<td class="text-right"><p>0</p></td>
+</tr>
+<tr class="row-odd"><td><p>8 / 64 / 32</p></td>
+<td class="text-right"><p>55.2</p></td>
+<td class="text-right"><p>76.6</p></td>
+<td class="text-right"><p>87.9</p></td>
+<td class="text-right"><p>64.7</p></td>
+<td class="text-right"><p>0</p></td>
+</tr>
+<tr class="row-even"><td><p><strong>8 / 32 / 64 (default)</strong></p></td>
+<td class="text-right"><p>57.4</p></td>
+<td class="text-right"><p>77.0</p></td>
+<td class="text-right"><p>90.2</p></td>
+<td class="text-right"><p>96.8</p></td>
+<td class="text-right"><p>0</p></td>
+</tr>
+<tr class="row-odd"><td><p>8 / 64 / 64</p></td>
+<td class="text-right"><p>57.0</p></td>
+<td class="text-right"><p>74.3</p></td>
+<td class="text-right"><p>88.8</p></td>
+<td class="text-right"><p>100.3</p></td>
+<td class="text-right"><p>0</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>Reading, and the resulting defaults:</p>
+<ul class="simple">
+<li><p><strong>Build workers scale monotonically to 8</strong> at every concurrency ≥ 8 and cost
+nothing at concurrency 1 (0.099–0.101 s mean everywhere), so 8 is the
+default. Those workers do CPU request construction (decode audio,
+optional mel FFT) and submit encoder work asynchronously. When no extra
+builds are queued, the request builder waits for encode and returns a
+ready request like the sync path; when pending+backlog exceeds the
+worker pool, it returns a deferred admission so workers can pull the
+backlog. A cache hit still skips mel extraction entirely.</p></li>
+<li><p><strong>Pending 16 → 32 removes all concurrency-64 shedding</strong> and lifts
+concurrency-8 throughput ~19 %; 64 adds nothing further. 32 is the default.</p></li>
+<li><p><strong><code class="docutils literal notranslate"><span class="pre">max_running_requests</span></code> 16 collapses concurrency 32</strong> (queue-bound) with no
+light-load latency benefit, so there is no latency-first case for lowering
+it. The default is 64 because it unlocks the concurrency-64 regime (+~50 %
+requests/s, zero shedding), at the price of larger CUDA-graph and KV memory.
+On memory-constrained GPUs, use the memory-conservative override:</p></li>
+</ul>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>sgl-omni<span class="w"> </span>serve<span class="w"> </span>--model-path<span class="w"> </span>Qwen/Qwen3-ASR-1.7B<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--asr.engine.max_running_requests<span class="w"> </span><span class="m">32</span>
+</pre></div>
+</div>
+<ul class="simple">
+<li><p>Corpus WER stayed 0.0122 for every configuration at every level.</p></li>
+</ul>
+</section>
+<section id="long-audio-capacity">
+<h2>Long-audio capacity<a class="headerlink" href="#long-audio-capacity" title="Link to this heading">#</a></h2>
+<p>For the four configurable limits and their defaults, see <a class="reference internal" href="../cookbook/qwen3_asr.html#long-audio"><span class="std std-ref">Long Audio</span></a>.</p>
+<p>The last knob is the aggregate guard. Each admitted upload holds its decoded
+waveform (float32 at 16 kHz, about 230 MB for an hour) and drives up to
+<code class="docutils literal notranslate"><span class="pre">max_concurrent_chunks</span></code> engine requests, so:</p>
+<ul class="simple">
+<li><p>decoded waveforms held at once are at most
+<code class="docutils literal notranslate"><span class="pre">max_concurrent_long_audio_requests</span> <span class="pre">×</span> <span class="pre">max_total_audio_s</span> <span class="pre">×</span> <span class="pre">16000</span> <span class="pre">×</span> <span class="pre">4</span></code> bytes
+(decoding itself has transient peaks above that);</p></li>
+<li><p>engine slots long audio can take together are at most
+<code class="docutils literal notranslate"><span class="pre">max_concurrent_long_audio_requests</span> <span class="pre">×</span> <span class="pre">max_concurrent_chunks</span></code>.</p></li>
+</ul>
+<p>The default keeps that product at half of <code class="docutils literal notranslate"><span class="pre">--asr.engine.max_running_requests</span></code>
+so short requests always have slots left. Setting the knob explicitly to a
+value whose product reaches <code class="docutils literal notranslate"><span class="pre">max_running_requests</span></code> logs a warning at startup:
+it is not an error, since extra chunks only queue in the engine, but short
+requests then wait behind long audio whenever it is saturated. Raising
+<code class="docutils literal notranslate"><span class="pre">max_running_requests</span></code> instead also resizes CUDA graph capture, so treat it
+as the GPU capacity knob and this one as the long-audio share of it.</p>
+<p>The model properties are ClassVars on <code class="docutils literal notranslate"><span class="pre">Qwen3ASRPipelineConfig</span></code>; no
+configuration path reaches them:</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Name</p></th>
+<th class="head"><p>Value</p></th>
+<th class="head"><p>Meaning</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">allow_audio_chunking</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">true</span></code></p></td>
+<td><p>Qwen3-ASR transcribes an isolated chunk correctly, so chunking is on.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">max_native_clip_s</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">1200</span></code></p></td>
+<td><p>Longest clip the model takes as one request (its native limit). Streaming cannot chunk, so this is the streaming cutoff; the Torch MPS compatibility path resolves it to its qualified 60-second cap.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">min_tail_s</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">0.5</span></code></p></td>
+<td><p>Shortest final chunk worth transcribing; if the tail would be shorter, we move the previous cut earlier to absorb it. This matches the model’s own minimum input length.</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>Note: Raising <code class="docutils literal notranslate"><span class="pre">audio_chunking.max_audio_clip_s</span></code> also resizes the encoder CUDA-graph bucket
+ladder, which is derived from the chunk length: a longer chunk means more and
+larger captured graphs, and their static buffers stay resident for the life of
+the server (roughly 6.6 KB per token of ladder ceiling; at 1,200s the ceiling
+is 124,800 tokens). Budget for that when you raise the flag on small GPUs.</p>
+</section>
 </section>
 
 
@@ -1082,11 +1260,11 @@ untracked run-output directories.</p>
       </div>
     </a>
     <a class="right-next"
-       href="full_duplex_guide.html"
+       href="qwen3_asr_dflash_benchmarks.html"
        title="next page">
       <div class="prev-next-info">
         <p class="prev-next-subtitle">next</p>
-        <p class="prev-next-title">Full-Duplex Guide</p>
+        <p class="prev-next-title">Qwen3-ASR DFlash Benchmarks</p>
       </div>
       <i class="fa-solid fa-angle-right"></i>
     </a>
@@ -1117,6 +1295,9 @@ untracked run-output directories.</p>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#results-current-vs-baseline-back-to-back-same-host-window">Results — current vs baseline (back-to-back, same host window)</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#bottleneck-decomposition-profiled-passes-en">Bottleneck decomposition (profiled passes, EN)</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#environment">Environment</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#scheduling-defaults">Scheduling defaults</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#capacity-sweep">Capacity sweep</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#long-audio-capacity">Long-audio capacity</a></li>
 </ul>
   </nav></div>
 

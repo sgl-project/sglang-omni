@@ -364,6 +364,7 @@
 <li class="toctree-l1"><a class="reference internal" href="../developer_reference/reference_encode_service.html">Reference Encode Service</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../developer_reference/profiler.html">Request-level profiler</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../developer_reference/qwen3_asr_concurrency_profile.html">Qwen3-ASR High-Concurrency Benchmark and Bottleneck Profile</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../developer_reference/qwen3_asr_dflash_benchmarks.html">Qwen3-ASR DFlash Benchmarks</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../developer_reference/full_duplex_guide.html">Full-Duplex Guide</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../developer_reference/tts_bench.html">TTS benchmark runbook</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../developer_reference/tts_model_integration.html">TTS Model Integration</a></li>
@@ -610,10 +611,7 @@
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#choose-a-transcription-method">Choose a Transcription Method</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#transcribe-audio">Transcribe Audio</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#stream-transcription">Stream Transcription</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#realtime-audio">Realtime Audio</a><ul class="pst-show_toc_level nav section-nav flex-column">
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#live-pcm-transcription">Live PCM transcription</a></li>
-</ul>
-</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#realtime-transcription-websocket">Realtime Transcription (WebSocket)</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#request-parameters">Request Parameters</a><ul class="pst-show_toc_level nav section-nav flex-column">
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#prompt-and-vocabulary-biasing">Prompt and Vocabulary Biasing</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#language-hints">Language Hints</a></li>
@@ -622,7 +620,7 @@
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#long-audio">Long Audio</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#known-limitations">Known Limitations</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#platform-configuration">Platform Configuration</a><ul class="pst-show_toc_level nav section-nav flex-column">
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#ascend-npu-graph-execution">Ascend NPU graph execution</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#ascend-npu">Ascend NPU</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#apple-silicon">Apple Silicon</a></li>
 </ul>
 </li>
@@ -650,9 +648,7 @@
 <p><img alt="Qwen3-ASR model architecture" src="https://qianwen-res.oss-cn-beijing.aliyuncs.com/Qwen3-ASR-Repo/overview.jpg" /></p>
 <section id="prerequisites">
 <h2>Prerequisites<a class="headerlink" href="#prerequisites" title="Link to this heading">#</a></h2>
-<p>Install <code class="docutils literal notranslate"><span class="pre">sglang-omni</span></code> by following the <a class="reference internal" href="../get_started/installation.html"><span class="std std-doc">CUDA installation</span></a>
-or <a class="reference internal" href="../other_platforms/installation_apple_silicon.html"><span class="std std-doc">Apple Silicon installation</span></a>,
-then download the model:</p>
+<p>Install <code class="docutils literal notranslate"><span class="pre">sglang-omni</span></code> by following the <a class="reference internal" href="../get_started/installation.html"><span class="std std-doc">CUDA installation</span></a> or <a class="reference internal" href="../other_platforms/installation_apple_silicon.html"><span class="std std-doc">Apple Silicon installation</span></a>, then download the model:</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="nv">MODEL_REVISION</span><span class="o">=</span>7278e1e70fe206f11671096ffdd38061171dd6e5
 <span class="nv">MODEL_PATH</span><span class="o">=</span><span class="s2">"</span><span class="k">$(</span>
 <span class="w">  </span>hf<span class="w"> </span>download<span class="w"> </span>Qwen/Qwen3-ASR-1.7B<span class="w"> </span><span class="se">\</span>
@@ -671,56 +667,21 @@ then download the model:</p>
 <span class="w">  </span>--port<span class="w"> </span><span class="m">8000</span>
 </pre></div>
 </div>
-<p>Qwen3-ASR runs a single ASR stage on one GPU. Its default <code class="docutils literal notranslate"><span class="pre">auto</span></code> dtype follows
-the checkpoint configuration (BF16 for Qwen3-ASR-1.7B); pass
-<code class="docutils literal notranslate"><span class="pre">--asr.factory.dtype</span> <span class="pre">float16</span></code> to force FP16.
-Async decode is enabled by default, allowing the shared one-step-lookahead path
-to overlap host-side result processing with the next GPU decode forward. Without
-a draft it covers every decode batch size, even a single request; with the
-DFlash draft a single request decodes synchronously (see the DFlash section).
-Use <code class="docutils literal notranslate"><span class="pre">--asr.factory.enable_async_decode</span> <span class="pre">false</span></code> to disable it, or set the
-crossover with <code class="docutils literal notranslate"><span class="pre">--asr.factory.async_decode_min_batch_size</span></code>.
-The request builders also use the shared LM prefill-admission gate: prefill
-starts when 16 built requests are ready or after the oldest ready request waits
-40 ms. Once request-build work drains, a ready prefill is released immediately
-if decode is idle; while decode is active, it continues coalescing until the
-same request target or deadline. By default with a DFlash draft, a ready
-prefill is released as soon as request-build work drains, whether or not decode
-is active; set <code class="docutils literal notranslate"><span class="pre">--asr.factory.prefill_coalesce_after_builds_during_decode</span> <span class="pre">true</span></code>
-to keep coalescing during decode.</p>
-<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>sgl-omni<span class="w"> </span>serve<span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>--model-path<span class="w"> </span><span class="s2">"</span><span class="si">${</span><span class="nv">MODEL_PATH</span><span class="si">}</span><span class="s2">"</span><span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>--model-name<span class="w"> </span>Qwen/Qwen3-ASR-1.7B<span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>--port<span class="w"> </span><span class="m">8000</span>
-</pre></div>
-</div>
+<p>Qwen3-ASR runs a single ASR stage on one GPU. Its default <code class="docutils literal notranslate"><span class="pre">auto</span></code> dtype follows the checkpoint configuration (BF16 for Qwen3-ASR-1.7B); pass <code class="docutils literal notranslate"><span class="pre">--asr.factory.dtype</span> <span class="pre">float16</span></code> to force FP16. For decode scheduling and admission controls, see <a class="reference internal" href="#concurrency-tuning"><span class="std std-ref">Concurrency tuning</span></a>.</p>
 <p>For a single 24 GB RTX 4090 (SM89), use the checked-in consumer profile:</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>sgl-omni<span class="w"> </span>serve<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--config<span class="w"> </span>examples/configs/qwen3_asr_rtx4090.yaml<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--port<span class="w"> </span><span class="m">8000</span>
 </pre></div>
 </div>
-<p>This qualified profile keeps the model in BF16, limits the stage to 16 running
-requests, and sets <code class="docutils literal notranslate"><span class="pre">mem_fraction_static</span></code> to <code class="docutils literal notranslate"><span class="pre">0.65</span></code>. Its bounds are specific to
-the validated RTX 4090 layout; use the default configuration or a separately
-qualified profile on other GPU architectures.</p>
+<p>This qualified profile keeps the model in BF16, limits the stage to 16 running requests, and sets <code class="docutils literal notranslate"><span class="pre">mem_fraction_static</span></code> to <code class="docutils literal notranslate"><span class="pre">0.65</span></code>. Its bounds are specific to the validated RTX 4090 layout; use the default configuration or a separately qualified profile on other GPU architectures.</p>
 <p>For a single 32 GB RTX 5090, use:</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>sgl-omni<span class="w"> </span>serve<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--config<span class="w"> </span>examples/configs/qwen3_asr_rtx5090.yaml<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--port<span class="w"> </span><span class="m">8000</span>
 </pre></div>
 </div>
-<p>This profile uses BF16, allows up to 16 running requests, and sets
-<code class="docutils literal notranslate"><span class="pre">mem_fraction_static=0.65</span></code>. See the
-<a class="reference external" href="https://github.com/sgl-project/sglang-omni/issues/1212">RTX 5090 benchmark report</a>
-for results measured on an earlier release.</p>
-<p>For example, force synchronous decode when comparing modes:</p>
-<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>sgl-omni<span class="w"> </span>serve<span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>--model-path<span class="w"> </span>Qwen/Qwen3-ASR-1.7B<span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>--asr.factory.enable_async_decode<span class="w"> </span><span class="nb">false</span><span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>--port<span class="w"> </span><span class="m">8000</span>
-</pre></div>
-</div>
+<p>This profile uses BF16, allows up to 16 running requests, and sets <code class="docutils literal notranslate"><span class="pre">mem_fraction_static=0.65</span></code>. See the <a class="reference external" href="https://github.com/sgl-project/sglang-omni/issues/1212">RTX 5090 benchmark report</a> for results measured on an earlier release.</p>
 <p>Apple Silicon and Ascend NPU launch different configurations; see <a class="reference internal" href="#platform-configuration"><span class="std std-ref">Platform Configuration</span></a>.</p>
 </section>
 <section id="choose-a-transcription-method">
@@ -742,7 +703,7 @@ for results measured on an earlier release.</p>
 <td><p>Upload a complete file before decoding starts</p></td>
 </tr>
 <tr class="row-even"><td><p>Transcribe live audio</p></td>
-<td><p><a class="reference internal" href="#live-pcm-transcription"><span class="std std-ref">Realtime WebSocket</span></a></p></td>
+<td><p><a class="reference internal" href="#realtime-transcription-websocket"><span class="std std-ref">Realtime WebSocket</span></a></p></td>
 <td><p>Send PCM audio packets as they arrive</p></td>
 </tr>
 </tbody>
@@ -751,27 +712,25 @@ for results measured on an earlier release.</p>
 </section>
 <section id="transcribe-audio">
 <h2>Transcribe Audio<a class="headerlink" href="#transcribe-audio" title="Link to this heading">#</a></h2>
-<p>Send one uploaded file to <code class="docutils literal notranslate"><span class="pre">POST</span> <span class="pre">/v1/audio/transcriptions</span></code>. The request shape and
-the <code class="docutils literal notranslate"><span class="pre">response_format</span></code> semantics shared with the other ASR models are documented
-in <a class="reference internal" href="../basic_usage/asr.html#use-curl"><span class="std std-ref">ASR Model Usage</span></a>. Qwen3-ASR adds one detail:
-<code class="docutils literal notranslate"><span class="pre">verbose_json</span></code> reports one segment per transcribed chunk with that chunk’s real
-start and end timestamps, not word-level timestamps.</p>
+<p>Send a local audio file to the running server:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>curl<span class="w"> </span>-X<span class="w"> </span>POST<span class="w"> </span>http://localhost:8000/v1/audio/transcriptions<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>-F<span class="w"> </span><span class="nv">model</span><span class="o">=</span>Qwen/Qwen3-ASR-1.7B<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>-F<span class="w"> </span><span class="nv">file</span><span class="o">=</span>@path/to/audio.wav<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>-F<span class="w"> </span><span class="nv">response_format</span><span class="o">=</span>json
+</pre></div>
+</div>
+<p>Replace <code class="docutils literal notranslate"><span class="pre">path/to/audio.wav</span></code> with your audio file. The JSON response contains the transcript in <code class="docutils literal notranslate"><span class="pre">text</span></code>.</p>
+<p>Send one uploaded file to <code class="docutils literal notranslate"><span class="pre">POST</span> <span class="pre">/v1/audio/transcriptions</span></code>. The request shape and the <code class="docutils literal notranslate"><span class="pre">response_format</span></code> semantics shared with the other ASR models are documented in <a class="reference internal" href="../basic_usage/asr.html#use-curl"><span class="std std-ref">ASR Model Usage</span></a>. Qwen3-ASR adds one detail: <code class="docutils literal notranslate"><span class="pre">verbose_json</span></code> reports one segment per transcribed chunk with that chunk’s real start and end timestamps, not word-level timestamps. When duration probing succeeds, it also includes duration-based usage (rounded-up audio seconds).</p>
 </section>
 <section id="stream-transcription">
 <h2>Stream Transcription<a class="headerlink" href="#stream-transcription" title="Link to this heading">#</a></h2>
-<p>Set <code class="docutils literal notranslate"><span class="pre">stream=true</span></code> to receive incremental transcript text over SSE. The event
-lifecycle, batching behavior, and the response formats that streaming accepts
-are shared and documented in
-<a class="reference internal" href="../basic_usage/asr.html#stream-transcription"><span class="std std-ref">ASR Model Usage</span></a>. Qwen3-ASR batches
-deltas for up to 50 ms by default, and EOS or another terminal condition flushes
-any buffered text before the final transcript event.</p>
+<p>Set <code class="docutils literal notranslate"><span class="pre">stream=true</span></code> to receive incremental transcript text over SSE. The event lifecycle, batching behavior, and the response formats that streaming accepts are shared and documented in <a class="reference internal" href="../basic_usage/asr.html#stream-transcription"><span class="std std-ref">ASR Model Usage</span></a>. Qwen3-ASR batches deltas for up to 50 ms by default, and EOS or another terminal condition flushes any buffered text before the final transcript event.</p>
+<p><a id="realtime-audio"></a>
+<a id="live-pcm-transcription"></a></p>
 </section>
-<section id="realtime-audio">
-<h2>Realtime Audio<a class="headerlink" href="#realtime-audio" title="Link to this heading">#</a></h2>
-<section id="live-pcm-transcription">
-<h3>Live PCM transcription<a class="headerlink" href="#live-pcm-transcription" title="Link to this heading">#</a></h3>
-<p>SSE streaming starts decoding after a complete multipart upload. For live
-audio ingestion, mount the realtime WebSocket endpoint:</p>
+<section id="realtime-transcription-websocket">
+<h2>Realtime Transcription (WebSocket)<a class="headerlink" href="#realtime-transcription-websocket" title="Link to this heading">#</a></h2>
+<p>SSE streaming starts decoding after a complete multipart upload. For live audio ingestion, mount the realtime WebSocket endpoint:</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>sgl-omni<span class="w"> </span>serve<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--model-path<span class="w"> </span><span class="s2">"</span><span class="si">${</span><span class="nv">MODEL_PATH</span><span class="si">}</span><span class="s2">"</span><span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--model-name<span class="w"> </span>Qwen/Qwen3-ASR-1.7B<span class="w"> </span><span class="se">\</span>
@@ -779,13 +738,7 @@ audio ingestion, mount the realtime WebSocket endpoint:</p>
 <span class="w">  </span>--port<span class="w"> </span><span class="m">8000</span>
 </pre></div>
 </div>
-<p>Connect to <code class="docutils literal notranslate"><span class="pre">/v1/realtime?intent=transcription</span></code>, configure the session, and
-append base64-encoded mono 16 kHz PCM16 packets. <code class="docutils literal notranslate"><span class="pre">input_audio_buffer.commit</span></code>
-finalizes the active segment manually; server VAD also finalizes after the
-configured silence interval. Send <code class="docutils literal notranslate"><span class="pre">transcription.done</span></code> after the final packet
-to receive <code class="docutils literal notranslate"><span class="pre">transcription.completed</span></code>. <code class="docutils literal notranslate"><span class="pre">input_audio_buffer.clear</span></code> discards the
-current segment and any partial hypothesis derived from it while keeping the
-WebSocket session open for new audio.</p>
+<p>Connect to <code class="docutils literal notranslate"><span class="pre">/v1/realtime?intent=transcription</span></code>, configure the session, and append base64-encoded mono 16 kHz PCM16 packets. <code class="docutils literal notranslate"><span class="pre">input_audio_buffer.commit</span></code> finalizes the active segment manually; server VAD also finalizes after the configured silence interval. Send <code class="docutils literal notranslate"><span class="pre">transcription.done</span></code> after the final packet to receive <code class="docutils literal notranslate"><span class="pre">transcription.completed</span></code>. <code class="docutils literal notranslate"><span class="pre">input_audio_buffer.clear</span></code> discards the current segment and any partial hypothesis derived from it while keeping the WebSocket session open for new audio.</p>
 <div class="highlight-json notranslate"><div class="highlight"><pre><span></span><span class="p">{</span>
 <span class="w">  </span><span class="nt">"type"</span><span class="p">:</span><span class="w"> </span><span class="s2">"session.update"</span><span class="p">,</span>
 <span class="w">  </span><span class="nt">"session"</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
@@ -802,12 +755,7 @@ WebSocket session open for new audio.</p>
 </pre></div>
 </div>
 <p><code class="docutils literal notranslate"><span class="pre">decode_interval_ms</span></code> is how much new audio arrives between partial decodes. It defaults to 2000 ms, must be at least 200 ms, and <code class="docutils literal notranslate"><span class="pre">null</span></code> restores the default. Like <code class="docutils literal notranslate"><span class="pre">language</span></code> and <code class="docutils literal notranslate"><span class="pre">turn_detection</span></code>, it can change only while no uncommitted audio is buffered; with server VAD that means before the first audio packet.</p>
-<p>Each periodic decode is an ordinary stateless Qwen3-ASR request over all audio
-in the active segment. After the first two refreshes, the server rolls five
-tokens back from the prior hypothesis and uses the retained text as the next
-prompt prefix. No decoder KV cache or worker affinity is retained. Segments are
-also finalized at the configured <code class="docutils literal notranslate"><span class="pre">audio_chunking.max_audio_clip_s</span></code> boundary
-(30 seconds by default).</p>
+<p>Each periodic decode is an ordinary stateless Qwen3-ASR request over all audio in the active segment. After the first two refreshes, the server rolls five tokens back from the prior hypothesis and uses the retained text as the next prompt prefix. No decoder KV cache or worker affinity is retained. Segments are also finalized at the configured <code class="docutils literal notranslate"><span class="pre">audio_chunking.max_audio_clip_s</span></code> boundary (30 seconds by default).</p>
 <p>Partial results are full replacements, not append-only deltas:</p>
 <div class="highlight-json notranslate"><div class="highlight"><pre><span></span><span class="p">{</span>
 <span class="w">  </span><span class="nt">"type"</span><span class="p">:</span><span class="w"> </span><span class="s2">"transcription.segment"</span><span class="p">,</span>
@@ -821,28 +769,23 @@ also finalized at the configured <code class="docutils literal notranslate"><spa
 <span class="p">}</span>
 </pre></div>
 </div>
-<p>A later event for the same <code class="docutils literal notranslate"><span class="pre">segment_id</span></code> replaces this text. <code class="docutils literal notranslate"><span class="pre">audio_start_ms</span></code>
-and <code class="docutils literal notranslate"><span class="pre">audio_end_ms</span></code> are the span of input audio the text was decoded from.
-A partial can trail the audio already sent, since audio that arrives while it
-decodes is left to the next partial. <code class="docutils literal notranslate"><span class="pre">audio_start_ms</span></code> stays fixed for the
-segment, including segments opened by the 30 second boundary, which have no
-<code class="docutils literal notranslate"><span class="pre">input_audio_buffer.speech_started</span></code> event. An event with
-<code class="docutils literal notranslate"><span class="pre">is_final=true</span></code> is immutable. <code class="docutils literal notranslate"><span class="pre">transcription.completed</span></code> contains the joined
-text from all final segments.</p>
+<p>A later event for the same <code class="docutils literal notranslate"><span class="pre">segment_id</span></code> replaces this text. <code class="docutils literal notranslate"><span class="pre">audio_start_ms</span></code> and <code class="docutils literal notranslate"><span class="pre">audio_end_ms</span></code> are the span of input audio the text was decoded from. A partial can trail the audio already sent, since audio that arrives while it decodes is left to the next partial. <code class="docutils literal notranslate"><span class="pre">audio_start_ms</span></code> stays fixed for the segment, including segments opened by the 30 second boundary, which have no <code class="docutils literal notranslate"><span class="pre">input_audio_buffer.speech_started</span></code> event. An event with <code class="docutils literal notranslate"><span class="pre">is_final=true</span></code> is immutable. <code class="docutils literal notranslate"><span class="pre">transcription.completed</span></code> contains the joined text from all final segments.</p>
 <p><code class="docutils literal notranslate"><span class="pre">language</span></code> is the language the segment was transcribed in, as Qwen3-ASR names it (for example <code class="docutils literal notranslate"><span class="pre">English</span></code>): the detected language, or the <code class="docutils literal notranslate"><span class="pre">language</span></code> hint when the session set one. <code class="docutils literal notranslate"><span class="pre">transcription.completed</span></code> carries the language of its last non-empty final segment. Both fields are <code class="docutils literal notranslate"><span class="pre">null</span></code> when the language is unknown.</p>
-<p>Append events are not idempotent. After a transport failure, reconnect and
-restart the transcription rather than retrying packets on the old session.
-Reconnecting resets uncommitted audio, partial hypotheses, VAD state, and Qwen
-rollback state.</p>
-<p>A minimal client appends 100 ms packets, commits the segment, and waits for the
-completed transcript:</p>
+<p>Append events are not idempotent. After a transport failure, reconnect and restart the transcription rather than retrying packets on the old session. Reconnecting resets uncommitted audio, partial hypotheses, VAD state, and Qwen rollback state.</p>
+<p>First convert the repository sample, which is 48 kHz, to the format required by the WebSocket endpoint:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>ffmpeg<span class="w"> </span>-i<span class="w"> </span>tests/data/query_to_cars.wav<span class="w"> </span>-ac<span class="w"> </span><span class="m">1</span><span class="w"> </span>-ar<span class="w"> </span><span class="m">16000</span><span class="w"> </span>-c:a<span class="w"> </span>pcm_s16le<span class="w"> </span>query_to_cars_16k.wav
+</pre></div>
+</div>
+<p>A minimal client appends packets containing 100 ms of audio, commits the segment, and waits for the completed transcript:</p>
 <div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">import</span><span class="w"> </span><span class="nn">asyncio</span>
 <span class="kn">import</span><span class="w"> </span><span class="nn">base64</span>
 <span class="kn">import</span><span class="w"> </span><span class="nn">json</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">wave</span>
 
 <span class="kn">import</span><span class="w"> </span><span class="nn">websockets</span>
 
-<span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">main</span><span class="p">():</span>
+
+<span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">main</span><span class="p">()</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
     <span class="k">async</span> <span class="k">with</span> <span class="n">websockets</span><span class="o">.</span><span class="n">connect</span><span class="p">(</span>
         <span class="s2">"ws://localhost:8000/v1/realtime?intent=transcription"</span>
     <span class="p">)</span> <span class="k">as</span> <span class="n">ws</span><span class="p">:</span>
@@ -850,14 +793,27 @@ completed transcript:</p>
             <span class="s2">"type"</span><span class="p">:</span> <span class="s2">"session.update"</span><span class="p">,</span>
             <span class="s2">"session"</span><span class="p">:</span> <span class="p">{</span><span class="s2">"language"</span><span class="p">:</span> <span class="s2">"English"</span><span class="p">},</span>
         <span class="p">}))</span>
-        <span class="nb">print</span><span class="p">(</span><span class="k">await</span> <span class="n">ws</span><span class="o">.</span><span class="n">recv</span><span class="p">())</span>
+        <span class="n">event</span> <span class="o">=</span> <span class="n">json</span><span class="o">.</span><span class="n">loads</span><span class="p">(</span><span class="k">await</span> <span class="n">ws</span><span class="o">.</span><span class="n">recv</span><span class="p">())</span>
+        <span class="k">if</span> <span class="n">event</span><span class="p">[</span><span class="s2">"type"</span><span class="p">]</span> <span class="o">==</span> <span class="s2">"error"</span><span class="p">:</span>
+            <span class="k">raise</span> <span class="ne">RuntimeError</span><span class="p">(</span><span class="n">event</span><span class="p">[</span><span class="s2">"error"</span><span class="p">][</span><span class="s2">"message"</span><span class="p">])</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="nb">print</span><span class="p">(</span><span class="n">event</span><span class="p">)</span>
 
-        <span class="k">with</span> <span class="nb">open</span><span class="p">(</span><span class="s2">"tests/data/query_to_cars.wav"</span><span class="p">,</span> <span class="s2">"rb"</span><span class="p">)</span> <span class="k">as</span> <span class="n">f</span><span class="p">:</span>
-            <span class="n">pcm16</span> <span class="o">=</span> <span class="n">f</span><span class="o">.</span><span class="n">read</span><span class="p">()</span>
-        <span class="k">for</span> <span class="n">start</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="nb">len</span><span class="p">(</span><span class="n">pcm16</span><span class="p">),</span> <span class="mi">3200</span><span class="p">):</span>
+        <span class="k">with</span> <span class="n">wave</span><span class="o">.</span><span class="n">open</span><span class="p">(</span><span class="s2">"query_to_cars_16k.wav"</span><span class="p">,</span> <span class="s2">"rb"</span><span class="p">)</span> <span class="k">as</span> <span class="n">audio_file</span><span class="p">:</span>
+            <span class="k">if</span> <span class="p">(</span>
+                <span class="n">audio_file</span><span class="o">.</span><span class="n">getnchannels</span><span class="p">()</span> <span class="o">!=</span> <span class="mi">1</span>
+                <span class="ow">or</span> <span class="n">audio_file</span><span class="o">.</span><span class="n">getframerate</span><span class="p">()</span> <span class="o">!=</span> <span class="mi">16000</span>
+                <span class="ow">or</span> <span class="n">audio_file</span><span class="o">.</span><span class="n">getsampwidth</span><span class="p">()</span> <span class="o">!=</span> <span class="mi">2</span>
+                <span class="ow">or</span> <span class="n">audio_file</span><span class="o">.</span><span class="n">getcomptype</span><span class="p">()</span> <span class="o">!=</span> <span class="s2">"NONE"</span>
+            <span class="p">):</span>
+                <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="s2">"Expected an uncompressed mono 16 kHz PCM16 WAV file"</span><span class="p">)</span>
+            <span class="k">else</span><span class="p">:</span>
+                <span class="n">pcm16</span> <span class="o">=</span> <span class="n">audio_file</span><span class="o">.</span><span class="n">readframes</span><span class="p">(</span><span class="n">audio_file</span><span class="o">.</span><span class="n">getnframes</span><span class="p">())</span>
+        <span class="n">packet_bytes</span> <span class="o">=</span> <span class="mi">1600</span> <span class="o">*</span> <span class="mi">2</span>
+        <span class="k">for</span> <span class="n">start</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="nb">len</span><span class="p">(</span><span class="n">pcm16</span><span class="p">),</span> <span class="n">packet_bytes</span><span class="p">):</span>
             <span class="k">await</span> <span class="n">ws</span><span class="o">.</span><span class="n">send</span><span class="p">(</span><span class="n">json</span><span class="o">.</span><span class="n">dumps</span><span class="p">({</span>
                 <span class="s2">"type"</span><span class="p">:</span> <span class="s2">"input_audio_buffer.append"</span><span class="p">,</span>
-                <span class="s2">"audio"</span><span class="p">:</span> <span class="n">base64</span><span class="o">.</span><span class="n">b64encode</span><span class="p">(</span><span class="n">pcm16</span><span class="p">[</span><span class="n">start</span><span class="p">:</span><span class="n">start</span> <span class="o">+</span> <span class="mi">3200</span><span class="p">])</span><span class="o">.</span><span class="n">decode</span><span class="p">(),</span>
+                <span class="s2">"audio"</span><span class="p">:</span> <span class="n">base64</span><span class="o">.</span><span class="n">b64encode</span><span class="p">(</span><span class="n">pcm16</span><span class="p">[</span><span class="n">start</span><span class="p">:</span><span class="n">start</span> <span class="o">+</span> <span class="n">packet_bytes</span><span class="p">])</span><span class="o">.</span><span class="n">decode</span><span class="p">(),</span>
             <span class="p">}))</span>
 
         <span class="k">await</span> <span class="n">ws</span><span class="o">.</span><span class="n">send</span><span class="p">(</span><span class="n">json</span><span class="o">.</span><span class="n">dumps</span><span class="p">({</span><span class="s2">"type"</span><span class="p">:</span> <span class="s2">"input_audio_buffer.commit"</span><span class="p">}))</span>
@@ -865,47 +821,54 @@ completed transcript:</p>
 
         <span class="k">while</span> <span class="kc">True</span><span class="p">:</span>
             <span class="n">event</span> <span class="o">=</span> <span class="n">json</span><span class="o">.</span><span class="n">loads</span><span class="p">(</span><span class="k">await</span> <span class="n">ws</span><span class="o">.</span><span class="n">recv</span><span class="p">())</span>
-            <span class="k">if</span> <span class="n">event</span><span class="p">[</span><span class="s2">"type"</span><span class="p">]</span> <span class="o">==</span> <span class="s2">"transcription.completed"</span><span class="p">:</span>
+            <span class="k">if</span> <span class="n">event</span><span class="p">[</span><span class="s2">"type"</span><span class="p">]</span> <span class="o">==</span> <span class="s2">"error"</span><span class="p">:</span>
+                <span class="k">raise</span> <span class="ne">RuntimeError</span><span class="p">(</span><span class="n">event</span><span class="p">[</span><span class="s2">"error"</span><span class="p">][</span><span class="s2">"message"</span><span class="p">])</span>
+            <span class="k">elif</span> <span class="n">event</span><span class="p">[</span><span class="s2">"type"</span><span class="p">]</span> <span class="o">==</span> <span class="s2">"transcription.completed"</span><span class="p">:</span>
                 <span class="nb">print</span><span class="p">(</span><span class="n">event</span><span class="p">[</span><span class="s2">"text"</span><span class="p">])</span>
                 <span class="k">break</span>
+            <span class="k">else</span><span class="p">:</span>
+                <span class="k">pass</span>
+
 
 <span class="n">asyncio</span><span class="o">.</span><span class="n">run</span><span class="p">(</span><span class="n">main</span><span class="p">())</span>
 </pre></div>
 </div>
-<p>The example assumes the upload is already mono 16 kHz PCM16; the session takes
-packets as they arrive and does not resample them.</p>
-</section>
+<p>Server <code class="docutils literal notranslate"><span class="pre">error</span></code> events raise <code class="docutils literal notranslate"><span class="pre">RuntimeError</span></code>, so a failed segment or rejected session update cannot silently produce a successful-looking partial transcript.</p>
+<p>The example extracts PCM frames from an uncompressed mono 16 kHz PCM16 WAV file and sends packets containing 100 ms of audio. It sends the file as fast as possible; add pacing when simulating live capture. The WebSocket endpoint does not resample audio, so convert other input formats before sending them.</p>
 </section>
 <section id="request-parameters">
 <h2>Request Parameters<a class="headerlink" href="#request-parameters" title="Link to this heading">#</a></h2>
+<p>The endpoint accepts the shared ASR request fields (<code class="docutils literal notranslate"><span class="pre">file</span></code>, <code class="docutils literal notranslate"><span class="pre">model</span></code>, <code class="docutils literal notranslate"><span class="pre">language</span></code>, <code class="docutils literal notranslate"><span class="pre">response_format</span></code>, <code class="docutils literal notranslate"><span class="pre">temperature</span></code>, <code class="docutils literal notranslate"><span class="pre">stream</span></code>) described in <a class="reference internal" href="../basic_usage/asr.html#request-parameters"><span class="std std-ref">ASR Model Usage</span></a>. Qwen3-ASR also accepts:</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Field</p></th>
+<th class="head"><p>Default</p></th>
+<th class="head"><p>Usage</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">prompt</span></code></p></td>
+<td><p>None</p></td>
+<td><p>Vocabulary biasing; see below</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">repetition_penalty</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">1.0</span></code></p></td>
+<td><p>Range <code class="docutils literal notranslate"><span class="pre">(0,</span> <span class="pre">2]</span></code>; values above <code class="docutils literal notranslate"><span class="pre">1</span></code> discourage repeats but can reduce accuracy on clean audio. Keep the default unless repetition occurs. See <a class="reference internal" href="#dflash-speculative-decoding"><span class="std std-ref">DFlash</span></a> for platform restrictions.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">max_new_tokens</span></code></p></td>
+<td><p>Stage limit</p></td>
+<td><p>Per-request generation cap</p></td>
+</tr>
+</tbody>
+</table>
+</div>
 <section id="prompt-and-vocabulary-biasing">
 <h3>Prompt and Vocabulary Biasing<a class="headerlink" href="#prompt-and-vocabulary-biasing" title="Link to this heading">#</a></h3>
-<p>The endpoint accepts the shared ASR request fields (<code class="docutils literal notranslate"><span class="pre">file</span></code>, <code class="docutils literal notranslate"><span class="pre">model</span></code>,
-<code class="docutils literal notranslate"><span class="pre">language</span></code>, <code class="docutils literal notranslate"><span class="pre">response_format</span></code>, <code class="docutils literal notranslate"><span class="pre">temperature</span></code>, <code class="docutils literal notranslate"><span class="pre">stream</span></code>) described in
-<a class="reference internal" href="../basic_usage/asr.html#request-parameters"><span class="std std-ref">ASR Model Usage</span></a>. Three fields are
-specific to this checkpoint:</p>
-<ul class="simple">
-<li><p><code class="docutils literal notranslate"><span class="pre">prompt</span></code> — vocabulary biasing, described below.</p></li>
-<li><p><code class="docutils literal notranslate"><span class="pre">repetition_penalty</span></code> — default <code class="docutils literal notranslate"><span class="pre">1.0</span></code>, valid range <code class="docutils literal notranslate"><span class="pre">(0,</span> <span class="pre">2]</span></code>. Values above <code class="docutils literal notranslate"><span class="pre">1</span></code>
-discourage repeats and can stop a runaway loop on noisy or silent audio, but
-they also lower accuracy on clean audio, so keep <code class="docutils literal notranslate"><span class="pre">1.0</span></code> unless loops occur.</p></li>
-<li><p><code class="docutils literal notranslate"><span class="pre">max_new_tokens</span></code> — per-request generation cap; the default is the stage
-limit.</p></li>
-</ul>
-<p>Biasing raises the model’s preference for the supplied terms. It does not
-force them: a term the audio does not contain will not be inserted, and an
-irrelevant list biases the model toward words that were never spoken, which
-hurts accuracy. A short, relevant list works best — in testing, accuracy
-stopped improving past roughly 20 terms, while latency kept growing because
-the text is prefilled with every request.</p>
-<p><code class="docutils literal notranslate"><span class="pre">verbose_json</span></code> uses the model adapter’s verbose response schema and includes
-duration-based usage (rounded-up audio seconds) when duration probing succeeds.</p>
+<p><code class="docutils literal notranslate"><span class="pre">prompt</span></code> raises the model’s preference for supplied terms without guaranteeing them. An irrelevant list can introduce words that were not spoken. Use a short, relevant list; testing found little accuracy improvement beyond roughly 20 terms, while latency continued to grow because the prompt is prefilled with every request.</p>
 </section>
 <section id="language-hints">
 <h3>Language Hints<a class="headerlink" href="#language-hints" title="Link to this heading">#</a></h3>
-<p>When <code class="docutils literal notranslate"><span class="pre">language</span></code> is omitted, Qwen3-ASR detects the spoken language before
-transcribing. Set an explicit hint when the language is known or automatic
-detection is unreliable for short or ambiguous audio.</p>
+<p>When <code class="docutils literal notranslate"><span class="pre">language</span></code> is omitted, Qwen3-ASR detects the spoken language before transcribing. Set an explicit hint when the language is known or automatic detection is unreliable for short or ambiguous audio.</p>
 <p>Qwen3-ASR accepts the following 30 explicit language codes and their canonical names:</p>
 <div class="pst-scrollable-table-container"><table class="table">
 <thead>
@@ -926,117 +889,46 @@ detection is unreliable for short or ambiguous audio.</p>
 </tbody>
 </table>
 </div>
-<p>For example, <code class="docutils literal notranslate"><span class="pre">language=es</span></code> and <code class="docutils literal notranslate"><span class="pre">language=Spanish</span></code> both force the prompt suffix
-<code class="docutils literal notranslate"><span class="pre">language</span> <span class="pre">Spanish&lt;asr_text&gt;</span></code>. The legacy <code class="docutils literal notranslate"><span class="pre">cn</span></code> and regional <code class="docutils literal notranslate"><span class="pre">zh-*</span></code> spellings are
-also accepted as Chinese. Unsupported language hints return HTTP 400 instead of
-silently falling back to English.</p>
-<p>The model also has ASR coverage for 22 Chinese dialects, but those dialect names
-are not supported as forced <code class="docutils literal notranslate"><span class="pre">language</span></code> hints; use <code class="docutils literal notranslate"><span class="pre">Chinese</span></code>/<code class="docutils literal notranslate"><span class="pre">zh</span></code> for them.</p>
+<p>For example, <code class="docutils literal notranslate"><span class="pre">language=es</span></code> and <code class="docutils literal notranslate"><span class="pre">language=Spanish</span></code> both force the prompt suffix <code class="docutils literal notranslate"><span class="pre">language</span> <span class="pre">Spanish&lt;asr_text&gt;</span></code>. The legacy <code class="docutils literal notranslate"><span class="pre">cn</span></code> and regional <code class="docutils literal notranslate"><span class="pre">zh-*</span></code> spellings are also accepted as Chinese. Unsupported language hints return HTTP 400 instead of silently falling back to English.</p>
+<p>The model also has ASR coverage for 22 Chinese dialects, but those dialect names are not supported as forced <code class="docutils literal notranslate"><span class="pre">language</span></code> hints; use <code class="docutils literal notranslate"><span class="pre">Chinese</span></code>/<code class="docutils literal notranslate"><span class="pre">zh</span></code> for them.</p>
 </section>
 </section>
 <section id="long-audio">
 <h2>Long Audio<a class="headerlink" href="#long-audio" title="Link to this heading">#</a></h2>
-<p>The current Qwen3-ASR model accepts at most 1,200 seconds of audio in one
-request, so we transcribe longer uploads in chunks: we split the audio, run
-each chunk as its own engine request, and join the transcripts back in
-order. The behavior follows two kinds of values.</p>
-<p>The shared <code class="docutils literal notranslate"><span class="pre">audio_chunking</span></code> flags, the aggregate guard, and the streaming
-limit are described in <a class="reference internal" href="../basic_usage/asr.html#long-audio"><span class="std std-ref">ASR Model Usage</span></a>;
-the defaults and limits below are Qwen3-ASR’s.</p>
-<p>The scheduling policy is yours to tune, with dotted flags or the matching
-YAML keys:</p>
+<p>For non-streaming uploads, audio longer than <code class="docutils literal notranslate"><span class="pre">audio_chunking.max_audio_clip_s</span></code> is split into chunks, which are transcribed separately and joined in order. The default chunk length is 30 seconds, below the model’s native 1,200-second single-request limit.</p>
 <div class="pst-scrollable-table-container"><table class="table">
 <thead>
-<tr class="row-odd"><th class="head"><p>Name</p></th>
+<tr class="row-odd"><th class="head"><p>Setting</p></th>
 <th class="head"><p>Default</p></th>
-<th class="head"><p>Meaning</p></th>
+<th class="head"><p>Purpose</p></th>
 </tr>
 </thead>
 <tbody>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">--audio_chunking.max_audio_clip_s</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">audio_chunking.max_audio_clip_s</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">30</span></code></p></td>
-<td><p>Longest clip we send to the engine in one request, and therefore the chunk length. It sits well below the model’s native 1,200s on purpose: shorter chunks batch better, and the output-token budget scales with clip length on its own. Capped at the native clip limit.</p></td>
+<td><p>Chunk length in seconds; capped at the native clip limit</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">--audio_chunking.max_concurrent_chunks</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">audio_chunking.max_concurrent_chunks</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">8</span></code></p></td>
-<td><p>How many chunks of one request run in the engine at once. A per-request cap so one long upload can’t crowd out everyone else’s requests.</p></td>
+<td><p>Concurrent chunks per upload</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">--audio_chunking.max_total_audio_s</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">audio_chunking.max_total_audio_s</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">3600</span></code></p></td>
-<td><p>Upper limit on one upload; you get HTTP 400 above it. It bounds a single decoded waveform, not the total across uploads; that is the next knob’s job.</p></td>
+<td><p>Upload limit in seconds; longer uploads return HTTP 400</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">--audio_chunking.max_concurrent_long_audio_requests</span></code></p></td>
-<td><p><code class="docutils literal notranslate"><span class="pre">max_running_requests</span> <span class="pre">//</span> <span class="pre">(2</span> <span class="pre">×</span> <span class="pre">max_concurrent_chunks)</span></code>, at least 1; <code class="docutils literal notranslate"><span class="pre">4</span></code> with the stock defaults</p></td>
-<td><p>How many long uploads the server admits at once. A long upload past the cap gets HTTP 503 instead of queueing; short uploads are never gated. The slot is taken before the upload is decoded and returned when its chunks are done.</p></td>
-</tr>
-</tbody>
-</table>
-</div>
-<p>The last knob is the aggregate guard. Each admitted upload holds its decoded
-waveform (float32 at 16 kHz, about 230 MB for an hour) and drives up to
-<code class="docutils literal notranslate"><span class="pre">max_concurrent_chunks</span></code> engine requests, so:</p>
-<ul class="simple">
-<li><p>decoded waveforms held at once are at most
-<code class="docutils literal notranslate"><span class="pre">max_concurrent_long_audio_requests</span> <span class="pre">×</span> <span class="pre">max_total_audio_s</span> <span class="pre">×</span> <span class="pre">16000</span> <span class="pre">×</span> <span class="pre">4</span></code> bytes
-(decoding itself has transient peaks above that);</p></li>
-<li><p>engine slots long audio can take together are at most
-<code class="docutils literal notranslate"><span class="pre">max_concurrent_long_audio_requests</span> <span class="pre">×</span> <span class="pre">max_concurrent_chunks</span></code>.</p></li>
-</ul>
-<p>The default keeps that product at half of <code class="docutils literal notranslate"><span class="pre">--asr.engine.max_running_requests</span></code>
-so short requests always have slots left. Setting the knob explicitly to a
-value whose product reaches <code class="docutils literal notranslate"><span class="pre">max_running_requests</span></code> logs a warning at startup:
-it is not an error, since extra chunks only queue in the engine, but short
-requests then wait behind long audio whenever it is saturated. Raising
-<code class="docutils literal notranslate"><span class="pre">max_running_requests</span></code> instead also resizes CUDA graph capture, so treat it
-as the GPU capacity knob and this one as the long-audio share of it.</p>
-<p>The model properties are ClassVars on <code class="docutils literal notranslate"><span class="pre">Qwen3ASRPipelineConfig</span></code>; no
-configuration path reaches them:</p>
-<div class="pst-scrollable-table-container"><table class="table">
-<thead>
-<tr class="row-odd"><th class="head"><p>Name</p></th>
-<th class="head"><p>Value</p></th>
-<th class="head"><p>Meaning</p></th>
-</tr>
-</thead>
-<tbody>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">allow_audio_chunking</span></code></p></td>
-<td><p><code class="docutils literal notranslate"><span class="pre">true</span></code></p></td>
-<td><p>Qwen3-ASR transcribes an isolated chunk correctly, so chunking is on.</p></td>
-</tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">max_native_clip_s</span></code></p></td>
-<td><p><code class="docutils literal notranslate"><span class="pre">1200</span></code></p></td>
-<td><p>Longest clip the model takes as one request (its native limit). Streaming cannot chunk, so this is the streaming cutoff; the Torch MPS compatibility path resolves it to its qualified 60-second cap.</p></td>
-</tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">min_tail_s</span></code></p></td>
-<td><p><code class="docutils literal notranslate"><span class="pre">0.5</span></code></p></td>
-<td><p>Shortest final chunk worth transcribing; if the tail would be shorter, we move the previous cut earlier to absorb it. This matches the model’s own minimum input length.</p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">audio_chunking.max_concurrent_long_audio_requests</span></code></p></td>
+<td><p>Derived from engine capacity; <code class="docutils literal notranslate"><span class="pre">4</span></code> with stock defaults</p></td>
+<td><p>Admitted long uploads; excess requests return HTTP 503</p></td>
 </tr>
 </tbody>
 </table>
 </div>
-<p>Note: Raising <code class="docutils literal notranslate"><span class="pre">audio_chunking.max_audio_clip_s</span></code> also resizes the encoder CUDA-graph bucket
-ladder, which is derived from the chunk length: a longer chunk means more and
-larger captured graphs, and their static buffers stay resident for the life of
-the server (roughly 6.6 KB per token of ladder ceiling; at 1,200s the ceiling
-is 124,800 tokens). Budget for that when you raise the flag on small GPUs.</p>
-<p>Behavior notes:</p>
-<ul class="simple">
-<li><p><strong><code class="docutils literal notranslate"><span class="pre">verbose_json</span></code> returns one segment per chunk</strong> with the chunk’s real
-start/end timestamps – chunk-level granularity, not word-level (Qwen3-ASR
-does not emit word timestamps).</p></li>
-<li><p>A few unusual audio formats may not expose a readable duration; we fall
-back to the non-chunked path for those uploads.</p></li>
-<li><p>Streamed responses (<code class="docutils literal notranslate"><span class="pre">stream=true</span></code>) do not support chunking yet; a stream
-request runs as one engine request. CUDA accepts audio up to the
-model-native <code class="docutils literal notranslate"><span class="pre">max_native_clip_s</span></code> (1,200s), while Torch MPS accepts up to its
-qualified 60-second cap and returns HTTP 400 above that – use <code class="docutils literal notranslate"><span class="pre">stream=false</span></code>
-for longer uploads.</p></li>
-</ul>
+<p>Set these values with dotted CLI flags or matching YAML keys. Torch MPS caps the whole upload at 60 seconds. <code class="docutils literal notranslate"><span class="pre">stream=true</span></code> cannot use chunking; see <a class="reference internal" href="#known-limitations"><span class="std std-ref">Known Limitations</span></a>. If duration probing fails for an unusual audio format, the server uses the non-chunked path.</p>
+<p>For the shared behavior, see <a class="reference internal" href="../basic_usage/asr.html#long-audio"><span class="std std-ref">ASR Model Usage</span></a>. For capacity planning, model properties, and encoder-graph memory costs, see <a class="reference internal" href="../developer_reference/qwen3_asr_concurrency_profile.html#long-audio-capacity"><span class="std std-ref">Long-audio capacity</span></a>.</p>
 </section>
 <section id="known-limitations">
 <h2>Known Limitations<a class="headerlink" href="#known-limitations" title="Link to this heading">#</a></h2>
-<p>The limits shared with the other ASR models are listed in
-<a class="reference internal" href="../basic_usage/asr.html#known-limitations"><span class="std std-ref">ASR Model Usage</span></a>. Qwen3-ASR adds:</p>
+<p>The limits shared with the other ASR models are listed in <a class="reference internal" href="../basic_usage/asr.html#known-limitations"><span class="std std-ref">ASR Model Usage</span></a>. Qwen3-ASR adds:</p>
 <ul class="simple">
 <li><p>The Torch MPS path caps both native and whole-upload requests at 60 seconds,
 rejects longer audio, and provides no token logprobs or sampling controls
@@ -1048,8 +940,9 @@ beyond <code class="docutils literal notranslate"><span class="pre">repetition_p
 </section>
 <section id="platform-configuration">
 <h2>Platform Configuration<a class="headerlink" href="#platform-configuration" title="Link to this heading">#</a></h2>
-<section id="ascend-npu-graph-execution">
-<h3>Ascend NPU graph execution<a class="headerlink" href="#ascend-npu-graph-execution" title="Link to this heading">#</a></h3>
+<p><a id="ascend-npu-graph-execution"></a></p>
+<section id="ascend-npu">
+<h3>Ascend NPU<a class="headerlink" href="#ascend-npu" title="Link to this heading">#</a></h3>
 <p>See <a class="reference internal" href="../other_platforms/installation_npu.html#qwen3-asr-graph-execution"><span class="std std-ref">Qwen3-ASR graph execution on Ascend NPU</span></a> for queue settings and runtime restrictions.</p>
 <p>After following the <a class="reference internal" href="../other_platforms/installation_npu.html"><span class="std std-doc">Ascend NPU installation guide</span></a>, start the server with the shared example.</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>sgl-omni<span class="w"> </span>serve<span class="w"> </span>--config<span class="w"> </span>examples/configs/qwen3_asr_ascend910.yaml<span class="w"> </span>--port<span class="w"> </span><span class="m">8000</span>
@@ -1057,7 +950,7 @@ beyond <code class="docutils literal notranslate"><span class="pre">repetition_p
 </div>
 <p>The example defaults to Qwen3-ASR-1.7B. To use 0.6B, add <code class="docutils literal notranslate"><span class="pre">--model-path</span> <span class="pre">Qwen/Qwen3-ASR-0.6B</span></code>. For a local checkpoint, pass its path with <code class="docutils literal notranslate"><span class="pre">--model-path</span></code> and the model identifier used in transcription requests with <code class="docutils literal notranslate"><span class="pre">--model-name</span></code>.</p>
 <p>This example uses eager LM decode and prefill to avoid truncated outputs observed in <a class="reference external" href="https://github.com/sgl-project/sglang-omni/pull/3199#discussion_r4510634009">targeted transcription checks on Ascend910_9362</a>, while retaining the default encoder graphs.</p>
-<p>DFlash has its own validated NPU examples on the same queue setup. NPU DFlash supports only greedy decoding (<code class="docutils literal notranslate"><span class="pre">temperature=0</span></code>): requests with a nonzero temperature are rejected because NPU verification uses argmax. NPU DFlash does not apply <code class="docutils literal notranslate"><span class="pre">repetition_penalty</span></code> yet: a value other than <code class="docutils literal notranslate"><span class="pre">1.0</span></code> returns HTTP 400, or uses ordinary decoding with <code class="docutils literal notranslate"><span class="pre">asr.factory.enable_plain_fallback</span></code>. For one Ascend device, use the BF16 eager example, which uses the same pinned draft that CUDA serves by default and sets <code class="docutils literal notranslate"><span class="pre">enable_async_decode:</span> <span class="pre">false</span></code> to retain the validated greedy, synchronous configuration:</p>
+<p>DFlash has its own validated NPU examples on the same queue setup. NPU DFlash supports only greedy decoding (<code class="docutils literal notranslate"><span class="pre">temperature=0</span></code>): requests with a nonzero temperature are rejected because NPU verification uses argmax. NPU DFlash does not apply <code class="docutils literal notranslate"><span class="pre">repetition_penalty</span></code>: a value other than <code class="docutils literal notranslate"><span class="pre">1.0</span></code> returns HTTP 400. Serve without a draft to use the penalty; per-request plain fallback currently requires CUDA. For one Ascend device, use the BF16 eager example, which uses the same pinned draft that CUDA serves by default and sets <code class="docutils literal notranslate"><span class="pre">enable_async_decode:</span> <span class="pre">false</span></code> to retain the validated greedy, synchronous configuration:</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>sgl-omni<span class="w"> </span>serve<span class="w"> </span>--config<span class="w"> </span>examples/configs/qwen3_asr_1_7b_dflash_npu.yaml<span class="w"> </span>--port<span class="w"> </span><span class="m">8000</span>
 </pre></div>
 </div>
@@ -1067,13 +960,8 @@ beyond <code class="docutils literal notranslate"><span class="pre">repetition_p
 </section>
 <section id="apple-silicon">
 <h3>Apple Silicon<a class="headerlink" href="#apple-silicon" title="Link to this heading">#</a></h3>
-<p>Qwen3-ASR runs on Apple Silicon through a Torch/MPS compatibility path. Install
-with the <a class="reference internal" href="../other_platforms/installation_apple_silicon.html"><span class="std std-doc">Apple Silicon installer</span></a>
-and follow its environment-activation and <code class="docutils literal notranslate"><span class="pre">DYLD_LIBRARY_PATH</span></code> steps; TorchCodec
-needs Homebrew’s keg-only FFmpeg libraries on the path before the server starts.</p>
-<p>Pass an official PyTorch checkpoint such as <code class="docutils literal notranslate"><span class="pre">Qwen/Qwen3-ASR-0.6B</span></code>. The path uses
-one device (<code class="docutils literal notranslate"><span class="pre">tp_size=1</span></code>), greedy decoding, and the eager <code class="docutils literal notranslate"><span class="pre">torch_native</span></code>/<code class="docutils literal notranslate"><span class="pre">sdpa</span></code>
-profile:</p>
+<p>Qwen3-ASR runs on Apple Silicon through a Torch/MPS compatibility path. Install with the <a class="reference internal" href="../other_platforms/installation_apple_silicon.html"><span class="std std-doc">Apple Silicon installer</span></a> and follow its environment-activation and <code class="docutils literal notranslate"><span class="pre">DYLD_LIBRARY_PATH</span></code> steps; TorchCodec needs Homebrew’s keg-only FFmpeg libraries on the path before the server starts.</p>
+<p>Pass an official PyTorch checkpoint such as <code class="docutils literal notranslate"><span class="pre">Qwen/Qwen3-ASR-0.6B</span></code>. The path uses one device (<code class="docutils literal notranslate"><span class="pre">tp_size=1</span></code>), greedy decoding, and the eager <code class="docutils literal notranslate"><span class="pre">torch_native</span></code>/<code class="docutils literal notranslate"><span class="pre">sdpa</span></code> profile:</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="nb">export</span><span class="w"> </span><span class="nv">DYLD_LIBRARY_PATH</span><span class="o">=</span><span class="s2">"</span><span class="k">$(</span>brew<span class="w"> </span>--prefix<span class="w"> </span>ffmpeg@7<span class="k">)</span><span class="s2">/lib</span><span class="si">${</span><span class="nv">DYLD_LIBRARY_PATH</span><span class="p">:+:</span><span class="nv">$DYLD_LIBRARY_PATH</span><span class="si">}</span><span class="s2">"</span>
 
 sgl-omni<span class="w"> </span>serve<span class="w"> </span><span class="se">\</span>
@@ -1083,21 +971,13 @@ sgl-omni<span class="w"> </span>serve<span class="w"> </span><span class="se">\<
 <span class="w">  </span>--port<span class="w"> </span><span class="m">8000</span>
 </pre></div>
 </div>
-<p>Radix caching, chunked prefill, and CUDA graphs are not used by this path. The
-HTTP and SSE transcription interfaces above are the same as on CUDA;
-<code class="docutils literal notranslate"><span class="pre">stream=true</span></code> provides pseudo-streaming transcript deltas as tokens are decoded.
-The Apple path applies <code class="docutils literal notranslate"><span class="pre">repetition_penalty</span></code> but does not provide other sampling
-penalties or token logprobs yet.</p>
-<p>The initial Torch MPS profile is bounded to a 2,048-token KV budget, uses
-<code class="docutils literal notranslate"><span class="pre">audio_chunking.max_audio_clip_s</span></code> for non-streaming chunks (30 seconds by
-default), and caps native/whole-upload requests at 60 seconds. Values above
-that qualified limit are rejected.</p>
+<p>Radix caching, chunked prefill, and CUDA graphs are not used by this path. The HTTP and SSE transcription interfaces above are the same as on CUDA; <code class="docutils literal notranslate"><span class="pre">stream=true</span></code> provides pseudo-streaming transcript deltas as tokens are decoded. The Apple path applies <code class="docutils literal notranslate"><span class="pre">repetition_penalty</span></code> but does not provide other sampling penalties or token logprobs yet.</p>
+<p>The initial Torch MPS profile is bounded to a 2,048-token KV budget, uses <code class="docutils literal notranslate"><span class="pre">audio_chunking.max_audio_clip_s</span></code> for non-streaming chunks (30 seconds by default), and caps native/whole-upload requests at 60 seconds. Values above that qualified limit are rejected.</p>
 </section>
 </section>
 <section id="dflash-speculative-decoding">
 <h2>DFlash speculative decoding<a class="headerlink" href="#dflash-speculative-decoding" title="Link to this heading">#</a></h2>
 <p>On one CUDA GPU, Qwen3-ASR-1.7B serves with its DFlash draft, <a class="reference external" href="https://huggingface.co/wilsonzheng0327/Qwen3-ASR-1.7B-dflash"><code class="docutils literal notranslate"><span class="pre">wilsonzheng0327/Qwen3-ASR-1.7B-dflash</span></code></a>, by default, at the revision <code class="docutils literal notranslate"><span class="pre">sglang_omni/speculative/draft_registry.py</span></code> pins. This holds when the model path that launches, from <code class="docutils literal notranslate"><span class="pre">--model-path</span></code> or a config file, is <code class="docutils literal notranslate"><span class="pre">Qwen/Qwen3-ASR-1.7B</span></code>, with or without an <code class="docutils literal notranslate"><span class="pre">&#64;&lt;revision&gt;</span></code> pin, or a Hugging Face cache snapshot of it, such as <code class="docutils literal notranslate"><span class="pre">${MODEL_PATH}</span></code> above. The 1.7B default does not apply on other platforms, to a stage with <code class="docutils literal notranslate"><span class="pre">tp_size</span></code> above 1, to another checkpoint, or to a copy outside the Hugging Face cache. Qwen3-ASR-0.6B remains off by default and has the opt-in profile below. The RTX 4090 and RTX 5090 profiles above turn the 1.7B draft off, since they were validated without it.</p>
-<p>On one H200 over SeedTTS clips, with streamed responses and the prefix cache off, the draft on its defaults raised throughput 1.72x at 1 concurrent request, 1.42x at 4 and 1.22x at 16 on English clips and 1.58x, 1.38x and 1.17x on Chinese clips. It lowered p95 latency by 22–51% from 1 to 16 concurrent requests, with the same WER and CER. On one H100 over SeedTTS English clips with synchronous scheduling, the draft raised throughput 1.90x at 1 concurrent request, 1.56x at 4 and 1.39x at 16. It lowered p95 latency by 26–42% and the p95 of the first streamed text by 9–26%, with the same WER. With the clips repeated and the prefix cache on, it raised throughput 1.90x, 1.51x and 1.40x.</p>
 <p>Qwen3-ASR-0.6B can opt in to its pinned Apache-2.0 DFlash draft with the memory-conservative RTX 3090 profile:</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>sgl-omni<span class="w"> </span>serve<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--config<span class="w"> </span>examples/configs/qwen3_asr_0_6b_dflash_rtx3090.yaml<span class="w"> </span><span class="se">\</span>
@@ -1105,157 +985,9 @@ that qualified limit are rejected.</p>
 </pre></div>
 </div>
 <p>The registry pins <a class="reference external" href="https://huggingface.co/wilsonzheng0327/Qwen3-ASR-0.6B-dflash"><code class="docutils literal notranslate"><span class="pre">wilsonzheng0327/Qwen3-ASR-0.6B-dflash</span></code></a> at <code class="docutils literal notranslate"><span class="pre">fbf0ce97e3b76d8cd9f3da1791a8872c3d4c3a45</span></code>; an ordinary <code class="docutils literal notranslate"><span class="pre">--model-path</span> <span class="pre">Qwen/Qwen3-ASR-0.6B</span></code> launch stays on plain decoding. The profile uses BF16, caps running requests at 16 and gives the stage a 0.65 static memory fraction. Add <code class="docutils literal notranslate"><span class="pre">--asr.engine.disable_speculative_decoding</span> <span class="pre">true</span></code> to the command above for the same profile without its draft.</p>
-<p>One RTX 3090 (24 GB, SM86), SGLang-Omni <code class="docutils literal notranslate"><span class="pre">c15bfc80</span></code>, SGLang 0.5.23 and PyTorch 2.14.1+cu130 measured the target <code class="docutils literal notranslate"><span class="pre">Qwen/Qwen3-ASR-0.6B&#64;5eb144179a02acc5e5ba31e748d22b0cf3e303b0</span></code> against that draft. The SeedTTS revision was <code class="docutils literal notranslate"><span class="pre">27f4c1adee83b5b29b7c4b375f6b976324bda308</span></code>. Each side ran twice in ABBA order on fresh servers; each leg used one warmup and three measured repeats at every load, unique audio (666 EN clips and 1,010 ZH clips), streamed responses and the prefix cache off. Across all loads, repeats and legs, this produced 140,784 measured requests and 46,928 warmup requests.</p>
-<div class="pst-scrollable-table-container"><table class="table">
-<thead>
-<tr class="row-odd"><th class="head text-right"><p>concurrency</p></th>
-<th class="head text-right"><p>EN throughput gain</p></th>
-<th class="head text-right"><p>EN p95 latency</p></th>
-<th class="head text-right"><p>EN first output p95</p></th>
-<th class="head text-right"><p>ZH throughput gain</p></th>
-<th class="head text-right"><p>ZH p95 latency</p></th>
-<th class="head text-right"><p>ZH first output p95</p></th>
-</tr>
-</thead>
-<tbody>
-<tr class="row-even"><td class="text-right"><p>1</p></td>
-<td class="text-right"><p>1.79x</p></td>
-<td class="text-right"><p>-36.9%</p></td>
-<td class="text-right"><p>+0.6%</p></td>
-<td class="text-right"><p>1.60x</p></td>
-<td class="text-right"><p>-33.0%</p></td>
-<td class="text-right"><p>+1.7%</p></td>
-</tr>
-<tr class="row-odd"><td class="text-right"><p>2</p></td>
-<td class="text-right"><p>1.79x</p></td>
-<td class="text-right"><p>-52.5%</p></td>
-<td class="text-right"><p>-57.3%</p></td>
-<td class="text-right"><p>1.62x</p></td>
-<td class="text-right"><p>-47.8%</p></td>
-<td class="text-right"><p>-57.0%</p></td>
-</tr>
-<tr class="row-even"><td class="text-right"><p>4</p></td>
-<td class="text-right"><p>1.59x</p></td>
-<td class="text-right"><p>-42.2%</p></td>
-<td class="text-right"><p>-55.6%</p></td>
-<td class="text-right"><p>1.40x</p></td>
-<td class="text-right"><p>-32.5%</p></td>
-<td class="text-right"><p>-53.0%</p></td>
-</tr>
-<tr class="row-odd"><td class="text-right"><p>8</p></td>
-<td class="text-right"><p>1.47x</p></td>
-<td class="text-right"><p>-38.4%</p></td>
-<td class="text-right"><p>-43.3%</p></td>
-<td class="text-right"><p>1.32x</p></td>
-<td class="text-right"><p>-31.3%</p></td>
-<td class="text-right"><p>-47.3%</p></td>
-</tr>
-<tr class="row-even"><td class="text-right"><p>16</p></td>
-<td class="text-right"><p>1.27x</p></td>
-<td class="text-right"><p>-27.7%</p></td>
-<td class="text-right"><p>-25.1%</p></td>
-<td class="text-right"><p>1.21x</p></td>
-<td class="text-right"><p>-24.8%</p></td>
-<td class="text-right"><p>-34.5%</p></td>
-</tr>
-<tr class="row-odd"><td class="text-right"><p>32</p></td>
-<td class="text-right"><p>1.74x</p></td>
-<td class="text-right"><p>-33.6%</p></td>
-<td class="text-right"><p>-20.0%</p></td>
-<td class="text-right"><p>1.62x</p></td>
-<td class="text-right"><p>-32.8%</p></td>
-<td class="text-right"><p>-22.4%</p></td>
-</tr>
-<tr class="row-even"><td class="text-right"><p>64</p></td>
-<td class="text-right"><p>1.72x</p></td>
-<td class="text-right"><p>-37.4%</p></td>
-<td class="text-right"><p>-34.4%</p></td>
-<td class="text-right"><p>1.63x</p></td>
-<td class="text-right"><p>-35.5%</p></td>
-<td class="text-right"><p>-32.8%</p></td>
-</tr>
-</tbody>
-</table>
-</div>
-<p>The c32 and c64 points set client concurrency above the profile’s 16-request running cap. At c16, the client offers only enough requests to fill that cap. After a response completes, its replacement must pass through the client and HTTP path before reaching the freed slot. These gaps cost the faster draft side more because it turns requests over more often. At c32, up to 16 requests are already waiting in the server’s admission queue, so a freed slot can be refilled without a client round trip. Server logs showed at most 16 running requests, with as many as 16 queued at c32 and 48 at c64. The client measured p95 from immediately before the HTTP POST through response completion. Server admission-queue time is included; time waiting for the benchmark client’s own concurrency semaphore is outside the measurement. From c32 to c64, throughput stayed nearly flat while p95 rose with the longer queue. The server cap remained 16, and the roadmap’s not-worse gate ends at c16.</p>
-<p>A second clean sweep at <code class="docutils literal notranslate"><span class="pre">2e35ab6c</span></code> repeated the same prompts with the prefix cache on. It used the same ABBA order, loads, repeats and request counts. The cache served 95.20% of prompt tokens in every EN leg and 95.21% in every ZH leg.</p>
-<div class="pst-scrollable-table-container"><table class="table">
-<thead>
-<tr class="row-odd"><th class="head text-right"><p>concurrency</p></th>
-<th class="head text-right"><p>EN throughput gain</p></th>
-<th class="head text-right"><p>EN p95 latency</p></th>
-<th class="head text-right"><p>EN first output p95</p></th>
-<th class="head text-right"><p>ZH throughput gain</p></th>
-<th class="head text-right"><p>ZH p95 latency</p></th>
-<th class="head text-right"><p>ZH first output p95</p></th>
-</tr>
-</thead>
-<tbody>
-<tr class="row-even"><td class="text-right"><p>1</p></td>
-<td class="text-right"><p>1.87x</p></td>
-<td class="text-right"><p>-38.8%</p></td>
-<td class="text-right"><p>+0.8%</p></td>
-<td class="text-right"><p>1.67x</p></td>
-<td class="text-right"><p>-34.8%</p></td>
-<td class="text-right"><p>+0.6%</p></td>
-</tr>
-<tr class="row-odd"><td class="text-right"><p>2</p></td>
-<td class="text-right"><p>1.93x</p></td>
-<td class="text-right"><p>-55.6%</p></td>
-<td class="text-right"><p>-61.6%</p></td>
-<td class="text-right"><p>1.72x</p></td>
-<td class="text-right"><p>-51.8%</p></td>
-<td class="text-right"><p>-63.8%</p></td>
-</tr>
-<tr class="row-even"><td class="text-right"><p>4</p></td>
-<td class="text-right"><p>1.72x</p></td>
-<td class="text-right"><p>-47.7%</p></td>
-<td class="text-right"><p>-59.8%</p></td>
-<td class="text-right"><p>1.54x</p></td>
-<td class="text-right"><p>-41.8%</p></td>
-<td class="text-right"><p>-61.2%</p></td>
-</tr>
-<tr class="row-odd"><td class="text-right"><p>8</p></td>
-<td class="text-right"><p>1.70x</p></td>
-<td class="text-right"><p>-44.7%</p></td>
-<td class="text-right"><p>-48.4%</p></td>
-<td class="text-right"><p>1.46x</p></td>
-<td class="text-right"><p>-37.4%</p></td>
-<td class="text-right"><p>-51.7%</p></td>
-</tr>
-<tr class="row-even"><td class="text-right"><p>16</p></td>
-<td class="text-right"><p>1.45x</p></td>
-<td class="text-right"><p>-33.5%</p></td>
-<td class="text-right"><p>-28.9%</p></td>
-<td class="text-right"><p>1.30x</p></td>
-<td class="text-right"><p>-27.8%</p></td>
-<td class="text-right"><p>-32.6%</p></td>
-</tr>
-<tr class="row-odd"><td class="text-right"><p>32</p></td>
-<td class="text-right"><p>1.79x</p></td>
-<td class="text-right"><p>-36.4%</p></td>
-<td class="text-right"><p>-22.4%</p></td>
-<td class="text-right"><p>1.61x</p></td>
-<td class="text-right"><p>-34.6%</p></td>
-<td class="text-right"><p>-21.8%</p></td>
-</tr>
-<tr class="row-even"><td class="text-right"><p>64</p></td>
-<td class="text-right"><p>1.80x</p></td>
-<td class="text-right"><p>-38.0%</p></td>
-<td class="text-right"><p>-36.2%</p></td>
-<td class="text-right"><p>1.59x</p></td>
-<td class="text-right"><p>-32.1%</p></td>
-<td class="text-right"><p>-27.8%</p></td>
-</tr>
-</tbody>
-</table>
-</div>
-<p>No request failed in either sweep. With the prefix cache off, aggregate English WER was 1.6393% without the draft and 1.6295% with it; aggregate Chinese CER was 1.0135% and 1.0096%. With repeated prompts, WER ranged from 1.65% to 1.68% without the draft and 1.61% to 1.66% with it; CER ranged from 1.00% to 1.02% and from 1.00% to 1.01%. Mean acceptance length was 5.08 on English and 4.38 on Chinese. In the prefix-cache-off sweep, peak GPU memory rose from 18,485 to 19,187 MiB on English and from 18,527 to 19,243 MiB on Chinese. Every load completed, and neither prefix-cache mode was worse than plain decoding from c1 to c16 by the roadmap bounds.</p>
-<p>Ascend NPU runs separate validated examples and is greedy only; see <a class="reference internal" href="#ascend-npu-graph-execution"><span class="std std-ref">Ascend NPU graph execution</span></a>.</p>
-<p>DFlash serves any <code class="docutils literal notranslate"><span class="pre">temperature</span></code>. Above 0, verification accepts each drafted token with the target model’s probability for it and otherwise samples from the target’s remaining probabilities. ASR transcripts are confident, so sampling barely lowers acceptance: on one H100 with SeedTTS English and Chinese clips at 16 concurrent requests, each verification step committed 5.66 tokens at <code class="docutils literal notranslate"><span class="pre">temperature</span></code> 0, 5.66 at 0.7 and 5.62 at 1.0. On the same server at the default cap of 64 running requests, the speedup at 0.7 and 1.0 stayed close to its greedy speedup at every load tested, from 1 to 64 concurrent requests. DFlash retains CUDA graphs.</p>
-<p>On CUDA, DFlash applies <code class="docutils literal notranslate"><span class="pre">repetition_penalty</span></code> as ordinary decoding does: each verified position is penalized over the transcript so far and the drafted tokens before it. On one H200 with every SeedTTS clip sent at 1.2, no request failed, transcripts differed from a synchronous server without the draft about as often as they do with no penalty (5 of 666 English, 2 of 1,010 Chinese, 1 request at a time), and the logged acceptance length fell by about 1%. The draft does not see the penalty, so a strong one lowers acceptance more: by about 15% at 2.0.</p>
-<p>The draft overlaps scheduling with host work by default; add <code class="docutils literal notranslate"><span class="pre">--asr.factory.enable_async_decode</span> <span class="pre">false</span></code> to schedule synchronously. On one H100 with greedy decoding and the prefix cache off, overlap ran at 1.12–1.26x synchronous scheduling on 60-second recordings, 1.01–1.15x on SeedTTS English clips and 0.99–1.15x on SeedTTS Chinese clips, from 1 to 64 concurrent requests, with the same WER and CER. On short clips it also removed the draft’s loss under load: at 64 concurrent requests the synchronous draft ran at 0.94x the server without a draft on English clips and 0.91x on Chinese, and the overlapped draft at 1.08x and 1.04x. Overlap runs one extra verify round per request, so the logged acceptance length drops (5.9 to 4.6 tokens on English clips), and streamed first text arrives about 2 ms later for one short clip at a time. A decode batch smaller than <code class="docutils literal notranslate"><span class="pre">--asr.factory.async_decode_min_batch_size</span></code>, or a prefill after which fewer requests than it are decoding, has its result processed before the next batch is chosen; other batches overlap. With the draft it defaults to 2, so a lone request decodes synchronously; without a draft it defaults to 1. On one H200 with SeedTTS clips sent once each and streamed, the prefix cache off, first streamed text p95 for one clip at a time matched the server without a draft at 2 (1.00x on English and Chinese), against 1.16x and 1.19x with overlap at every batch size. That costs about 5% of single-request throughput on English and 4% on Chinese; from 2 to 64 concurrent requests the two settings stayed within 3% of each other in throughput. At 4 on one H100, first streamed text for one clip at a time also matched the server without a draft, and throughput stayed within 5% of overlap except at 2 requests, where it was about 7% lower. Set it to 1 to overlap every batch.</p>
-<p>The H200 that measured 1.72x differed from the H100 under load: at the default cap of 64 running requests with the prefix cache off, the draft on its defaults gave no speedup at 32 concurrent requests and ran about 10% slower at 64, on both English and Chinese clips, with first streamed text p95 11–21% later than without the draft at both loads. Overlapping every batch had the same throughput, and synchronous scheduling lost the same throughput on English clips in an earlier sweep (<a class="reference external" href="https://github.com/sgl-project/sglang-omni/pull/3454">#3454</a>). To serve without the draft, add <code class="docutils literal notranslate"><span class="pre">disable_speculative_decoding</span></code>, which drops every <code class="docutils literal notranslate"><span class="pre">speculative_*</span></code> key from the stage:</p>
+<p>On CUDA, DFlash supports sampling temperatures and applies <code class="docutils literal notranslate"><span class="pre">repetition_penalty</span></code> during target verification. The draft does not see the penalty, so stronger penalties can lower acceptance. CUDA realtime sessions use the draft too. Ascend NPU uses separate opt-in examples, supports greedy decoding only, and rejects non-default repetition penalties; see <a class="reference internal" href="#ascend-npu"><span class="std std-ref">Ascend NPU</span></a>.</p>
+<p>On CUDA with the draft, async decode defaults to batches of at least two requests; a single request decodes synchronously. Set <code class="docutils literal notranslate"><span class="pre">--asr.factory.enable_async_decode</span> <span class="pre">false</span></code> for synchronous scheduling, or <code class="docutils literal notranslate"><span class="pre">--asr.factory.async_decode_min_batch_size</span> <span class="pre">1</span></code> to overlap every batch. Draft weights and KV cache share the stage memory budget. Benchmark your workload: speedups vary with GPU, concurrency, and prefix-cache use, and high concurrency can reduce throughput. See the <a class="reference internal" href="../developer_reference/qwen3_asr_dflash_benchmarks.html"><span class="std std-doc">DFlash benchmark report</span></a> for measured results and test conditions.</p>
+<p>To serve without the draft:</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>sgl-omni<span class="w"> </span>serve<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--model-path<span class="w"> </span>Qwen/Qwen3-ASR-1.7B<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--asr.engine.disable_speculative_decoding<span class="w"> </span><span class="nb">true</span><span class="w"> </span><span class="se">\</span>
@@ -1263,11 +995,9 @@ that qualified limit are rejected.</p>
 </pre></div>
 </div>
 <p>Send the form field <code class="docutils literal notranslate"><span class="pre">return_spec_tokens_details=true</span></code> to get <code class="docutils literal notranslate"><span class="pre">sglext.spec_tokens_details</span></code> (<code class="docutils literal notranslate"><span class="pre">spec_accept_length</span></code>, <code class="docutils literal notranslate"><span class="pre">spec_accept_rate</span></code>, the draft counts and the per-verify histogram) on <code class="docutils literal notranslate"><span class="pre">json</span></code> and <code class="docutils literal notranslate"><span class="pre">verbose_json</span></code> responses and on the streamed <code class="docutils literal notranslate"><span class="pre">transcript.text.done</span></code> event. Audio long enough to be transcribed in chunks returns none. <code class="docutils literal notranslate"><span class="pre">spec_accept_rate</span></code> and <code class="docutils literal notranslate"><span class="pre">spec_num_proposed_drafts</span></code> are left out when no drafts were proposed or the draft width is adaptive.</p>
-<p>Realtime transcription sessions (<code class="docutils literal notranslate"><span class="pre">--enable-realtime</span></code>) use the draft too. On one H100 at the default memory fraction and cap of 64 running requests, SeedTTS English and Chinese clips and 60-second LongLibriHeavy recordings streamed at wall-clock pace, 1 to 16 sessions at a time, with server VAD or manual commit. No session hit an error or a protocol violation, WER stayed within 0.03 percentage points of the server without the draft, and the median time to a segment’s first partial was 11 to 28% lower with the synchronous draft, least at a 1000 ms decode interval, and to its final transcript 17 to 27% lower. Overlap on every batch gave the same transcripts and median latencies as the synchronous draft on SeedTTS English sessions with server VAD, 1 and 16 at a time, with no errors or protocol violations.</p>
-<p>The draft’s weights and KV cache come out of the stage’s memory fraction. On an 80 GB H100 at <code class="docutils literal notranslate"><span class="pre">--mem-fraction-static</span> <span class="pre">0.08</span></code>, as in the streaming cascade profiles, the KV cache holds 11,501 tokens with the draft and 20,705 without. At that fraction, 640 SeedTTS Chinese sessions, 16 at a time, ran with no errors.</p>
 <section id="per-request-plain-fallback">
 <h3>Per-request plain fallback<a class="headerlink" href="#per-request-plain-fallback" title="Link to this heading">#</a></h3>
-<p>Set <code class="docutils literal notranslate"><span class="pre">asr.factory.enable_plain_fallback</span></code> to route requests that DFlash cannot serve through ordinary decoding: requests that fit the target context but leave too little room for draft KV, and, off CUDA, requests that set <code class="docutils literal notranslate"><span class="pre">repetition_penalty</span></code>.</p>
+<p>Set <code class="docutils literal notranslate"><span class="pre">asr.factory.enable_plain_fallback</span></code> to route requests that DFlash cannot serve through ordinary decoding: requests that fit the target context but leave too little room for draft KV. CUDA already applies <code class="docutils literal notranslate"><span class="pre">repetition_penalty</span></code> during DFlash verification; this fallback does not enable that parameter on NPU.</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>sgl-omni<span class="w"> </span>serve<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--config<span class="w"> </span>examples/configs/qwen3_asr_1_7b_plain_fallback.yaml<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--port<span class="w"> </span><span class="m">8000</span>
@@ -1279,10 +1009,7 @@ that qualified limit are rejected.</p>
 </section>
 <section id="benchmarking">
 <h2>Benchmarking<a class="headerlink" href="#benchmarking" title="Link to this heading">#</a></h2>
-<p>The benchmark entry point, its metric definitions, and the flags shared by all
-ASR checkpoints are documented in
-<a class="reference internal" href="../basic_usage/asr.html#benchmarking"><span class="std std-ref">ASR Model Usage</span></a>. The command below pins
-the Qwen3-ASR model and dataset revisions used for the numbers in this page.</p>
+<p>The benchmark entry point, its metric definitions, and the flags shared by all ASR checkpoints are documented in <a class="reference internal" href="../basic_usage/asr.html#benchmarking"><span class="std std-ref">ASR Model Usage</span></a>. The command below pins a Qwen3-ASR-1.7B checkpoint and dataset revision for this example. Individual benchmark reports record their own model, draft, and runtime revisions.</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>sgl-omni<span class="w"> </span>serve<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--model-path<span class="w"> </span><span class="s2">"</span><span class="si">${</span><span class="nv">MODEL_PATH</span><span class="si">}</span><span class="s2">"</span><span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--model-name<span class="w"> </span>Qwen/Qwen3-ASR-1.7B<span class="w"> </span><span class="se">\</span>
@@ -1299,122 +1026,18 @@ python<span class="w"> </span>-m<span class="w"> </span>benchmarks.eval.benchmar
 <span class="w">  </span>--repeats<span class="w"> </span><span class="m">3</span><span class="w"> </span>--warmup
 </pre></div>
 </div>
-<p>Result fields, GPU sampling, and the provenance flags are documented in
-<a class="reference internal" href="../basic_usage/asr.html#benchmarking"><span class="std std-ref">ASR Model Usage</span></a> and the
-<a class="reference internal" href="../developer_reference/asr_bench.html"><span class="std std-doc">ASR benchmark runbook</span></a>.</p>
-<p>The ASR CI gate runs the selected ASR CI model preset on this same benchmark
-entry point (<code class="docutils literal notranslate"><span class="pre">tests/test_model/test_asr_ci_seedtts.py</span></code>). Qwen3-ASR remains
-the transcriber for the TTS and talker WER stages.</p>
-<p>For the current-main concurrency baseline, the fixed-baseline comparison, and
-the per-stage bottleneck decomposition (issue #1324), see
-<a class="reference internal" href="../developer_reference/qwen3_asr_concurrency_profile.html"><span class="std std-doc">Qwen3-ASR concurrency profile</span></a>.
-The benchmark’s <code class="docutils literal notranslate"><span class="pre">--profile-events</span></code>, <code class="docutils literal notranslate"><span class="pre">--sample-util</span></code>, <code class="docutils literal notranslate"><span class="pre">--save-raw-dir</span></code>, and
-<code class="docutils literal notranslate"><span class="pre">--fingerprint</span></code> flags capture the telemetry that report uses.</p>
+<p>Result fields, GPU sampling, and the provenance flags are documented in <a class="reference internal" href="../basic_usage/asr.html#benchmarking"><span class="std std-ref">ASR Model Usage</span></a> and the <a class="reference internal" href="../developer_reference/asr_bench.html"><span class="std std-doc">ASR benchmark runbook</span></a>.</p>
+<p>For the current-main concurrency baseline, the fixed-baseline comparison, and the per-stage bottleneck decomposition (issue #1324), see <a class="reference internal" href="../developer_reference/qwen3_asr_concurrency_profile.html"><span class="std std-doc">Qwen3-ASR concurrency profile</span></a>. The benchmark’s <code class="docutils literal notranslate"><span class="pre">--profile-events</span></code>, <code class="docutils literal notranslate"><span class="pre">--sample-util</span></code>, <code class="docutils literal notranslate"><span class="pre">--save-raw-dir</span></code>, and <code class="docutils literal notranslate"><span class="pre">--fingerprint</span></code> flags capture the telemetry that report uses.</p>
 </section>
 <section id="concurrency-tuning">
 <h2>Concurrency tuning<a class="headerlink" href="#concurrency-tuning" title="Link to this heading">#</a></h2>
-<p>The request-build, admission, and CUDA-graph policy defaults come from a
-measured sweep (issue #1324 Q-PR5): <code class="docutils literal notranslate"><span class="pre">request_build_max_workers</span></code> {2, 4, 8} ×
-<code class="docutils literal notranslate"><span class="pre">request_build_max_pending</span></code> {16, 32, 64} × <code class="docutils literal notranslate"><span class="pre">max_running_requests</span></code> {16, 32, 64}
-with matching CUDA-graph coverage, each configuration a full SeedTTS EN
-concurrency sweep (1–64, three repeats plus warmup) on one 141 GB GPU with the
-pre-LM encoder enabled and its embedding cache disabled (unique-input regime).
-Requests/s by client concurrency:</p>
-<div class="pst-scrollable-table-container"><table class="table">
-<thead>
-<tr class="row-odd"><th class="head"><p>config (workers/pending/running)</p></th>
-<th class="head text-right"><p>c=8</p></th>
-<th class="head text-right"><p>c=16</p></th>
-<th class="head text-right"><p>c=32</p></th>
-<th class="head text-right"><p>c=64</p></th>
-<th class="head text-right"><p>shed at c=64</p></th>
-</tr>
-</thead>
-<tbody>
-<tr class="row-even"><td><p>2 / 16 / 32</p></td>
-<td class="text-right"><p>39.1</p></td>
-<td class="text-right"><p>47.5</p></td>
-<td class="text-right"><p>52.3</p></td>
-<td class="text-right"><p>51.0</p></td>
-<td class="text-right"><p>704/3264</p></td>
-</tr>
-<tr class="row-odd"><td><p>4 / 16 / 32</p></td>
-<td class="text-right"><p>47.6</p></td>
-<td class="text-right"><p>60.3</p></td>
-<td class="text-right"><p>70.4</p></td>
-<td class="text-right"><p>55.4</p></td>
-<td class="text-right"><p>301/3264</p></td>
-</tr>
-<tr class="row-even"><td><p>8 / 16 / 32</p></td>
-<td class="text-right"><p>48.5</p></td>
-<td class="text-right"><p>75.6</p></td>
-<td class="text-right"><p>89.7</p></td>
-<td class="text-right"><p>64.6</p></td>
-<td class="text-right"><p>173/3264</p></td>
-</tr>
-<tr class="row-odd"><td><p>8 / 16 / 16</p></td>
-<td class="text-right"><p>57.6</p></td>
-<td class="text-right"><p>75.4</p></td>
-<td class="text-right"><p>42.2</p></td>
-<td class="text-right"><p>46.7</p></td>
-<td class="text-right"><p>250/3264</p></td>
-</tr>
-<tr class="row-even"><td><p>8 / 32 / 32</p></td>
-<td class="text-right"><p>57.7</p></td>
-<td class="text-right"><p>76.5</p></td>
-<td class="text-right"><p>87.1</p></td>
-<td class="text-right"><p>65.1</p></td>
-<td class="text-right"><p>0</p></td>
-</tr>
-<tr class="row-odd"><td><p>8 / 64 / 32</p></td>
-<td class="text-right"><p>55.2</p></td>
-<td class="text-right"><p>76.6</p></td>
-<td class="text-right"><p>87.9</p></td>
-<td class="text-right"><p>64.7</p></td>
-<td class="text-right"><p>0</p></td>
-</tr>
-<tr class="row-even"><td><p><strong>8 / 32 / 64 (default)</strong></p></td>
-<td class="text-right"><p>57.4</p></td>
-<td class="text-right"><p>77.0</p></td>
-<td class="text-right"><p>90.2</p></td>
-<td class="text-right"><p>96.8</p></td>
-<td class="text-right"><p>0</p></td>
-</tr>
-<tr class="row-odd"><td><p>8 / 64 / 64</p></td>
-<td class="text-right"><p>57.0</p></td>
-<td class="text-right"><p>74.3</p></td>
-<td class="text-right"><p>88.8</p></td>
-<td class="text-right"><p>100.3</p></td>
-<td class="text-right"><p>0</p></td>
-</tr>
-</tbody>
-</table>
-</div>
-<p>Reading, and the resulting defaults:</p>
-<ul class="simple">
-<li><p><strong>Build workers scale monotonically to 8</strong> at every concurrency ≥ 8 and cost
-nothing at concurrency 1 (0.099–0.101 s mean everywhere), so 8 is the
-default. Those workers do CPU request construction (decode audio,
-optional mel FFT) and submit encoder work asynchronously. When no extra
-builds are queued, the request builder waits for encode and returns a
-ready request like the sync path; when pending+backlog exceeds the
-worker pool, it returns a deferred admission so workers can pull the
-backlog. A cache hit still skips mel extraction entirely.</p></li>
-<li><p><strong>Pending 16 → 32 removes all concurrency-64 shedding</strong> and lifts
-concurrency-8 throughput ~19 %; 64 adds nothing further. 32 is the default.</p></li>
-<li><p><strong><code class="docutils literal notranslate"><span class="pre">max_running_requests</span></code> 16 collapses concurrency 32</strong> (queue-bound) with no
-light-load latency benefit, so there is no latency-first case for lowering
-it. The default is 64 because it unlocks the concurrency-64 regime (+~50 %
-requests/s, zero shedding), at the price of larger CUDA-graph and KV memory.
-On memory-constrained GPUs, use the memory-conservative override:</p></li>
-</ul>
+<p>The stock request-build settings are 8 workers and 32 pending requests; the default engine running cap is 64. GPU profiles can lower this cap to fit their memory budget. Start with a validated profile, then measure throughput, latency, and rejected requests at your expected concurrency before raising capacity.</p>
+<p><code class="docutils literal notranslate"><span class="pre">--asr.engine.max_running_requests</span></code> controls engine capacity and affects CUDA-graph and KV memory. The long-upload admission limit controls how much of that capacity long audio may occupy. For memory-constrained GPUs without a dedicated profile, the earlier sweep used this override:</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>sgl-omni<span class="w"> </span>serve<span class="w"> </span>--model-path<span class="w"> </span>Qwen/Qwen3-ASR-1.7B<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--asr.engine.max_running_requests<span class="w"> </span><span class="m">32</span>
 </pre></div>
 </div>
-<ul class="simple">
-<li><p>Corpus WER stayed 0.0122 for every configuration at every level.</p></li>
-</ul>
+<p>Async decode is enabled by default. Set <code class="docutils literal notranslate"><span class="pre">--asr.factory.enable_async_decode</span> <span class="pre">false</span></code> to compare synchronous execution. See <a class="reference internal" href="../developer_reference/qwen3_asr_concurrency_profile.html#scheduling-defaults"><span class="std std-ref">Scheduling defaults</span></a> for prefill coalescing and the <a class="reference internal" href="../developer_reference/qwen3_asr_concurrency_profile.html#capacity-sweep"><span class="std std-ref">historical capacity sweep</span></a> for the evidence behind the defaults. These results are specific to their recorded hardware and workload.</p>
 </section>
 </section>
 
@@ -1470,10 +1093,7 @@ On memory-constrained GPUs, use the memory-conservative override:</p></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#choose-a-transcription-method">Choose a Transcription Method</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#transcribe-audio">Transcribe Audio</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#stream-transcription">Stream Transcription</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#realtime-audio">Realtime Audio</a><ul class="pst-show_toc_level nav section-nav flex-column">
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#live-pcm-transcription">Live PCM transcription</a></li>
-</ul>
-</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#realtime-transcription-websocket">Realtime Transcription (WebSocket)</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#request-parameters">Request Parameters</a><ul class="pst-show_toc_level nav section-nav flex-column">
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#prompt-and-vocabulary-biasing">Prompt and Vocabulary Biasing</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#language-hints">Language Hints</a></li>
@@ -1482,7 +1102,7 @@ On memory-constrained GPUs, use the memory-conservative override:</p></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#long-audio">Long Audio</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#known-limitations">Known Limitations</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#platform-configuration">Platform Configuration</a><ul class="pst-show_toc_level nav section-nav flex-column">
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#ascend-npu-graph-execution">Ascend NPU graph execution</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#ascend-npu">Ascend NPU</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#apple-silicon">Apple Silicon</a></li>
 </ul>
 </li>

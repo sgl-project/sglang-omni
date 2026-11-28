@@ -364,6 +364,7 @@
 <li class="toctree-l1"><a class="reference internal" href="../developer_reference/reference_encode_service.html">Reference Encode Service</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../developer_reference/profiler.html">Request-level profiler</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../developer_reference/qwen3_asr_concurrency_profile.html">Qwen3-ASR High-Concurrency Benchmark and Bottleneck Profile</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../developer_reference/qwen3_asr_dflash_benchmarks.html">Qwen3-ASR DFlash Benchmarks</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../developer_reference/full_duplex_guide.html">Full-Duplex Guide</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../developer_reference/tts_bench.html">TTS benchmark runbook</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../developer_reference/tts_model_integration.html">TTS Model Integration</a></li>
@@ -792,7 +793,7 @@ mono 16 kHz PCM16 packets, finalize a segment with <code class="docutils literal
 or server VAD, and read <code class="docutils literal notranslate"><span class="pre">transcription.segment</span></code> events until
 <code class="docutils literal notranslate"><span class="pre">transcription.completed</span></code>. Session options, partial-update semantics, and
 rollback behavior are documented in the
-<a class="reference internal" href="../cookbook/qwen3_asr.html#live-pcm-transcription"><span class="std std-ref">Qwen3-ASR cookbook</span></a>.</p></li>
+<a class="reference internal" href="../cookbook/qwen3_asr.html#realtime-transcription-websocket"><span class="std std-ref">Qwen3-ASR cookbook</span></a>.</p></li>
 <li><p><strong><code class="docutils literal notranslate"><span class="pre">/v1/realtime?model=...</span></code></strong> — Nemotron 3.5 ASR uses this native path. Send
 mono 16 kHz PCM16 and read text output; it has no VAD, manual commit, language
 field, or <code class="docutils literal notranslate"><span class="pre">max_new_tokens</span></code>.</p></li>
@@ -861,7 +862,7 @@ the complete transcript, so it is safe to use it as the final result:</p>
 <h3>Live Audio over WebSocket<a class="headerlink" href="#live-audio-over-websocket" title="Link to this heading">#</a></h3>
 <p>A complete WebSocket client that appends PCM packets, commits a segment, and
 reads the completed transcript is in the
-<a class="reference internal" href="../cookbook/qwen3_asr.html#live-pcm-transcription"><span class="std std-ref">Qwen3-ASR cookbook</span></a>.
+<a class="reference internal" href="../cookbook/qwen3_asr.html#realtime-transcription-websocket"><span class="std std-ref">Qwen3-ASR cookbook</span></a>.
 The session takes PCM16 packets as they arrive, so decode other formats first.</p>
 </section>
 </section>
