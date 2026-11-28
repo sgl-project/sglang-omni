@@ -314,8 +314,30 @@ func normFinish(r string) string {
 func readSSE(r io.Reader, fn func(data string) bool) error {
 	sc := bufio.NewScanner(r)
 	sc.Buffer(make([]byte, 64*1024), 4<<20)
+	skipLF := false
+	sc.Split(func(data []byte, atEOF bool) (int, []byte, error) {
+		advance := 0
+		if skipLF && len(data) > 0 {
+			skipLF = false
+			if data[0] == '\n' {
+				data = data[1:]
+				advance = 1
+			}
+		}
+		if i := bytes.IndexAny(data, "\r\n"); i >= 0 {
+			// A CR ends the line immediately; swallow a following LF on
+			// the next call, including when CRLF crosses a reader boundary.
+			skipLF = data[i] == '\r'
+			return advance + i + 1, data[:i], nil
+		}
+		if atEOF && len(data) > 0 {
+			return advance + len(data), data, nil
+		}
+		return advance, nil, nil
+	})
 	var data strings.Builder
 	hasData := false
+	firstLine := true
 	flush := func() bool {
 		if !hasData {
 			return true
@@ -327,6 +349,10 @@ func readSSE(r io.Reader, fn func(data string) bool) error {
 	}
 	for sc.Scan() {
 		line := sc.Text()
+		if firstLine {
+			line = strings.TrimPrefix(line, "\ufeff")
+			firstLine = false
+		}
 		if line == "" {
 			if !flush() {
 				return nil
