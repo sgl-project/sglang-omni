@@ -15,6 +15,7 @@ from typing import Any
 
 from benchmarks.tts_serving.stream_stress.builder import (
     print_console_report,
+    write_generated_metadata,
     write_jsonl,
     write_summary_json,
 )
@@ -54,6 +55,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     output = write_jsonl(config, responder.records, report)
     summary_path = write_summary_json(config, report)
+    write_generated_metadata(config, responder.records)
     if not config.quiet:
         print_console_report(config, report, output, summary_path)
 

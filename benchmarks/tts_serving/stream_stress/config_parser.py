@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import json
 import math
 import os
@@ -25,6 +26,9 @@ class CorpusEntry:
     sample_id: str
     text: str
     source_line: int
+    language: str | None = None
+    ref_audio: str | None = None
+    ref_text: str | None = None
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -43,6 +47,7 @@ class StressConfig:
     text_field: str
     text_id_field: str | None
     text_repeat: str
+    ref_format: str
 
     qpm: float
     total_requests: int
@@ -75,6 +80,7 @@ class StressConfig:
 
     output: Path
     summary_json: Path | None
+    save_audio_dir: Path | None
     omit_chunks: bool
     run_id: str
     labels: dict[str, str]
@@ -90,9 +96,34 @@ class StressConfig:
     def entry_for(self, index: int) -> CorpusEntry:
         return self.corpus[index % len(self.corpus)]
 
-    def payload_for(self, index: int, text: str | None = None) -> dict[str, Any]:
+    def payload_for(self, entry: CorpusEntry) -> dict[str, Any]:
+        """The request body for one prompt; its own language and reference override the run's."""
         payload = dict(self.payload_template)
-        payload["input"] = text if text is not None else self.entry_for(index).text
+        payload["input"] = entry.text
+        if entry.language is not None:
+            payload["language"] = entry.language
+        else:
+            pass
+        if entry.ref_audio is not None:
+            # Note (Jiaxin Deng): the server adds up references and the flat fields, so a line's reference replaces the run's in either form.
+            for field_name in ("references", "ref_audio", "ref_text"):
+                payload.pop(field_name, None)
+        else:
+            pass
+        if self.ref_format == "references" and entry.ref_audio is not None:
+            reference = {"audio_path": entry.ref_audio}
+            if entry.ref_text is not None:
+                reference["text"] = entry.ref_text
+            else:
+                pass
+            payload["references"] = [reference]
+        else:
+            for field_name in ("ref_audio", "ref_text"):
+                value = getattr(entry, field_name)
+                if value is not None:
+                    payload[field_name] = value
+                else:
+                    pass
         return payload
 
     def snapshot(self) -> dict[str, Any]:
@@ -155,6 +186,9 @@ class StressConfig:
                 "jsonl": str(self.output),
                 "omit_chunks": self.omit_chunks,
                 "summary_json": (str(self.summary_json) if self.summary_json else None),
+                "save_audio_dir": (
+                    str(self.save_audio_dir) if self.save_audio_dir else None
+                ),
             },
         }
 
@@ -284,7 +318,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--text-jsonl",
         required=True,
         metavar="PATH",
-        help="jsonl corpus; every non-empty line must be an object with the text field",
+        help=(
+            "jsonl corpus; every non-empty line must be an object with the text field. "
+            "A line's language, ref_audio and ref_text override the request options "
+            "for that prompt; a ref_audio that is a file on this host, relative to "
+            "the corpus, is sent inline"
+        ),
     )
     corpus.add_argument(
         "--text-field", default="text", help="prompt field name in each jsonl object"
@@ -294,6 +333,15 @@ def build_arg_parser() -> argparse.ArgumentParser:
         default=None,
         metavar="FIELD",
         help="sample id field; defaults to the first of id/key/sample_id/sample_key/uid, else the line number",
+    )
+    corpus.add_argument(
+        "--ref-format",
+        choices=("flat", "references"),
+        default="flat",
+        help=(
+            "how a line's ref_audio and ref_text are sent: as the ref_audio and "
+            "ref_text fields, or as one references entry for the models that take those"
+        ),
     )
     corpus.add_argument(
         "--max-texts",
@@ -415,6 +463,16 @@ def build_arg_parser() -> argparse.ArgumentParser:
     output.add_argument("--output", default=DEFAULT_OUTPUT, help="result jsonl path")
     output.add_argument(
         "--summary-json", default=None, help="also write a standalone summary JSON"
+    )
+    output.add_argument(
+        "--save-audio-dir",
+        default=None,
+        metavar="DIR",
+        help=(
+            "save every measured request's audio as <request_id>.wav plus a "
+            "generated.json that score_wer reads; audio is held in memory until "
+            "its request ends"
+        ),
     )
     output.add_argument(
         "--omit-chunks",
@@ -591,6 +649,18 @@ def resolve_options(options: argparse.Namespace) -> StressConfig:
         )
     raise_if(errors)
 
+    save_audio_dir = (
+        Path(options.save_audio_dir).expanduser().resolve()
+        if options.save_audio_dir
+        else None
+    )
+    if save_audio_dir is not None and not options.dry_run:
+        try:
+            save_audio_dir.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            raise_if([f"cannot create --save-audio-dir: {exc}"])
+    else:
+        pass
     output = Path(options.output).expanduser().resolve()
     summary_json = (
         Path(options.summary_json).expanduser().resolve()
@@ -611,6 +681,7 @@ def resolve_options(options: argparse.Namespace) -> StressConfig:
         text_field=options.text_field,
         text_id_field=options.text_id_field,
         text_repeat=options.text_repeat,
+        ref_format=options.ref_format,
         qpm=qpm,
         total_requests=total_requests,
         duration_s=options.duration_s,
@@ -638,6 +709,7 @@ def resolve_options(options: argparse.Namespace) -> StressConfig:
         min_audio_duration_s=options.min_audio_duration_s,
         output=output,
         summary_json=summary_json,
+        save_audio_dir=save_audio_dir,
         omit_chunks=options.omit_chunks,
         run_id=run_id,
         labels=labels,
@@ -680,6 +752,7 @@ def load_corpus(
 
     id_fields = (options.text_id_field,) if options.text_id_field else SAMPLE_ID_FIELDS
     entries: list[CorpusEntry] = []
+    inline_audio_by_path: dict[Path, str] = {}
     try:
         with path.open(encoding="utf-8") as handle:
             for line_number, line in enumerate(handle, 1):
@@ -702,11 +775,46 @@ def load_corpus(
                         f"{options.text_field!r}; available fields: {available}"
                     )
                     continue
+                overrides: dict[str, str] = {}
+                for field_name in ("language", "ref_audio", "ref_text"):
+                    override = record.get(field_name)
+                    if override is None:
+                        continue
+                    elif not isinstance(override, str) or not override.strip():
+                        errors.append(
+                            f"{path}:{line_number} field {field_name!r} must be a "
+                            "non-empty string"
+                        )
+                    else:
+                        overrides[field_name] = override.strip()
+                # Note (Jiaxin Deng): the server cannot read a client file, so a reference that is a local file, relative to the corpus, goes out as a data URI; any other value is a URL, data URI or server path and is sent unchanged.
+                reference_audio = overrides.get("ref_audio", "")
+                reference_path = path.parent / reference_audio
+                # Note (Jiaxin Deng): an inline data URI is longer than a file name may be, and is_file raises on it.
+                if (
+                    reference_audio
+                    and not reference_audio.startswith("data:")
+                    and "://" not in reference_audio
+                    and reference_path.is_file()
+                ):
+                    if reference_path not in inline_audio_by_path:
+                        encoded_audio = base64.b64encode(
+                            reference_path.read_bytes()
+                        ).decode("ascii")
+                        inline_audio_by_path[reference_path] = (
+                            f"data:audio/wav;base64,{encoded_audio}"
+                        )
+                    else:
+                        pass
+                    overrides["ref_audio"] = inline_audio_by_path[reference_path]
+                else:
+                    pass
                 entries.append(
                     CorpusEntry(
                         sample_id=resolve_sample_id(record, id_fields, line_number),
                         text=value.strip(),
                         source_line=line_number,
+                        **overrides,
                     )
                 )
                 if options.max_texts > 0 and len(entries) >= options.max_texts:
@@ -885,7 +993,9 @@ def describe_plan(config: StressConfig) -> str:
         ),
         f"first offsets    : [{head}{' ... ' + tail if tail else ''}]",
         "payload sample   : "
-        + json.dumps(config.payload_for(0), ensure_ascii=False)[:600],
+        + json.dumps(
+            redact_payload(config.payload_for(config.corpus[0])), ensure_ascii=False
+        )[:600],
         f"text corpus      : {len(config.corpus)} prompts from {config.corpus_path} "
         f"(field={config.text_field}), first sample_id={config.corpus[0].sample_id} "
         f"text={config.corpus[0].text[:60]!r}",
