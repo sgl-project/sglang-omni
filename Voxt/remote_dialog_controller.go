@@ -74,23 +74,31 @@ func (a *app) openProviderDialog(kind local.Kind, id string) {
 	a.listModels()
 }
 
-// listModels asks a language model server on this Mac (Ollama, LM Studio,
-// oMLX, a custom one) which models it has, for the Model menu: the
-// preset's names may not be installed (#3950). With no answer the menu is
+// listModels asks a language model service which models it has, for the
+// Model menu: a server on this Mac (Ollama, LM Studio, oMLX, a custom
+// one) may not have the preset's names installed (#3950), and a service
+// with a key has newer models than the preset's. A service that needs a
+// key is asked only with one, typed or saved. With no answer the menu is
 // the preset's.
 func (a *app) listModels() {
 	d := &a.provDlg
-	if d.kind != local.LLM || !lookupService(d.kind, d.id).keyOptional {
+	sv := lookupService(d.kind, d.id)
+	if d.kind != local.LLM || sv.signIn {
 		return
 	}
 	p, acct := d.setup(), providers.Account(d.kind, d.id)
-	typed, remove, kr, client := strings.TrimSpace(d.key), d.removeKey, a.keys, a.remoteHTTP.Load()
+	typed, _ := secrets.Clean(d.key)
+	remove, kr, client := d.removeKey, a.keys, a.remoteHTTP.Load()
 	a.async(func() {
 		key := typed
 		if key == "" && !remove {
 			key, _ = kr.Get(acct)
 		}
-		models, err := runListModels(context.Background(), p, key, client)
+		var models []string
+		var err error
+		if key != "" || sv.keyOptional {
+			models, err = runListModels(context.Background(), p, key, client)
+		}
 		a.post(func() {
 			if !a.provDlg.open || providers.Account(a.provDlg.kind, a.provDlg.id) != acct || a.provDlg.setup().Endpoint != p.Endpoint {
 				return // closed, or an answer for an address since changed
@@ -108,8 +116,10 @@ func (a *app) listModels() {
 var runListModels = providers.Models
 
 // offer puts the server's models in the Model menu. A typed model ID the
-// server has becomes its menu item; a new, untouched setup whose default
-// the server lacks takes the server's first model.
+// server has becomes its menu item; a new, untouched setup of a server on
+// this Mac whose default it lacks takes the server's first model (a
+// service with a key keeps its default: the first of its list is its
+// newest model, not the one to start on).
 func (d *providerDialog) offer(models []string) {
 	untouched := !d.exists && !d.unsaved()
 	d.served = models
@@ -120,7 +130,7 @@ func (d *providerDialog) offer(models []string) {
 	switch {
 	case slices.Contains(models, cur):
 		d.model, d.customModel = cur, ""
-	case untouched:
+	case untouched && lookupService(d.kind, d.id).keyOptional:
 		d.model, d.customModel = models[0], ""
 		d.was = d.setup()
 	}
