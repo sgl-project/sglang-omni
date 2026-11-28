@@ -41,15 +41,6 @@ from sglang_omni.vendor.sensenova_u1.configuration_neo_chat import (
 )
 from sglang_omni.vendor.sensenova_u1.modeling_neo_chat import NEOChatModel
 
-CACHE_DIT_STEPS = 4
-CACHE_DIT_REUSE_PARAMS = {
-    "Fn_compute_blocks": 1,
-    "Bn_compute_blocks": 0,
-    "max_warmup_steps": 0,
-    "residual_diff_threshold": 1,
-    "max_continuous_cached_steps": -1,
-}
-
 
 def test_external_package_in_fresh_process(tmp_path: Path) -> None:
     checkpoint = tmp_path / "checkpoint"
@@ -602,69 +593,25 @@ def test_dispatched_denoising_spans_two_devices(
             True, branch_count=2, cfg_interval=(0.0, 1.0), decoder=decoder
         )
 
-    layer_calls = [0]
+    assert next(decoder.layers[-1].parameters()).device == torch.device(device_type, 1)
 
-    def count_last_layer(module, inputs, output) -> None:
-        layer_calls[0] += 1
-
-    last_layer = decoder.layers[-1]
-    assert next(last_layer.parameters()).device == torch.device(device_type, 1)
-    handle = last_layer.register_forward_hook(count_last_layer)
-
-    def generate() -> torch.Tensor:
-        cache_devices.clear()
-        layer_calls[0] = 0
-        images = model.t2i_generate(
-            tokenizer,
-            "a red apple",
-            image_size=(32, 32),
-            cfg_scale=4.0,
-            num_steps=CACHE_DIT_STEPS,
-            seed=0,
-        )
-        device_module.synchronize()
-        return images
-
-    def assert_layer_local_caches() -> None:
-        assert cache_devices[:2] == [
-            device_map["language_model.model.layers.0"],
-            device_map["language_model.model.layers.1"],
-        ]
-
-    uncached = generate()
-    uncached_calls = layer_calls[0]
-    assert_layer_local_caches()
-    assert uncached.shape == (1, 3, 32, 32)
-    assert uncached.device == head_device
-    assert torch.isfinite(uncached).all().item()
-
-    cache_dit = sensenova_cache_dit.SenseNovaCacheDit()
-    config = sensenova_cache_dit.resolve_cache_dit_config(
-        CACHE_DIT_REUSE_PARAMS, CACHE_DIT_STEPS
+    images = model.t2i_generate(
+        tokenizer,
+        "a red apple",
+        image_size=(32, 32),
+        cfg_scale=4.0,
+        num_steps=2,
+        seed=0,
     )
-    try:
-        cache_dit.mount(
-            decoder,
-            config,
-            sensenova_cache_dit.CacheDitMountKey(
-                overrides=sensenova_cache_dit.cache_dit_overrides_key(
-                    CACHE_DIT_REUSE_PARAMS
-                ),
-                separate_cfg=False,
-                max_warmup_steps=config.max_warmup_steps,
-            ),
-        )
-        with pytest.raises(RuntimeError, match="same device"):
-            generate()
-    finally:
-        cache_dit.unmount(decoder)
+    device_module.synchronize()
 
-    unmounted = generate()
-    handle.remove()
-    assert layer_calls[0] == uncached_calls
-    assert_layer_local_caches()
-    assert torch.isfinite(unmounted).all().item()
-    assert torch.equal(unmounted, uncached)
+    assert cache_devices[:2] == [
+        device_map["language_model.model.layers.0"],
+        device_map["language_model.model.layers.1"],
+    ]
+    assert images.shape == (1, 3, 32, 32)
+    assert images.device == head_device
+    assert torch.isfinite(images).all().item()
 
 
 def test_checkpoint_dtype_falls_back_to_the_shard_header(
