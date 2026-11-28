@@ -6,9 +6,14 @@
 
 namespace omni_common {
 
-// Request-local measurements; a single slow round cannot disable the draft.
+// Request-local windows over a plain timing that may come from an earlier
+// request; a single slow round cannot disable the draft.
 class DraftBackoff {
 public:
+  // plain_seconds_per_token: an earlier request's plain timing, 0 for none.
+  explicit DraftBackoff(double plain_seconds_per_token = 0.0)
+      : plain_seconds_per_token_(plain_seconds_per_token) {}
+
   void RecordRound(int committed_token_count, double seconds) {
     assert(committed_token_count > 0 && seconds > 0.0);
     ++round_count_;

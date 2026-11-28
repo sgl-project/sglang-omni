@@ -209,22 +209,21 @@ func TestLivePieces(t *testing.T) {
 	if r := finals[4]; r.Fields["realtime_session"] != "fake-session" || r.Fields["guessed_text"] != "" {
 		t.Errorf("the rest: %+v", r.Fields)
 	}
+	// The session decodes each piece with what it holds of the audio, the
+	// first with the preview's text as its guess, and starts its Final at the
+	// piece's end itself: the client sends no start.
+	at = 0
 	for i, r := range finals[:4] {
-		if r.Fields["realtime_session"] != "" || r.Fields["guessed_text"] != "" {
+		at += r.Samples
+		hasGuess := strings.HasPrefix(r.Fields["guessed_text"], "partial")
+		if r.Fields["realtime_session"] != "fake-session" || r.Fields["realtime_piece_end"] != strconv.Itoa(at) || hasGuess != (i == 0) {
 			t.Errorf("piece %d: %+v", i+1, r.Fields)
 		}
 	}
-	// Each piece's end is where the server starts the Final's prefill.
 	st.Close()
 	f.rt.Close() // the server records its live sessions before it exits
-	var ends []string
-	at = 0
-	for _, r := range finals[:4] {
-		at += r.Samples
-		ends = append(ends, strconv.Itoa(at))
-	}
-	if l := f.records("live"); len(l) != 1 || l[0].Fields["final_start"] != strings.Join(ends, ",") {
-		t.Errorf("live %+v, want the Final's starts %v", l, ends)
+	if l := f.records("live"); len(l) != 1 || l[0].Fields["final_start"] != "" {
+		t.Errorf("live %+v, want no Final's start from the client", l)
 	}
 	if !f.logged("4 pieces while it recorded") {
 		t.Error("the Final's line does not say what the pieces did")
