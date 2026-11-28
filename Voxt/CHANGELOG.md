@@ -13,6 +13,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 ### Fixed
 - **The transcription preview stays where you drag it** (#4701): dragged while new words came in, the preview jumped back toward where the drag started, and the screen's edge pulled it back before you let go. It now grows where you have it; dragged past the screen's edge, it returns to the screen once you let go.
+- **Hiding Rewrite clears its shortcut from an open answer card**: turning Show Rewrite off while an answered Rewrite card was on screen left the card's follow-up tooltip and the microphone showing the Rewrite shortcut until the next click. They drop the shortcut at once now.
 
 ### 中文
 
@@ -25,6 +26,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 #### 修复
 - **拖动转录预览时不再跳回去**（#4701）：边说边拖时，每来一批新字，预览会朝拖动开始的位置跳一下；拖到屏幕边缘，还没松手就被拉回来。现在它在拖到的位置上变大；拖出屏幕边缘的，松手后才回到屏幕内。
+- **隐藏改写时，打开着的答案卡片随即不再显示它的快捷键**：改写答案卡片开着时关掉「显示改写」，卡片的追问提示和麦克风仍显示改写快捷键，直到下次点击才消失。现在关掉后马上不再显示。
 
 ## [2.1.4] - 2026-11-26
 
