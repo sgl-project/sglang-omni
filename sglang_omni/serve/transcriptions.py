@@ -140,6 +140,12 @@ def register_transcriptions(app: FastAPI) -> None:
                 status_code=400,
                 detail="beam_width > 1 returns final transcripts only; set stream=false",
             )
+        elif beam_width > 1 and (form.temperature or 0.0) > 0.0:
+            # note (zhumengzhiren): the request builder rejects this too, but only after the upload is decoded.
+            raise HTTPException(
+                status_code=400,
+                detail="beam_width > 1 needs temperature 0; beam search is deterministic",
+            )
         else:
             pass
 
