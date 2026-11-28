@@ -4817,6 +4817,12 @@ def test_transcription_returns_the_n_best_in_sglext(beam_width: int) -> None:
             "at most 16",
         ),
         (
+            {"temperature": "0.7"},
+            b"RIFF",
+            ["WhisperForConditionalGeneration"],
+            "needs temperature 0",
+        ),
+        (
             {},
             b"RIFF",
             ["MossTranscribeDiarizeForConditionalGeneration"],
