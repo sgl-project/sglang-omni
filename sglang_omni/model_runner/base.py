@@ -14,6 +14,7 @@ from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Generic, Literal, Protocol, TypeAlias
 
 import torch
+from sglang.srt.beam_search.logits_capture import capture_pre_sample_logits
 from sglang.srt.speculative.ragged_verify import RaggedVerifyLayout
 from sglang.srt.utils.common import async_h2d, is_pin_memory_available
 
@@ -29,6 +30,7 @@ from sglang_omni.sampling.seed import (
     derive_sampling_seed,
     resolve_row_seed,
 )
+from sglang_omni.scheduling.beam_search import OmniBeamCoordinator
 from sglang_omni.scheduling.types import (
     ModelRunnerOutput,
     RequestDataInput,
@@ -196,6 +198,8 @@ class ModelRunner(Generic[RequestDataInput]):
     retained_prefill_input_embeds: torch.Tensor | None = None
     # [request slots, vocab + 1] bool, made on the first request whose repetition_penalty a verify applies.
     committed_token_presence: torch.Tensor | None = None
+    # Bound by the scheduler; selects the next tokens of beam rows after sampling.
+    beam_coordinator: OmniBeamCoordinator | None = None
 
     def __init__(
         self,
@@ -695,6 +699,16 @@ class ModelRunner(Generic[RequestDataInput]):
                 batch_result = self.tp_worker.forward_batch_generation(forward_batch)
             else:
                 pass
+            if (
+                self.beam_coordinator is not None
+                and self.beam_coordinator.has_live_groups
+            ):
+                # Sampling rewrites the logits in place and covers only one row per request.
+                capture_pre_sample_logits(
+                    schedule_batch, forward_batch, batch_result.logits_output
+                )
+            else:
+                pass
 
             if (
                 not schedule_batch.is_prefill_only
@@ -1069,6 +1083,10 @@ class ModelRunner(Generic[RequestDataInput]):
             schedule_batch,
             self.next_input_token_ids(result, forward_batch, requests),
         )
+        if self.beam_coordinator is not None:
+            self.beam_coordinator.maybe_select_and_relay(schedule_batch, result)
+        else:
+            pass
 
     # ------------------------------------------------------------------
     # Hooks — override in subclasses
@@ -1165,6 +1183,7 @@ class ModelRunner(Generic[RequestDataInput]):
                 and sp.presence_penalty == 0.0
                 and sp.min_new_tokens == 0
                 and req.custom_logit_processor is None
+                and req.beam_group is None
             )
 
         return all(_history_free(req) for req in batch.reqs)
