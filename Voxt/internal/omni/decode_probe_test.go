@@ -178,3 +178,35 @@ func TestDecodeKindNames(t *testing.T) {
 		t.Error("anything else is the Final")
 	}
 }
+
+// A Qwen3 session-backed pieces flow with the probe on records the
+// incremental requests as pieces and only the stop request as the Final,
+// so the latency JSON can tell them apart.
+func TestDecodeProbeNamesSessionPieces(t *testing.T) {
+	f := newFake(t, omnitest.Opts{Text: "p{n}"}, func(c *Config) { c.DecodeProbe = true })
+	a := piecesASR(t, f)
+	st, err := a.Open(context.Background(), asr.StreamRequest{SampleRate: sampleRate, Lang: "zh", Hints: []string{"VoxtNew"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sendAll(t, st, speechAndPauses(5)) // as TestLivePieces: four pieces, then the rest
+	f.waitLogged(t, "piece 4 of the recording")
+	if err := st.Finish(); err != nil {
+		t.Fatal(err)
+	}
+	drain(t, st)
+	st.Close()
+	events := st.(*live).probe.Events()
+	if len(events) != 5 {
+		t.Fatalf("decode events %+v: 4 pieces and the Final", events)
+	}
+	for i, ev := range events[:4] {
+		if ev.Kind != "piece" {
+			t.Errorf("event %d %+v, want a piece", i+1, ev)
+		}
+	}
+	if events[4].Kind != "final" {
+		t.Errorf("the stop request %+v, want the Final", events[4])
+	}
+	f.rt.Close()
+}
