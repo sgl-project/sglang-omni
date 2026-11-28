@@ -434,6 +434,8 @@ class Qwen3ASREngineBuilder(AsrEngineBuilder[Qwen3ASRRequestData]):
             # Note (yexiaodong): Typed pipeline engine defaults are merged after
             # the backend profile and otherwise re-enable Torch compilation.
             overrides["enable_torch_compile"] = False
+            # note (Gavin Meng): Omni owns audio encoding; SGLang's MPS multimodal serving is not used.
+            overrides["enable_multimodal"] = False
         else:
             pass
 
