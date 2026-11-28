@@ -5,13 +5,17 @@ from __future__ import annotations
 import asyncio
 import collections
 import json
+from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
 import pytest
 import torch
+from sglang.srt.arg_groups.model_override_base import resolved_view
+from sglang.srt.server_args import ServerArgs
 from sglang.srt.utils.hf_transformers_utils import get_config
 
+import sglang_omni.models.voxtral_tts.pipeline.engine_builder as engine_builder_module
 from sglang_omni.models.voxtral_tts.acoustic_transformer import (
     FlowMatchingAudioTransformer,
 )
@@ -31,8 +35,16 @@ from sglang_omni.models.voxtral_tts.vocoder import (
     ensure_non_empty_audio_codes,
 )
 from sglang_omni.proto import OmniRequest, StagePayload
+from sglang_omni.scheduling.generation_batch_policy import (
+    CudaGraphBackend,
+    build_generation_batch_overrides,
+)
+from sglang_omni.scheduling.sglang_backend.server_args_builder import (
+    build_sglang_server_args,
+)
 from sglang_omni.scheduling.types import RequestOutput
 from tests.unit_test.fakes import FakeExecutionBridge
+from tests.unit_test.fixtures.mini_checkpoint import write_mini_llama_checkpoint
 
 
 def test_voxtral_stage_factories_preserve_generation_placement_and_resolve_vocoder(
@@ -969,3 +981,51 @@ def test_voxtral_config_parser_builds_the_config_from_params_json(tmp_path) -> N
     assert config.hidden_size == 64
     assert config.num_hidden_layers == 2
     assert config.vocab_size == 256
+
+
+def voxtral_cuda_server_args(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    server_args_overrides: dict[str, object],
+) -> ServerArgs:
+    monkeypatch.setattr(
+        engine_builder_module, "current_platform", SimpleNamespace(is_cuda=lambda: True)
+    )
+    builder = VoxtralTtsEngineBuilder()
+    builder.device = "cuda:0"
+    builder.server_args_overrides = server_args_overrides
+    overrides = build_generation_batch_overrides(
+        server_args_overrides=server_args_overrides,
+        **builder.generation_defaults(dtype="bfloat16"),
+    )
+    overrides.pop("model_config_parser")
+    server_args = build_sglang_server_args(
+        write_mini_llama_checkpoint(tmp_path),
+        context_length=builder.context_length,
+        device="cuda",
+        **overrides,
+    )
+    builder.customize_server_args(server_args)
+    return server_args
+
+
+@pytest.mark.parametrize(
+    ("server_args_overrides", "expected_first_buckets"),
+    [
+        ({"attention_backend": "flashinfer"}, [1, 4]),
+        ({"attention_backend": "flashinfer", "cuda_graph_bs_prefill": [4, 8]}, [4, 8]),
+    ],
+    ids=["default_ladder", "declared_ladder"],
+)
+def test_voxtral_prefill_cuda_graph_covers_one_token_prefix_hits(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    server_args_overrides: dict[str, object],
+    expected_first_buckets: list[int],
+) -> None:
+    """A prompt the radix cache holds re-prefills one token, which ran eagerly when the smallest prefill bucket was 4; an operator ladder is kept as declared."""
+    server_args = voxtral_cuda_server_args(tmp_path, monkeypatch, server_args_overrides)
+    prefill = resolved_view(server_args).cuda_graph_config.prefill
+
+    assert prefill.backend == CudaGraphBackend.FULL
+    assert prefill.bs[: len(expected_first_buckets)] == expected_first_buckets

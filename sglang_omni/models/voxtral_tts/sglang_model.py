@@ -261,7 +261,10 @@ class VoxtralSGLangTTSModel(nn.Module):
         positions: torch.Tensor,
         forward_batch: ForwardBatch,
         input_embeds: torch.Tensor | None = None,
+        omni_prefill_rids: list[str] | None = None,
     ) -> LogitsProcessorOutput:
+        """omni_prefill_rids comes with the prefill embeddings; the hidden states do not depend on it."""
+        del omni_prefill_rids
         if input_embeds is None and forward_batch.forward_mode.is_decode():
             input_embeds = self.decode_input_embed_buffer[: input_ids.shape[0]]
         else:
