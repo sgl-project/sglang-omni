@@ -38,9 +38,9 @@ from benchmarks.duplex.client import (
 from benchmarks.duplex.profiles import DEFAULT_PROFILE, PROFILES, ProfileName
 from benchmarks.duplex.v10_dataset import Sample as V10Sample
 from benchmarks.duplex.v15_audio import (
+    CANCELLED_RESPONSE_CUT,
     LEGACY_BARGE_IN_CUT,
     PACING_TOLERANCE_S,
-    TURN_BASED_BARGE_IN_CUT,
     normalize_audio,
     reconstruct_output,
     write_json,
@@ -294,7 +294,7 @@ async def run_samples(
     turn_based_config = (
         {
             "turn_detection": turn_detection.model_dump(mode="json"),
-            "barge_in_cut": TURN_BASED_BARGE_IN_CUT,
+            "barge_in_cut": CANCELLED_RESPONSE_CUT,
             **TURN_BASED_TRANSPORT,
         }
         if protocol == "turn_based"
@@ -370,6 +370,11 @@ async def run_samples(
                 "transport": TRANSPORT,
                 "response_cancel": "never sent",
                 "protocol": PROFILES[profile].protocol,
+                **(
+                    {"barge_in_cut": CANCELLED_RESPONSE_CUT}
+                    if PROFILES[profile].supports_server_interrupt
+                    else {}
+                ),
                 "legacy": legacy_config,
                 "turn_based": turn_based_config,
             },

@@ -111,6 +111,13 @@ function pcm16Of(wavBase64) {
   return [...new Int16Array(bytes.buffer, bytes.byteOffset + 44, (bytes.length - 44) / 2)];
 }
 
+test("a deployment with a fixed prompt omits instructions even with a page default", async () => {
+  const capabilities = { ...CAPABILITIES.personaplex, supports_custom_instructions: false };
+  const { settings, ui } = await createSettings(capabilities, { pageOptions: { defaultInstructions: "Speak briefly." } });
+  assert.equal(ui.setPrompt.closest("label").hidden, true);
+  assert.equal("instructions" in sessionUpdate(settings), false);
+});
+
 test("MiniCPM-o renders every declared knob with a neutral placeholder and sends the first preset's prompt and voice", async () => {
   const { settings, ui, requests } = await createSettings(CAPABILITIES.minicpm_o);
   assert.deepEqual(renderedFields(ui), [

@@ -64,6 +64,7 @@ class ResponseFinished(ResponseEvent):
     status: ResponseStatus
     reason: str
     usage: dict[str, int | float | None] | None = None
+    preserve_queued_audio: bool = False
 
 
 @dataclass(frozen=True)

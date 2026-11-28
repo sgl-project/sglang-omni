@@ -129,6 +129,8 @@ class Capabilities:
     # note (Junnan Li): Frame cap per unit, indexed by the session's max_slice_nums minus one.
     image_frames_per_unit: tuple[int, ...] = (1,)
     default_max_slice_nums: int = 1
+    supports_custom_instructions: bool = True
+    supports_server_interrupt: bool = False
 
     def __post_init__(self) -> None:
         if self.interaction not in get_args(Interaction):
@@ -182,7 +184,7 @@ class Capabilities:
             first_unit_ms=self.native_unit_ms,
             microturn_ms="variable",
             tail_policy=self.tail_policy,
-            supports_server_interrupt=False,
+            supports_server_interrupt=self.supports_server_interrupt,
             supports_truncate=self.supports_truncate,
             supports_cancel=self.supports_cancel,
             supports_resume=False,
@@ -191,6 +193,7 @@ class Capabilities:
             strict_order=True,
             sampling_parameters=list(self.sampling_parameters),
             supports_reference_audio=self.supports_reference_audio,
+            supports_custom_instructions=self.supports_custom_instructions,
             supports_instruction_updates=self.supports_instruction_updates,
             supports_sampling_updates=self.supports_sampling_updates,
             skips_screen_blocks=self.skips_screen_blocks,

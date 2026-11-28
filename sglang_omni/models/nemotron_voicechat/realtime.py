@@ -120,6 +120,7 @@ def deployment(
             input_sample_rate_hz=INPUT_SAMPLE_RATE,
             output_sample_rate_hz=OUTPUT_SAMPLE_RATE,
             output_modalities=("audio", "text"),
+            supports_custom_instructions=False,
             native_unit_ms=80,
             tail_policy="pad",
         ),

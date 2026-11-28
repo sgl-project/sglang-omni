@@ -112,19 +112,16 @@ def export(
             raise ValueError(f"Variant directory escapes run: {directory}")
         else:
             pass
-        # note (luojiaxuan): load_runs already required a profile of the format's
-        # protocol; the turn-based protocols take their rate from that profile.
-        profile_rate = (
-            PROFILES[read_json(run / "manifest.json")["profile"]].output_sample_rate
-            if capture_format is not TraceFormat.PCM16
-            else None
-        )
+        profile = PROFILES.get(read_json(run / "manifest.json").get("profile"))
         record, pcm, audio = analyze_variant(
             directory,
             capture_format,
             None if state["input"] is None else state["input"]["sha256"],
             receipts_required=send_receipts_required(run),
-            profile_rate=profile_rate,
+            profile_rate=profile.output_sample_rate if profile else None,
+            supports_server_interrupt=bool(
+                profile and profile.supports_server_interrupt
+            ),
         )
         reasons = record["window"]["reasons"]
         # note (luojiaxuan): A legacy or turn-based session that failed its

@@ -10,7 +10,7 @@ from functools import lru_cache
 from pathlib import Path
 
 import torch.nn as nn
-from huggingface_hub import hf_hub_download
+from huggingface_hub import constants, hf_hub_download
 from transformers import AutoConfig, PretrainedConfig
 from transformers.initialization import no_init_weights
 from transformers.utils.hub import cached_file
@@ -312,6 +312,46 @@ def try_resolve_arch_from_zonos3_layout(
     except (OSError, ValueError):
         return None
     return ZONOS3_ARCHITECTURE
+
+
+def is_qwen_d2_release(model_path: str) -> bool:
+    """Whether a local or revision-pinned checkpoint is a Qwen3-Omni D2 release.
+
+    Only the 80 ms release is served; a Qwen manifest naming another interval is rejected.
+    """
+    if os.path.isdir(model_path):
+        manifest_path = Path(model_path) / "d2.json"
+        if not manifest_path.is_file():
+            return False
+        else:
+            pass
+    else:
+        repo_id, _, revision = model_path.partition("@")
+        try:
+            manifest_path = Path(
+                hf_hub_download(
+                    repo_id=repo_id,
+                    filename="d2.json",
+                    revision=revision or None,
+                    local_files_only=constants.HF_HUB_OFFLINE,
+                )
+            )
+        except (OSError, ValueError):
+            return False
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    if (
+        not isinstance(manifest, dict)
+        or manifest.get("format") != "d2.release.v1"
+        or manifest.get("family") != "qwen"
+    ):
+        return False
+    elif manifest.get("latency_ms") != 80:
+        raise ValueError(
+            "Only the 80 ms Qwen3-Omni D2 release is supported, "
+            f"got latency_ms={manifest.get('latency_ms')!r}"
+        )
+    else:
+        return True
 
 
 def auk_architecture_from_config(path: str) -> str | None:

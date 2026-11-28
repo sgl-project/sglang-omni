@@ -317,6 +317,7 @@ def test_profiles_declare_their_protocol() -> None:
         "stop_requires_eos": True,
         "continuous_output": True,
         "protocol": "native",
+        "supports_server_interrupt": False,
     }
     assert asdict(PROFILES[NATIVE]) == {
         "native_unit_ms": 1000,
@@ -324,6 +325,7 @@ def test_profiles_declare_their_protocol() -> None:
         "stop_requires_eos": False,
         "continuous_output": False,
         "protocol": "native",
+        "supports_server_interrupt": False,
     }
 
 

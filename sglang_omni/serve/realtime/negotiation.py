@@ -81,6 +81,15 @@ class SessionNegotiation:
         ) != admission_fields(current, capabilities=self.capabilities):
             raise ProtocolError("invalid_state", "session field is frozen")
         elif (
+            candidate.get("instructions")
+            and not self.capabilities.supports_custom_instructions
+        ):
+            raise ProtocolError(
+                "not_applicable",
+                "deployment uses a fixed system prompt",
+                "session.instructions",
+            )
+        elif (
             "instructions" in candidate
             and len(candidate["instructions"]) > self.limits.max_history_chars
         ):

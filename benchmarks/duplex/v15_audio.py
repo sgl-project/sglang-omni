@@ -17,7 +17,7 @@ from pydantic import JsonValue
 from scipy.signal import resample_poly
 
 from benchmarks.duplex.client import PACKET_MS, SAMPLE_RATE
-from benchmarks.duplex.profiles import DEFAULT_PROFILE, PROFILES, ProfileName, Protocol
+from benchmarks.duplex.profiles import DEFAULT_PROFILE, PROFILES, ProfileName
 
 PLAYOUT_CAVEATS = [
     "physical_acoustics",
@@ -41,14 +41,10 @@ LEGACY_BARGE_IN_CUT = (
 # note (luojiaxuan): A turn-based server sends no output_audio_buffer.cleared; it
 # drops the undelivered audio of the reply it cancels, and the cancelled
 # response.done is the first event that shows it.
-TURN_BASED_BARGE_IN_CUT = (
+CANCELLED_RESPONSE_CUT = (
     "playout cursor cut at the client receipt of a response.done with status "
     "cancelled"
 )
-BARGE_IN_CUTS: dict[Protocol, str] = {
-    "legacy": LEGACY_BARGE_IN_CUT,
-    "turn_based": TURN_BASED_BARGE_IN_CUT,
-}
 # note (wenyao): Playout and event spans assume paced source time within one packet.
 PACING_TOLERANCE_S = PACKET_MS / 1000
 INPUT_TIMING_CAVEAT = (
@@ -131,6 +127,15 @@ def reconstruct_output(
     output_sample_rate = profile_contract.output_sample_rate
     protocol = profile_contract.protocol
     legacy = protocol == "legacy"
+    cut_on_cancel = (
+        protocol == "turn_based" or profile_contract.supports_server_interrupt
+    )
+    if legacy:
+        barge_in_rule = LEGACY_BARGE_IN_CUT
+    elif cut_on_cancel:
+        barge_in_rule = CANCELLED_RESPONSE_CUT
+    else:
+        barge_in_rule = None
     audio_delta = LEGACY_AUDIO_DELTA if legacy else AUDIO_DELTA
     transcript_deltas = LEGACY_TRANSCRIPT_DELTAS if legacy else TRANSCRIPT_DELTAS
     errors: list[str] = []
@@ -229,7 +234,7 @@ def reconstruct_output(
         ):
             cut_playout(line_number, event_type, elapsed_s)
         elif (
-            protocol == "turn_based"
+            cut_on_cancel
             and event_type == "response.done"
             and (event.get("response") or {}).get("status") == "cancelled"
         ):
@@ -362,8 +367,8 @@ def reconstruct_output(
         "input_timing": input_timing,
         "errors": errors,
     }
-    if protocol in BARGE_IN_CUTS:
-        summary["barge_in"] = {"rule": BARGE_IN_CUTS[protocol], "cuts": len(cuts)}
+    if barge_in_rule is not None:
+        summary["barge_in"] = {"rule": barge_in_rule, "cuts": len(cuts)}
     else:
         pass
     write_json(
@@ -372,7 +377,7 @@ def reconstruct_output(
             **summary,
             "input_timing": {**input_timing, "appends": appends},
             "chunks": chunks,
-            **({"cuts": cuts} if protocol in BARGE_IN_CUTS else {}),
+            **({"cuts": cuts} if barge_in_rule is not None else {}),
         },
     )
     return summary
