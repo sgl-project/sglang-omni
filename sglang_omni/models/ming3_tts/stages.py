@@ -60,6 +60,7 @@ from sglang_omni.models.ming3_tts.sglang_model import (
 from sglang_omni.models.ming3_tts.vocoder import create_vocoder_executor
 from sglang_omni.modules.ming_audio.flow.aggregator import Aggregator
 from sglang_omni.modules.ming_audio.vae.modeling_audio_vae import AudioVAE
+from sglang_omni.platforms import current_platform
 from sglang_omni.proto.request import StagePayload
 from sglang_omni.scheduling.bootstrap import create_sglang_infrastructure
 from sglang_omni.scheduling.generation_batch_policy import (
@@ -765,7 +766,10 @@ def create_tts_engine_executor(
         SGLangOutputProcessor(),
         stop_policy,
         acoustic_graph_max_batch_size,
-        enable_fused_flow_head=enable_fused_flow_head and dense,
+        # note (rsi): the Ascend kernels reproduce the module path exactly, so the
+        # fused head also runs for the non-dense (MoE) checkpoint on NPU.
+        enable_fused_flow_head=enable_fused_flow_head
+        and (dense or current_platform.is_npu()),
     )
     return OmniScheduler(
         tp_worker=worker,

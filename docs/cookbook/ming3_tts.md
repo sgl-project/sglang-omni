@@ -20,6 +20,24 @@ sgl-omni serve --model-path inclusionAI/Ming-3.0-tts-tiny
 sgl-omni serve --model-path inclusionAI/Ming-3.0-tts-0.5B
 ```
 
+### Ascend NPU
+
+Start the server with the NPU pipeline configuration, selecting the checkpoint with `--model-path`:
+
+```bash
+ASCEND_RT_VISIBLE_DEVICES=0 sgl-omni serve \
+  --model-path inclusionAI/Ming-3.0-tts-tiny \
+  --config examples/configs/ming3_tts_npu.yaml \
+  --port 8000
+```
+
+- Both checkpoints run the backbone and the AudioVAE decoder on one NPU device. Tiny keeps `preprocessing` on CPU; dense 0.5B runs it on the NPU device.
+- `tts_engine` uses SGLang's `ascend` attention backend and PyTorch sampling. Decode graphs stay enabled; prefill graph capture is disabled because a multi-request prefill replay reuses one request's batch metadata on Ascend.
+- The fused flow-matching head runs on NPU for both checkpoints (it is bit-exact against the module path); `torch.compile` stays off.
+- The configuration uses `max_running_requests: 64`; lower it for the 0.5B checkpoint if the device runs out of memory.
+- On the tiny (Ling V3 MoE) checkpoint, `routed_scaling_factor` is folded into the top-k routing weights when the model is built. The Ascend fused MoE runner does not apply the factor, and the model layer applies it only on A2A paths, so without the fold the MoE output is smaller by that factor.
+- Validated on Ascend 910.
+
 The speech endpoint is `POST /v1/audio/speech`. With `stream=false`, the response is one complete waveform. With `stream=true` and `response_format="pcm"`, CUDA vocoders return incremental PCM for both Tiny and 0.5B; CPU vocoders retain complete-waveform decoding. The default decoder group is eight latents. Buffering and lookahead delay the first non-empty chunk until latent 17; shorter utterances flush when synthesis finishes. This is a decoder grouping rule, not an elapsed-time first-packet guarantee. The requests below are the same for both servers. Set `model` to the checkpoint id used at startup. The examples use `inclusionAI/Ming-3.0-tts-tiny`.
 
 ## Zero-shot speech

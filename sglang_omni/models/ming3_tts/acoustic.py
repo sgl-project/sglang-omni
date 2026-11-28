@@ -55,6 +55,10 @@ class RotaryCache:
     """fp32 [length, dim] rows: the cosines, then the sines, of each token's pairs."""
 
     cos_sin_cache: torch.Tensor
+    # note (rsi): Ascend reads BSND coefficients; expanding them once keeps the
+    # per-step gather and interleave out of the hot loop.
+    cos: torch.Tensor | None = None
+    sin: torch.Tensor | None = None
 
 
 @dataclass(kw_only=True)
@@ -140,18 +144,43 @@ def pack_projections(module: DiT | Aggregator) -> list[PackedProjection]:
 
 
 def build_rotary_cache(
-    rotary_embedding: RotaryEmbedding, sequence_length: int
+    rotary_embedding: RotaryEmbedding,
+    sequence_length: int,
+    dtype: torch.dtype | None = None,
 ) -> RotaryCache:
     """The rotary angles of rotate_half's interleaved pairs, laid out for the kernel."""
     frequencies, _scale = rotary_embedding.forward_from_seq_len(sequence_length)
     phase = frequencies[0, :, 0::2]
+    cos_sin_cache = torch.cat([phase.cos(), phase.sin()], dim=-1).contiguous()
+    if dtype is None or not current_platform.is_npu():
+        return RotaryCache(cos_sin_cache=cos_sin_cache)
+    else:
+        pass
+    # note (rsi): one gathered pair already covers every batch row and head, so
+    # [1, tokens, 1, head_dim] broadcasts over the BSND attention inputs.
+    cos_half, sin_half = cos_sin_cache.chunk(2, dim=-1)
+    shape = (1, sequence_length, 1, -1)
     return RotaryCache(
-        cos_sin_cache=torch.cat([phase.cos(), phase.sin()], dim=-1).contiguous()
+        cos_sin_cache=cos_sin_cache,
+        cos=cos_half.repeat_interleave(2, dim=-1).to(dtype).view(shape),
+        sin=sin_half.repeat_interleave(2, dim=-1).to(dtype).view(shape),
     )
 
 
 def normalize(norm: RMSNorm, states: torch.Tensor) -> torch.Tensor:
     """RMSNorm that casts before its weight multiply, as Ming's RMSNorm does here."""
+    if current_platform.is_npu():
+        # note (rsi): the Ascend fused op replaces the decomposed pow/mean/rsqrt
+        # chain F.rms_norm falls back to on this backend.
+        return current_platform.get_rmsnorm()(states, norm.weight, norm.eps)
+    else:
+        pass
+    if not current_platform.is_cuda():
+        # note (rsi): the fused JIT kernel is CUDA only; native RMSNorm on the
+        # other devices keeps the same cast-before-multiply semantics.
+        return F.rms_norm(states, (states.shape[-1],), norm.weight, norm.eps)
+    else:
+        pass
     return rmsnorm_hf(states.reshape(-1, states.shape[-1]), norm.weight, norm.eps).view(
         states.shape
     )
@@ -171,6 +200,8 @@ def run_block(
         F.linear(normed, projection.weight, projection.bias),
         rotary.cos_sin_cache,
         attention.heads,
+        cos=rotary.cos,
+        sin=rotary.sin,
     )
     states, normed = add_rmsnorm(
         states, attention.to_out[0](attended), block.norm2.weight, block.norm2.eps
@@ -216,6 +247,7 @@ def build_flow_constants(
 ) -> FlowConstants:
     dit = flowloss.cfm.model
     device = flow_timesteps.device
+    flow_dtype = next(dit.parameters()).dtype
     with torch.autocast(device_type=device.type, dtype=torch.bfloat16):
         timesteps = flow_timesteps + SWAY_SAMPLING_COEFFICIENT * (
             torch.cos(torch.pi / 2 * flow_timesteps) - 1 + flow_timesteps
@@ -230,8 +262,10 @@ def build_flow_constants(
             ),
             step_sizes=step_sizes,
             noise_step_scales=abs(step_sizes) ** 0.5,
-            flow_rotary=build_rotary_cache(dit.rotary_embed, 3),
-            aggregator_rotary=build_rotary_cache(aggregator.rotary_embed, 2),
+            flow_rotary=build_rotary_cache(dit.rotary_embed, 3, flow_dtype),
+            aggregator_rotary=build_rotary_cache(
+                aggregator.rotary_embed, 2, flow_dtype
+            ),
             aggregator_class_rows=aggregator.word_embedder(
                 torch.zeros((batch_size, 1), dtype=torch.long, device=device)
             ),
@@ -242,10 +276,14 @@ def build_flow_constants(
 
 def can_fuse_flow_head(flowloss: FlowLoss, aggregator: Aggregator) -> bool:
     """Whether the fused loop reproduces both modules; otherwise they run themselves."""
+    if not (current_platform.is_cuda() or current_platform.is_npu()):
+        return False
+    elif not HAS_TRITON and not current_platform.is_npu():
+        return False
+    else:
+        pass
     return (
-        HAS_TRITON
-        and current_platform.is_cuda()
-        and is_power_of_two(flowloss.cfm.model.x_embedder.in_features)
+        is_power_of_two(flowloss.cfm.model.x_embedder.in_features)
         and is_plain_rotary_transformer(flowloss.cfm.model)
         and is_plain_rotary_transformer(aggregator)
     )

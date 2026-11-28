@@ -1,0 +1,32 @@
+# SPDX-License-Identifier: Apache-2.0
+# Ascend NPU variant of the Ming-3.0 TTS pipeline. Stage topology, factories
+# and per-checkpoint defaults come from Ming3TTSPipelineConfig; this file only
+# sets placement and the engine knobs that differ from the CUDA defaults.
+# Pass the checkpoint with --model-path.
+config_cls: Ming3TTSPipelineConfig
+model_path: inclusionAI/Ming-3.0-tts-tiny
+name: ming3-tts
+stages:
+  tts_engine:
+    gpu: 0
+    factory:
+      # The fused flow head skips the per-step concatenations and runs the
+      # Ascend fused kernels; it is bit-exact against the module path.
+      enable_fused_flow_head: true
+    engine:
+      attention_backend: ascend
+      sampling_backend: pytorch
+      disable_overlap_schedule: true
+      disable_radix_cache: true
+      # Decode graphs replay correctly on Ascend. Prefill graph capture stays
+      # off: a multi-request prefill replay reuses one request's batch
+      # metadata, so only single-request batches stay correct.
+      disable_cuda_graph: false
+      disable_prefill_cuda_graph: true
+      enable_torch_compile: false
+      # The benchmark configuration; lower it for the 0.5B checkpoint if the
+      # device runs out of memory.
+      max_running_requests: 64
+      mem_fraction_static: 0.45
+  vocoder:
+    gpu: 0
