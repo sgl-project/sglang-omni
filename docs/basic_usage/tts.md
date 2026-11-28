@@ -62,6 +62,8 @@ The server reads references on the server host. Bare local paths are allowed by 
 
 The default response is a complete WAV file. This CustomVoice example selects a built-in speaker and sends no reference audio. Base checkpoints require a reference clip.
 
+Buffered audio responses omit token-usage and engine-time headers by default. Benchmark and debug clients can request them with `X-Include-Usage: true`: `X-Prompt-Tokens`, `X-Completion-Tokens`, `X-Engine-Time`, and `X-SGLang-Omni-Input-Tokens`/`Output-Tokens`/`Total-Tokens` are returned when the model supplies those values. This opt-in preserves the raw audio body and its MIME type. Raw streaming outcome lookups and SSE terminal usage keep their existing behavior.
+
 ### cURL
 
 ```bash

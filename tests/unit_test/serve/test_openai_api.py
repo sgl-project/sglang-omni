@@ -208,6 +208,12 @@ class SuccessfulSpeechClient:
         self.sample_rate = sample_rate
         self.finish_reason = finish_reason
         self.spec_tokens_details = spec_tokens_details
+        self.usage: UsageInfo | None = UsageInfo(
+            prompt_tokens=5,
+            completion_tokens=2,
+            total_tokens=7,
+            engine_time_s=1.25,
+        )
         self.generate_requests: list[GenerateRequest] = []
         self.speech_requests: list[GenerateRequest] = []
 
@@ -242,11 +248,7 @@ class SuccessfulSpeechClient:
             audio_bytes=b"RIFF",
             mime_type=f"audio/{response_format}",
             format=response_format,
-            usage=UsageInfo(
-                prompt_tokens=5,
-                completion_tokens=2,
-                total_tokens=7,
-            ),
+            usage=self.usage,
             spec_tokens_details=self.spec_tokens_details,
             finish_reason=self.finish_reason,
         )
@@ -986,24 +988,43 @@ def test_speech_endpoint_rejects_invalid_request_with_openai_error() -> None:
     }
 
 
-def test_speech_endpoint_returns_binary_audio() -> None:
+@pytest.mark.parametrize("include_usage", [None, "true", "false", " TRUE "])
+@pytest.mark.parametrize("have_usage", [True, False])
+def test_speech_endpoint_returns_binary_audio(
+    include_usage: str | None, have_usage: bool
+) -> None:
+    """Binary speech exposes usage only when the caller explicitly requests it."""
     speech_client = SuccessfulSpeechClient(finish_reason="length")
+    if not have_usage:
+        speech_client.usage = None
+    else:
+        pass
     client = TestClient(create_app(speech_client, model_name="tts"))
 
     response = client.post(
         "/v1/audio/speech",
         json={"input": "hello"},
+        headers={"X-Include-Usage": include_usage} if include_usage else {},
     )
 
     assert response.status_code == 200
     assert response.content == b"RIFF"
     assert response.headers["content-type"] == "audio/wav"
     assert response.headers["x-finish-reason"] == "length"
-    assert response.headers["x-prompt-tokens"] == "5"
-    assert response.headers["x-completion-tokens"] == "2"
-    assert response.headers["x-sglang-omni-input-tokens"] == "5"
-    assert response.headers["x-sglang-omni-output-tokens"] == "2"
-    assert response.headers["x-sglang-omni-total-tokens"] == "7"
+    usage_headers = {
+        "x-prompt-tokens": "5",
+        "x-completion-tokens": "2",
+        "x-sglang-omni-input-tokens": "5",
+        "x-sglang-omni-output-tokens": "2",
+        "x-sglang-omni-total-tokens": "7",
+        "x-engine-time": "1.25",
+    }
+    if have_usage and include_usage and include_usage.strip().lower() == "true":
+        assert all(
+            response.headers[name] == value for name, value in usage_headers.items()
+        )
+    else:
+        assert all(name not in response.headers for name in usage_headers)
     assert response.headers["x-request-id"].startswith("speech-")
     assert speech_client.speech_requests[0].model == "tts"
     assert isinstance(speech_client.speech_requests[0].metadata["tts_params"], dict)
