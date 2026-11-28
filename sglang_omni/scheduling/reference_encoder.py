@@ -6,6 +6,7 @@ import logging
 import queue as _queue_mod
 import threading
 import time
+from collections.abc import Sequence
 from dataclasses import asdict, dataclass
 from typing import Generic, cast
 
@@ -57,7 +58,12 @@ class ReferenceEncodeHook(Generic[InputT, ArtifactT, StoredT, RawInputT]):
     def can_encode_batch(self) -> bool:
         return False
 
-    def encode_batch(self, items: list[InputT]) -> list[ArtifactT]:
+    def batch_groups(self, items: list[InputT]) -> list[list[int]]:
+        """Split a drained batch into groups that are encoded one by one."""
+        return [list(range(len(items)))]
+
+    def encode_batch(self, items: list[InputT]) -> Sequence[ArtifactT | Exception]:
+        """Encode items; an Exception fails only its own slot."""
         return [self.encode_one(item) for item in items]
 
 
@@ -133,6 +139,22 @@ def fresh_exception(exc: BaseException) -> BaseException:
     return fresh
 
 
+@dataclass(kw_only=True, slots=True)
+class BatchQueueEntry(Generic[InputT, ArtifactT]):
+    """A queued request; a caller that gives up abandons it."""
+
+    queued_input: InputT | None
+    future: concurrent.futures.Future[ArtifactT]
+
+    def abandon(self) -> bool:
+        """Cancel if no group has claimed the request, then drop its input."""
+        if self.future.cancel():
+            self.queued_input = None
+            return True
+        else:
+            return False
+
+
 class ReferenceEncodeService(Generic[InputT, ArtifactT, StoredT, RawInputT]):
     LOG_INTERVAL_S = 60.0
 
@@ -182,8 +204,7 @@ class ReferenceEncodeService(Generic[InputT, ArtifactT, StoredT, RawInputT]):
         self.max_batch_wait_s = float(max_batch_wait_ms) / 1000.0
         self.batching = self.max_batch_size > 1 and bool(hook.can_encode_batch())
         self.batch_queue: (
-            _queue_mod.Queue[tuple[InputT, concurrent.futures.Future[ArtifactT]] | None]
-            | None
+            _queue_mod.Queue[BatchQueueEntry[InputT, ArtifactT] | None] | None
         ) = None
         self.batch_thread: threading.Thread | None = None
         if self.batching:
@@ -225,18 +246,20 @@ class ReferenceEncodeService(Generic[InputT, ArtifactT, StoredT, RawInputT]):
         else:
             pass
         future: concurrent.futures.Future[ArtifactT] = concurrent.futures.Future()
-        self.batch_queue.put((item, future))
+        self.batch_queue.put(BatchQueueEntry(queued_input=item, future=future))
         return future.result(timeout=self.timeout_s)
 
     def drain_batch(
         self,
     ) -> tuple[list[tuple[InputT, concurrent.futures.Future[ArtifactT]]], bool]:
         assert self.batch_queue is not None
-        first = self.batch_queue.get()
-        if first is None:
-            return ([], True)
-        else:
-            pass
+        first = None
+        while first is None:
+            entry = self.batch_queue.get()
+            if entry is None:
+                return ([], True)
+            else:
+                first = self.live_request(entry)
         batch = [first]
         deadline = time.monotonic() + self.max_batch_wait_s
         while len(batch) < self.max_batch_size:
@@ -254,10 +277,23 @@ class ReferenceEncodeService(Generic[InputT, ArtifactT, StoredT, RawInputT]):
                     break
             if entry is None:
                 return (batch, True)
+            elif (request := self.live_request(entry)) is not None:
+                batch.append(request)
             else:
                 pass
-            batch.append(entry)
         return (batch, False)
+
+    @staticmethod
+    def live_request(
+        entry: BatchQueueEntry[InputT, ArtifactT],
+    ) -> tuple[InputT, concurrent.futures.Future[ArtifactT]] | None:
+        """The entry's input and future, or None if its caller gave up."""
+        # note (yucheng): Read once; abandon() may clear it at any time.
+        queued_input = entry.queued_input
+        if queued_input is None or entry.future.cancelled():
+            return None
+        else:
+            return (queued_input, entry.future)
 
     def batch_worker(self) -> None:
         while True:
@@ -267,22 +303,48 @@ class ReferenceEncodeService(Generic[InputT, ArtifactT, StoredT, RawInputT]):
                 logger.exception("reference encode batch worker: drain failed")
                 continue
             if batch:
+                items = [item for item, _ in batch]
+                # note (yucheng): A raising split must not end the worker.
                 try:
-                    results: list[ArtifactT | BaseException] = self.encode_batch(
-                        [item for item, _ in batch]
+                    groups = self._hook.batch_groups(items)  # noqa: leading-underscore
+                    if sorted(index for group in groups for index in group) != list(
+                        range(len(items))
+                    ):
+                        raise RuntimeError(
+                            f"batch_groups returned {groups} for {len(items)} items"
+                        )
+                    else:
+                        pass
+                except Exception:
+                    logger.exception(
+                        f"{self.log_prefix or 'reference encode'} batch_groups failed; "
+                        "encoding the drained batch as one group"
                     )
-                except BaseException as exc:
-                    logger.exception("reference encode batch worker: encode failed")
-                    results = [exc] * len(batch)
-                for (_, future), outcome in zip(batch, results):
-                    if future.cancelled():
+                    groups = [list(range(len(items)))]
+                for group in groups:
+                    # note (yucheng): Late claim lets timed-out callers cancel.
+                    claimed_indices = [
+                        index
+                        for index in group
+                        if batch[index][1].set_running_or_notify_cancel()
+                    ]
+                    if not claimed_indices:
                         continue
                     else:
                         pass
-                    if isinstance(outcome, BaseException):
-                        future.set_exception(fresh_exception(outcome))
-                    else:
-                        future.set_result(cast(ArtifactT, outcome))
+                    try:
+                        results: list[ArtifactT | BaseException] = self.encode_batch(
+                            [items[index] for index in claimed_indices]
+                        )
+                    except BaseException as exc:
+                        logger.exception("reference encode batch worker: encode failed")
+                        results = [exc] * len(claimed_indices)
+                    for index, outcome in zip(claimed_indices, results):
+                        future = batch[index][1]
+                        if isinstance(outcome, BaseException):
+                            future.set_exception(fresh_exception(outcome))
+                        else:
+                            future.set_result(cast(ArtifactT, outcome))
             else:
                 pass
             if stopping:
@@ -306,8 +368,9 @@ class ReferenceEncodeService(Generic[InputT, ArtifactT, StoredT, RawInputT]):
                 continue
             else:
                 pass
-            _, future = entry
-            if not future.cancelled():
+            future = entry.future
+            # note (yucheng): Claim first, so a late cancel cannot raise.
+            if future.set_running_or_notify_cancel():
                 future.set_exception(
                     RuntimeError("reference encode service is shutting down")
                 )
@@ -455,16 +518,5 @@ class ReferenceEncodeService(Generic[InputT, ArtifactT, StoredT, RawInputT]):
             else:
                 pass
             self.last_log_time = now
-            stats = {
-                "hits": self.hits,
-                "misses": self.misses,
-                "merged": self.merged,
-                "entries": len(self.cache),
-                "bytes": self.cache.current_bytes,
-                "evictions": self.cache.eviction_count,
-                "failed": self.failed,
-                "uncacheable": self.uncacheable,
-                "batches": self.batches,
-                "batched_items": self.batched_items,
-            }
-        logger.info("%s reference encode stats: %s", self.log_prefix, stats)
+        # note (yucheng): stats() takes the lock, so call it after release.
+        logger.info("%s reference encode stats: %s", self.log_prefix, self.stats())

@@ -17,6 +17,7 @@ import torch
 from sglang_omni.models.moss_tts.audio_tokenizer import MossAudioEncoder
 from sglang_omni.preprocessing.cache_key import hash_bytes, reference_path_cache_key
 from sglang_omni.scheduling.reference_encoder import (
+    BatchQueueEntry,
     ReferenceEncodeKey,
     ReferenceEncodeService,
     TensorReferenceEncodeHook,
@@ -191,7 +192,7 @@ class MossReferenceEncoder(
             if self.closed:
                 raise RuntimeError("MOSS-TTS reference encoder is closed")
             else:
-                self.batch_queue.put((item, future))
+                self.batch_queue.put(BatchQueueEntry(queued_input=item, future=future))
         return future.result(timeout=self.timeout_s)
 
     def encode(self, source: str | os.PathLike[str]) -> torch.Tensor:

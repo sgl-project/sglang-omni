@@ -12,6 +12,7 @@ import pytest
 import torch
 
 from sglang_omni.scheduling.reference_encoder import (
+    BatchQueueEntry,
     ReferenceEncodeService,
     TensorReferenceEncodeHook,
 )
@@ -64,6 +65,94 @@ class BatchHook(TensorReferenceEncodeHook[str]):
         if self.fail_batch:
             raise RuntimeError("batch encode exploded")
         return [self.encode(item) for item in items]
+
+
+class GroupingHook(BatchHook):
+    """One group per item, "slow" last and held until its gate opens."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.slow_gate = threading.Event()
+
+    def batch_groups(self, items: list[str]) -> list[list[int]]:
+        return sorted(
+            ([index] for index in range(len(items))),
+            key=lambda group: items[group[0]] == "slow",
+        )
+
+    def encode_batch(self, items: list[str]) -> list[torch.Tensor]:
+        if items == ["slow"]:
+            self.slow_gate.wait(timeout=10)
+        else:
+            pass
+        return super().encode_batch(items)
+
+
+class SlowFirstGroupingHook(GroupingHook):
+    """Like GroupingHook, but the held "slow" group runs first."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.slow_entered = threading.Event()
+
+    def batch_groups(self, items: list[str]) -> list[list[int]]:
+        return sorted(
+            ([index] for index in range(len(items))),
+            key=lambda group: items[group[0]] != "slow",
+        )
+
+    def encode_batch(self, items: list[str]) -> list[torch.Tensor]:
+        if items == ["slow"]:
+            self.slow_entered.set()
+        else:
+            pass
+        return super().encode_batch(items)
+
+
+class BrokenGroupingHook(BatchHook):
+    """A hook whose batch split raises, as a buggy hook would."""
+
+    def batch_groups(self, items: list[str]) -> list[list[int]]:
+        raise RuntimeError("cannot split")
+
+
+class DroppingGroupingHook(BatchHook):
+    """A hook whose batch split loses an item, as a buggy hook would."""
+
+    def batch_groups(self, items: list[str]) -> list[list[int]]:
+        return [[0]]
+
+
+class IsolatedGroupsHook(BatchHook):
+    """One group per item, "bad" first; the "bad" group forward fails."""
+
+    def batch_groups(self, items: list[str]) -> list[list[int]]:
+        return sorted(
+            ([index] for index in range(len(items))),
+            key=lambda group: items[group[0]] != "bad",
+        )
+
+    def encode_batch(self, items: list[str]) -> list[torch.Tensor]:
+        if items == ["bad"]:
+            raise RuntimeError("group forward exploded")
+        else:
+            return super().encode_batch(items)
+
+
+class SlotFailureHook(BatchHook):
+    """Fails single items inside an otherwise successful batch."""
+
+    def encode_batch(self, items: list[str]) -> list[torch.Tensor | Exception]:
+        with self.lock:
+            self.batch_sizes.append(len(items))
+        return [
+            (
+                ValueError(f"bad reference: {item}")
+                if item in self.fail_items
+                else self.encode(item)
+            )
+            for item in items
+        ]
 
 
 def make_service(
@@ -224,8 +313,8 @@ def test_shutdown_fails_queued_waiters_instead_of_hanging() -> None:
             late = pool.submit(service.get_or_encode, "item-late")
             with queue_grew:
                 assert queue_grew.wait_for(
-                    lambda: isinstance(queued_entries[-1], tuple)
-                    and queued_entries[-1][0] == "item-late",
+                    lambda: isinstance(queued_entries[-1], BatchQueueEntry)
+                    and queued_entries[-1].queued_input == "item-late",
                     timeout=5,
                 )
             hook.gate.set()
@@ -247,3 +336,129 @@ def test_invalid_batch_settings_are_rejected() -> None:
         ReferenceEncodeService(BatchHook(), max_batch_size=0)
     with pytest.raises(ValueError, match="max_batch_wait_ms"):
         ReferenceEncodeService(BatchHook(), max_batch_wait_ms=-1)
+
+
+def test_exception_in_a_batch_slot_fails_only_that_item() -> None:
+    hook = SlotFailureHook()
+    hook.fail_items = {"bad"}
+    service = make_service(hook, max_batch_size=3, max_batch_wait_ms=5000.0)
+    try:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=3) as pool:
+            good = pool.submit(service.get_or_encode, "good")
+            bad = pool.submit(service.get_or_encode, "bad")
+            other = pool.submit(service.get_or_encode, "other")
+            assert tuple(good.result(timeout=10).tolist()) == (4, ord("d"))
+            assert tuple(other.result(timeout=10).tolist()) == (5, ord("r"))
+            with pytest.raises(ValueError, match="bad reference"):
+                bad.result(timeout=10)
+        # The batch-mates were not re-encoded one by one.
+        assert hook.batch_sizes == [3]
+        assert hook.single_calls == []
+    finally:
+        service.close()
+
+
+def test_each_batch_group_is_delivered_as_soon_as_it_finishes() -> None:
+    """A finished group does not wait for a slower group of its batch."""
+    hook = GroupingHook()
+    service = make_service(hook, max_batch_size=2, max_batch_wait_ms=5000.0)
+    try:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+            slow = pool.submit(service.get_or_encode, "slow")
+            fast = pool.submit(service.get_or_encode, "fast")
+            assert tuple(fast.result(timeout=2).tolist()) == (4, ord("t"))
+            assert not slow.done()
+            hook.slow_gate.set()
+            assert tuple(slow.result(timeout=5).tolist()) == (4, ord("w"))
+        assert hook.batch_sizes == [1, 1]
+    finally:
+        service.close()
+
+
+@pytest.mark.parametrize(
+    "hook_type",
+    [BrokenGroupingHook, DroppingGroupingHook],
+    ids=["raises", "loses_an_item"],
+)
+def test_a_bad_batch_split_falls_back_to_one_group(hook_type: type[BatchHook]) -> None:
+    """A split that raises or loses an item falls back to one group."""
+    hook = hook_type()
+    service = make_service(
+        hook, max_batch_size=2, max_batch_wait_ms=1000.0, timeout_s=5.0
+    )
+    try:
+        results = parallel(service, ["a", "bb"])
+        assert [tuple(r.tolist()) for r in results] == [(1, ord("a")), (2, ord("b"))]
+        assert tuple(service.get_or_encode("ccc").tolist()) == (3, ord("c"))
+        assert hook.batch_sizes == [2, 1]
+    finally:
+        service.close()
+
+
+def test_a_cancelled_entry_inside_a_drained_batch_is_skipped() -> None:
+    """Given-up entries between live ones are skipped and take no slot."""
+    hook = BatchHook()
+    hook.gate = threading.Event()
+    service = make_service(hook, max_batch_size=2, max_batch_wait_ms=0.0)
+    try:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            running = pool.submit(service.get_or_encode, "a")
+            assert hook.batch_entered.wait(timeout=5)
+            # Timeouts jitter, so given-up entries can sit between live ones.
+            entries: list[BatchQueueEntry[str, torch.Tensor]] = [
+                BatchQueueEntry(queued_input=name, future=concurrent.futures.Future())
+                for name in ("bb", "ccc", "dddd", "eeeee")
+            ]
+            assert entries[1].future.cancel()
+            assert entries[2].abandon()
+            assert entries[2].queued_input is None
+            for entry in entries:
+                service.batch_queue.put(entry)
+            hook.gate.set()
+            assert tuple(running.result(timeout=5).tolist()) == (1, ord("a"))
+        assert tuple(entries[0].future.result(timeout=5).tolist()) == (2, ord("b"))
+        assert tuple(entries[3].future.result(timeout=5).tolist()) == (5, ord("e"))
+        assert hook.batch_sizes == [1, 2]
+    finally:
+        service.close()
+
+
+def test_a_request_cancelled_while_an_earlier_group_runs_is_not_encoded() -> None:
+    """A drained request whose caller gives up before its group is skipped."""
+    hook = SlowFirstGroupingHook()
+    service = make_service(hook, max_batch_size=2, max_batch_wait_ms=5000.0)
+    try:
+        slow: BatchQueueEntry[str, torch.Tensor] = BatchQueueEntry(
+            queued_input="slow", future=concurrent.futures.Future()
+        )
+        late: BatchQueueEntry[str, torch.Tensor] = BatchQueueEntry(
+            queued_input="late", future=concurrent.futures.Future()
+        )
+        service.batch_queue.put(slow)
+        service.batch_queue.put(late)
+        assert hook.slow_entered.wait(timeout=5)
+        # The caller of "late" times out here, while "slow" is still encoding.
+        assert late.abandon()
+        hook.slow_gate.set()
+        assert tuple(slow.future.result(timeout=5).tolist()) == (4, ord("w"))
+    finally:
+        service.close()
+    assert hook.batch_sizes == [1]
+
+
+def test_a_failed_group_does_not_fail_the_other_groups() -> None:
+    """A failing group retries per item; later groups are untouched."""
+    hook = IsolatedGroupsHook()
+    hook.fail_items = {"bad"}
+    service = make_service(hook, max_batch_size=2, max_batch_wait_ms=5000.0)
+    try:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+            good = pool.submit(service.get_or_encode, "good")
+            bad = pool.submit(service.get_or_encode, "bad")
+            assert tuple(good.result(timeout=10).tolist()) == (4, ord("d"))
+            with pytest.raises(ValueError, match="bad reference"):
+                bad.result(timeout=10)
+        assert hook.single_calls == ["bad"]
+        assert hook.batch_sizes == [1]
+    finally:
+        service.close()

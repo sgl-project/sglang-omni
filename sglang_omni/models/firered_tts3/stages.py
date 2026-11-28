@@ -16,8 +16,8 @@ from sglang_omni.models.firered_tts3.hf_config import (
 from sglang_omni.models.firered_tts3.preprocessing import (
     preprocess_firered_tts3_payload,
 )
-from sglang_omni.models.firered_tts3.ref_encode import (
-    FireRedReferenceBundle,
+from sglang_omni.models.firered_tts3.ref_encode import FireRedReferenceBundle
+from sglang_omni.models.firered_tts3.ref_service import (
     FireRedReferenceEncoder,
     prompt_stream_message,
 )
