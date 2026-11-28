@@ -13,14 +13,17 @@ from typing import NamedTuple
 import torch
 import torch.nn.functional as F
 from torch import nn
-from x_transformers.x_transformers import RotaryEmbedding, apply_rotary_pos_emb
+from x_transformers.x_transformers import (
+    RotaryEmbedding,
+    apply_rotary_pos_emb,
+    rotate_half,
+)
 
 
 class Rope(NamedTuple):
     """Rotary tables for one axis of the sequence.
 
-    freqs and scale are what x_transformers returns; cos and sin are set only
-    where the fused Q/K kernel runs.
+    Blocks can share the cosine and sine tables for this axis.
     """
 
     freqs: torch.Tensor
@@ -29,13 +32,31 @@ class Rope(NamedTuple):
     sin: torch.Tensor | None = None
 
 
-def attention_bias(key_mask: torch.Tensor, dtype: torch.dtype) -> torch.Tensor:
-    """Additive SDPA bias ``[B, 1, 1, K]`` from a boolean key-padding mask ``[B, K]``."""
-    # -inf is safe: every request has at least one valid text token and audio
-    # frame, so no softmax row is fully masked.
-    bias = torch.zeros(key_mask.shape, dtype=dtype, device=key_mask.device)
-    bias.masked_fill_(~key_mask, float("-inf"))
-    return bias[:, None, None, :]
+def supports_npu_bf16_inference(
+    tensor: torch.Tensor, *, training: bool, operator: str
+) -> bool:
+    return (
+        tensor.device.type == "npu"
+        and tensor.dtype == torch.bfloat16
+        and not training
+        and hasattr(torch.ops.npu, operator)
+    )
+
+
+def attention_bias(
+    key_mask: torch.Tensor, dtype: torch.dtype, *, fused_npu: bool = False
+) -> torch.Tensor:
+    """Build the shared key-padding mask in the attention backend's format."""
+    if fused_npu:
+        # Ascend fusion attention uses True for blocked keys in BNSD layout.
+        blocked = ~key_mask[:, None, None, :]
+        return blocked.expand(-1, 1, key_mask.shape[1], -1).contiguous()
+    else:
+        # -inf is safe: every request has at least one valid text token and audio
+        # frame, so no softmax row is fully masked.
+        bias = torch.zeros(key_mask.shape, dtype=dtype, device=key_mask.device)
+        bias.masked_fill_(~key_mask, float("-inf"))
+        return bias[:, None, None, :]
 
 
 class SinusPositionEmbedding(nn.Module):
@@ -211,29 +232,68 @@ class Attention(nn.Module):
     def apply_rope(
         q: torch.Tensor, k: torch.Tensor, rope: Rope
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        q_scale, k_scale = (
-            (rope.scale, rope.scale**-1.0) if rope.scale is not None else (1.0, 1.0)
-        )
-        return (
-            apply_rotary_pos_emb(q, rope.freqs, q_scale),
-            apply_rotary_pos_emb(k, rope.freqs, k_scale),
-        )
+        if (
+            rope.cos is not None
+            and rope.sin is not None
+            and rope.freqs.ndim == 3
+            and isinstance(rope.scale, (float, int))
+            and rope.scale == 1
+            and rope.freqs.shape[-2:] == q.shape[-2:]
+        ):
+            cosine = rope.cos.unsqueeze(1)
+            sine = rope.sin.unsqueeze(1)
+            return (
+                (q * cosine + rotate_half(q) * sine).to(q.dtype),
+                (k * cosine + rotate_half(k) * sine).to(k.dtype),
+            )
+        else:
+            q_scale, k_scale = (
+                (rope.scale, rope.scale**-1.0) if rope.scale is not None else (1.0, 1.0)
+            )
+            return (
+                apply_rotary_pos_emb(q, rope.freqs, q_scale),
+                apply_rotary_pos_emb(k, rope.freqs, k_scale),
+            )
 
     @staticmethod
     def attend(q, k, v, bias: torch.Tensor | None):
-        """SDPA with an optional additive key bias ``[B, 1, 1, K]``, then merge heads."""
+        """Apply attention using the mask format produced by attention_bias, then merge heads."""
         batch = q.shape[0]
-        out = F.scaled_dot_product_attention(
-            q, k, v, attn_mask=bias, dropout_p=0.0, is_causal=False
-        )
+        if q.device.type == "npu" and bias is not None and bias.dtype == torch.bool:
+            out = torch.ops.npu.npu_fusion_attention(
+                q.contiguous(),
+                k.contiguous(),
+                v.contiguous(),
+                q.shape[1],
+                "BNSD",
+                atten_mask=bias,
+                scale=q.shape[-1] ** -0.5,
+            )[0]
+        else:
+            out = F.scaled_dot_product_attention(
+                q, k, v, attn_mask=bias, dropout_p=0.0, is_causal=False
+            )
         return out.transpose(1, 2).reshape(batch, -1, q.shape[1] * q.shape[3])
 
     def norm_rope(self, q, k, q_norm, k_norm, rope: Rope | None):
         if self.qk_fusion is not None and rope is not None:
             return self.qk_fusion(q, k, q_norm, k_norm, rope)
+        elif (
+            supports_npu_bf16_inference(
+                q, training=self.training, operator="npu_rms_norm"
+            )
+            and k.dtype == q.dtype == q_norm.weight.dtype == k_norm.weight.dtype
+        ):
+            # BF16 RMSNorm uses the epsilon of its FP32 accumulation dtype.
+            epsilon = torch.finfo(torch.float32).eps
+            q = torch.ops.npu.npu_rms_norm(
+                q, q_norm.weight, epsilon if q_norm.eps is None else q_norm.eps
+            )[0]
+            k = torch.ops.npu.npu_rms_norm(
+                k, k_norm.weight, epsilon if k_norm.eps is None else k_norm.eps
+            )[0]
         else:
-            pass
-        q, k = q_norm(q), k_norm(k)
+            q, k = q_norm(q), k_norm(k)
         return self.apply_rope(q, k, rope) if rope is not None else (q, k)
 
     def forward(
@@ -578,19 +638,23 @@ class AuKDit(nn.Module):
     def build_rope(self, seq_len: int, positions: torch.Tensor | None = None) -> Rope:
         """Rotary tables for one axis, over a length or at explicit positions.
 
-        The fused kernel's cos and sin are built here, once per step for all of
-        the blocks, so that a compiled block reads them as plain tensors.
+        The fused kernel and NPU eager path share trig tables across blocks.
         """
         freqs, scale = (
             self.rotary_embed.forward_from_seq_len(seq_len)
             if positions is None
             else self.rotary_embed(positions)
         )
-        if self.qk_fusion is None:
-            return Rope(freqs, scale)
+        reuse_npu_tables = (
+            freqs.device.type == "npu"
+            and freqs.ndim == 3
+            and isinstance(scale, (float, int))
+            and scale == 1
+        )
+        if self.qk_fusion is not None or reuse_npu_tables:
+            return Rope(freqs, scale, freqs.cos(), freqs.sin())
         else:
-            pass
-        return Rope(freqs, scale, freqs.cos(), freqs.sin())
+            return Rope(freqs, scale)
 
     def embed_audio(
         self,
@@ -653,6 +717,7 @@ class AuKDit(nn.Module):
         ref_mask: torch.Tensor | None = None,
         audio_positions: torch.Tensor | None = None,
         joint_positions: torch.Tensor | None = None,
+        allow_npu_fused_attention: bool = False,
     ) -> torch.Tensor:
         batch = x.shape[0]
         if time.ndim == 0:
@@ -720,10 +785,13 @@ class AuKDit(nn.Module):
         if audio_mask is not None:
             single_mask = torch.cat([c_mask, audio_mask], dim=1)
             if self.attn_mask_enabled:
-                joint_bias = attention_bias(
-                    torch.cat([audio_mask, c_mask], dim=1), x.dtype
+                fused_npu = allow_npu_fused_attention and supports_npu_bf16_inference(
+                    x, training=self.training, operator="npu_fusion_attention"
                 )
-                single_bias = attention_bias(single_mask, x.dtype)
+                joint_bias = attention_bias(
+                    torch.cat([audio_mask, c_mask], dim=1), x.dtype, fused_npu=fused_npu
+                )
+                single_bias = attention_bias(single_mask, x.dtype, fused_npu=fused_npu)
             else:
                 pass
         else:

@@ -91,7 +91,7 @@ class AuKPipelineConfig(PipelineConfig):
                 max_batch_size=16,
                 max_batch_wait_ms=10,
                 weight_dtype="bfloat16",
-                enable_dit_torch_compile=True,
+                enable_dit_torch_compile=not current_platform.is_npu(),
                 enable_dit_cuda_graph=True,
             ),
             gpu=0,
