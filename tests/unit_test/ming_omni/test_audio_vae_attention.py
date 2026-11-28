@@ -2,7 +2,6 @@
 
 import copy
 
-import pytest
 import torch
 
 from sglang_omni.models.ming_omni.talker.audio_vae import modeling_audio_vae
@@ -11,16 +10,10 @@ from sglang_omni.models.ming_omni.talker.audio_vae.configuration_audio_vae impor
 )
 
 
-@pytest.mark.parametrize(
-    ("is_npu", "is_xpu"), [(False, False), (True, False), (False, True)]
-)
-def test_audio_vae_attention_backend_and_window(
-    monkeypatch: pytest.MonkeyPatch, is_npu: bool, is_xpu: bool
-) -> None:
-    monkeypatch.setattr(modeling_audio_vae.current_platform, "is_npu", lambda: is_npu)
-    monkeypatch.setattr(modeling_audio_vae.current_platform, "is_xpu", lambda: is_xpu)
+def test_audio_vae_attention_backend_and_window() -> None:
+    """The published talker VAE config requests flash_attention_2, which failed every speech request without FA2 installed."""
     backbone = {
-        "_attn_implementation": "eager",
+        "_attn_implementation": "flash_attention_2",
         "vocab_size": 1,
         "hidden_size": 8,
         "intermediate_size": 16,
@@ -53,8 +46,8 @@ def test_audio_vae_attention_backend_and_window(
         model.encoder.aggregator,
         model.decoder.decoder,
     ):
-        assert component.config._attn_implementation == (
-            "sdpa" if is_npu or is_xpu else "eager"
+        assert (
+            component.config._attn_implementation == "sdpa"
         )  # noqa: leading-underscore  # production name
         assert component.config.sliding_window == 4
     assert (config.enc_kwargs, config.dec_kwargs) == original

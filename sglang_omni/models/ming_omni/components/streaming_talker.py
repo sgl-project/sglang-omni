@@ -9,7 +9,6 @@ so the stage runtime forwards it directly to the coordinator (terminal).
 
 from __future__ import annotations
 
-import json
 import logging
 import os
 import queue as _queue_mod
@@ -24,6 +23,7 @@ import numpy as np
 import torch
 
 from sglang_omni.models.ming_omni.components.streaming_text import uint8_tensor_to_text
+from sglang_omni.models.ming_omni.components.voice_presets import VoicePreset
 from sglang_omni.models.ming_omni.pipeline.next_stage import TALKER_STREAM_STAGE
 from sglang_omni.pipeline.stage.stream_queue import StreamItem
 from sglang_omni.proto import StagePayload
@@ -85,6 +85,7 @@ class MingStreamingTalkerScheduler:
         *,
         device: str = "cuda",
         voice: str = DEFAULT_VOICE,
+        voice_presets: dict[str, VoicePreset] | None = None,
         talker: "MingOmniTalker | None" = None,
         audio_detokenizer: "AudioVAE | None" = None,
         sample_rate: int | None = None,
@@ -95,6 +96,7 @@ class MingStreamingTalkerScheduler:
         self.model_path = model_path
         self.device = device
         self.voice = voice
+        self.voice_presets = voice_presets
         self.talker = talker
         self.audio_detokenizer = audio_detokenizer
         self.sample_rate = sample_rate
@@ -467,46 +469,11 @@ class MingStreamingTalkerScheduler:
             pass
         return int(sr) if sr is not None else None
 
-    def validate_voice_presets(
-        self, voice_dict: dict, manifest_path: str, talker_dir: str
-    ) -> None:
-        """Resolve relative prompt-wav paths and validate the manifest.
-
-        Mutates ``voice_dict`` in place so each entry's ``prompt_wav_path``
-        becomes an absolute path on disk.
-        """
-        if self.voice is not None and self.voice not in voice_dict:
-            raise ValueError(
-                f"[TALKER_STREAM] default voice {self.voice!r} not found in "
-                f"{manifest_path}; available presets: "
-                f"{sorted(voice_dict.keys())}"
-            )
-        else:
-            pass
-        for name, entry in voice_dict.items():
-            rel_path = entry.get("prompt_wav_path")
-            if rel_path is None:
-                raise ValueError(
-                    f"[TALKER_STREAM] voice preset {name!r} in "
-                    f"{manifest_path} is missing prompt_wav_path"
-                )
-            else:
-                pass
-            resolved = os.path.join(talker_dir, rel_path)
-            if not os.path.isfile(resolved):
-                raise FileNotFoundError(
-                    f"[TALKER_STREAM] voice preset {name!r} references "
-                    f"missing prompt wav {resolved}"
-                )
-            else:
-                pass
-            entry["prompt_wav_path"] = resolved
-
     # ------------------------------------------------------------------ model load
     def load_models(self) -> None:
-        if self.model_path is None:
+        if self.model_path is None or self.voice_presets is None:
             raise RuntimeError(
-                "MingStreamingTalkerScheduler needs model_path to load talker"
+                "MingStreamingTalkerScheduler needs model_path and voice_presets to load talker"
             )
         else:
             pass
@@ -530,21 +497,7 @@ class MingStreamingTalkerScheduler:
             AutoTokenizer.from_pretrained(str(Path(talker_dir) / "llm"))
         )
 
-        voice_json = os.path.join(talker_dir, "data", "voice_name.json")
-        if os.path.exists(voice_json):
-            with open(voice_json) as f:
-                voice_dict = json.load(f)
-            self.validate_voice_presets(voice_dict, voice_json, talker_dir)
-            talker.set_voice_presets(voice_dict)
-        elif self.voice is not None:
-            raise FileNotFoundError(
-                f"[TALKER_STREAM] voice_name.json not found at {voice_json}; "
-                f"default voice {self.voice!r} cannot be resolved"
-            )
-        else:
-            logger.info(
-                "[TALKER_STREAM] no voice_name.json at %s; presets disabled", voice_json
-            )
+        talker.set_voice_presets(self.voice_presets)
 
         campplus = os.path.join(talker_dir, "campplus.onnx")
         try:

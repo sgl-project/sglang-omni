@@ -84,7 +84,6 @@
       parts.push('--image_encoder.tp_size ' + p.vT);
       parts.push('--image_encoder.gpu "[' + p.visionGpus.join(', ') + ']"');
     }
-    parts.push('--cpu-offload-gb 0');
     parts.push('--mem-fraction-static ' + HARDWARE[ctx.hw].mem);
     parts.push('--port 8000');
 
