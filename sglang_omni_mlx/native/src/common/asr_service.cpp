@@ -3,6 +3,7 @@
 
 #include <chrono>
 #include <cmath>
+#include <condition_variable>
 #include <cstring>
 #include <future>
 #include <iostream>
@@ -43,11 +44,21 @@ struct ServerState {
 class LatestCandidateMailbox {
 public:
   void Publish(const std::string &text) {
-    std::lock_guard<std::mutex> lock(mutex_);
-    if (!finished_) {
-      candidate_ = text;
-    } else {
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      if (!finished_) {
+        candidate_ = text;
+      } else {
+        return;
+      }
     }
+    changed_.notify_one();
+  }
+
+  bool WaitForUpdate(std::chrono::milliseconds timeout) {
+    std::unique_lock<std::mutex> lock(mutex_);
+    return changed_.wait_for(
+        lock, timeout, [this] { return finished_ || candidate_.has_value(); });
   }
 
   std::optional<std::string> TakeLatest() {
@@ -62,13 +73,17 @@ public:
   }
 
   void Finish() {
-    std::lock_guard<std::mutex> lock(mutex_);
-    finished_ = true;
-    candidate_.reset();
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      finished_ = true;
+      candidate_.reset();
+    }
+    changed_.notify_one();
   }
 
 private:
   std::mutex mutex_;
+  std::condition_variable changed_;
   std::optional<std::string> candidate_;
   bool finished_ = false;
 };
@@ -185,14 +200,14 @@ int HandleTranscriptions(mg_connection *connection, void *data) {
       std::move(transcription), cancel,
       [promise, mailbox](std::optional<TranscriptionResult> result,
                          std::exception_ptr error) {
-        if (mailbox != nullptr) {
-          mailbox->Finish();
-        } else {
-        }
         if (error) {
           promise->set_exception(error);
         } else {
           promise->set_value(std::move(*result));
+        }
+        if (mailbox != nullptr) {
+          mailbox->Finish();
+        } else {
         }
       });
   if (!stream) {
@@ -215,25 +230,51 @@ int HandleTranscriptions(mg_connection *connection, void *data) {
       omni_common::FormFlag(TextField(*form, "preview"))
           ? kPreviewHeartbeatInterval
           : kHeartbeatInterval;
-  while (future.wait_for(heartbeat_interval) != std::future_status::ready) {
-    if (mailbox != nullptr) {
-      const std::optional<std::string> candidate = mailbox->TakeLatest();
-      if (candidate.has_value() &&
-          !WriteSse(connection, Json{{"type", "transcript.text.candidate"},
-                                     {"text", *candidate}}
-                                    .dump())) {
+  if (mailbox == nullptr) {
+    while (future.wait_for(heartbeat_interval) != std::future_status::ready) {
+      if (mg_write(connection, ":\n\n", 3) <= 0) {
+        cancel->store(true);
+      } else {
+      }
+    }
+  } else {
+    bool disconnected = false;
+    while (!disconnected && future.wait_for(std::chrono::milliseconds(0)) !=
+                                std::future_status::ready) {
+      const bool notified = mailbox->WaitForUpdate(heartbeat_interval);
+      if (future.wait_for(std::chrono::milliseconds(0)) ==
+          std::future_status::ready) {
+        break;
+      } else {
+      }
+      if (notified) {
+        const std::optional<std::string> candidate = mailbox->TakeLatest();
+        if (candidate.has_value()) {
+          const std::string candidate_event = Json{
+              {"type", "transcript.text.candidate"},
+              {"text", *candidate}}.dump();
+          if (future.wait_for(std::chrono::milliseconds(0)) ==
+              std::future_status::ready) {
+            break;
+          } else {
+          }
+          if (!WriteSse(connection, candidate_event)) {
+            cancel->store(true);
+            mailbox->Finish();
+            disconnected = true;
+          } else {
+          }
+        } else {
+        }
+      } else if (mg_write(connection, ":\n\n", 3) <= 0) {
         cancel->store(true);
         mailbox->Finish();
+        disconnected = true;
       } else {
       }
-    } else {
     }
-    if (mg_write(connection, ":\n\n", 3) <= 0) {
-      cancel->store(true);
-      if (mailbox != nullptr) {
-        mailbox->Finish();
-      } else {
-      }
+    if (disconnected) {
+      future.wait();
     } else {
     }
   }
