@@ -58,6 +58,7 @@ type livePolish struct {
 	text    string       // note (luojiaxuan): the newest live text, as the final text is cleaned (aliases replaced)
 	blocks  []liveResult // note (luojiaxuan): committed, in order
 	epoch   int          // note (luojiaxuan): bumped when blocks change: a clean-up of an older epoch has other text before it
+	failed  bool         // a request failed, so Stop cleans the whole text in smaller pieces
 	done    []liveResult // note (luojiaxuan): the clean-ups of the open block: each of a stretch that starts the text after blocks
 	flight  *liveFlight  // note (luojiaxuan): the request under way, nil when none
 	closed  bool         // note (luojiaxuan): the final text came, or the live clean-up gave up: no more requests
@@ -224,6 +225,17 @@ func (r *run) llmOnThisMac(id string) bool {
 	return err == nil && core.IsLoopback(u.Hostname())
 }
 
+// liveFailed says the live clean-up gave up after a failed request: the
+// whole-text clean-up at Stop uses the fallback's smaller pieces.
+func (r *run) liveFailed() bool {
+	if r.live == nil {
+		return false
+	}
+	r.live.mu.Lock()
+	defer r.live.mu.Unlock()
+	return r.live.failed
+}
+
 // note (luojiaxuan): stop gives the live clean-up up: Stop cleans the whole text.
 func (lp *livePolish) stop() {
 	lp.mu.Lock()
@@ -358,6 +370,7 @@ func (lp *livePolish) work() {
 		case err != nil:
 			lp.r.logf("warning", "the live clean-up stops, Stop cleans the whole text: %v", err)
 			lp.closed = true
+			lp.failed = true
 			lp.blocks, lp.done = nil, nil
 		}
 		close(f.done)

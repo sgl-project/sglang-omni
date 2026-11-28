@@ -215,3 +215,40 @@ func TestPiecesKeepMarks(t *testing.T) {
 		}
 	}
 }
+
+// TestBuildPartsPieceLimit: an input's PieceLimit caps each piece's
+// words (reverted: the pieces ignore it and follow PieceWords).
+func TestBuildPartsPieceLimit(t *testing.T) {
+	text := strings.Repeat("嗯，那个，我们下周二，呃不对，下周三下午三点开个会，讨论一下预算。", 20)
+	in := Input{Task: Transcribe, Cleanup: true, Text: text}
+	limited, err := BuildParts(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(limited) != 3 {
+		t.Fatalf("no PieceLimit: %d parts, want three at PieceWords", len(limited))
+	}
+	in.PieceLimit = 100
+	parts, err := BuildParts(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(parts) < 7 {
+		t.Fatalf("PieceLimit 100: %d parts, want at least 7", len(parts))
+	}
+	for i, p := range parts {
+		if n := words(p.Text); n > 100 {
+			t.Fatalf("part %d has %d words, over 100", i, n)
+		}
+	}
+	var joined strings.Builder
+	for i, p := range parts {
+		if i > 0 {
+			joined.WriteString(p.After)
+		}
+		joined.WriteString(p.Text)
+	}
+	if strings.TrimSpace(joined.String()) != strings.TrimSpace(text) {
+		t.Errorf("pieces do not join back to the input")
+	}
+}
