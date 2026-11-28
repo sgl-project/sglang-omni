@@ -64,7 +64,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <meta name="docsearch:language" content="en"/>
   <meta name="docsearch:version" content="0.2.0" />
-    <meta name="docbuild:last-update" content="Nov 27, 2026"/>
+    <meta name="docbuild:last-update" content="Nov 28, 2026"/>
   
     
     <script src="../_static/searchtools.js"></script>
@@ -657,7 +657,7 @@
 <ul class="simple">
 <li><p>To disable MTP in a config that enables it, add <code class="docutils literal notranslate"><span class="pre">--thinker.engine.disable_speculative_decoding</span> <span class="pre">true</span></code>.</p></li>
 <li><p>MTP decodes synchronously by default. Add <code class="docutils literal notranslate"><span class="pre">--thinker.factory.enable_async_decode</span> <span class="pre">true</span></code> to overlap each verify round with the host work of the previous one. <code class="docutils literal notranslate"><span class="pre">--thinker.factory.async_decode_min_batch_size</span> <span class="pre">N</span></code> keeps batches of fewer than N requests synchronous. On 4×H20 at TP4, overlap raised MTP transcription throughput by 5–6% at 16 and 32 running requests and made no measurable difference at 8 or fewer, so leave it off at low load.</p></li>
-<li><p>Keep <code class="docutils literal notranslate"><span class="pre">speculative_eagle_topk=1</span></code> and <code class="docutils literal notranslate"><span class="pre">repetition_penalty=1</span></code>. Prefix caching and chunked prefill are unavailable for this model.</p></li>
+<li><p>Keep <code class="docutils literal notranslate"><span class="pre">speculative_eagle_topk=1</span></code>. On CUDA, MTP applies <code class="docutils literal notranslate"><span class="pre">repetition_penalty</span></code> exactly as decoding without it does. Prefix caching and chunked prefill are unavailable for this model.</p></li>
 </ul>
 <p>For MTP acceptance statistics, set <code class="docutils literal notranslate"><span class="pre">return_spec_tokens_details=true</span></code> on chat or transcription requests and read <code class="docutils literal notranslate"><span class="pre">sglext.spec_tokens_details</span></code> in the JSON response.</p>
 </section>
@@ -955,7 +955,7 @@ By SGLang-Omni Team
   
   <div class="footer-item">
     <p class="last-updated">
-  Last updated on Nov 27, 2026.
+  Last updated on Nov 28, 2026.
   <br/>
 </p>
   </div>
