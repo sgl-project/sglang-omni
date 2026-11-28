@@ -375,7 +375,7 @@ Relevant model CI ownership:
   then `source omni/bin/activate`.
   Omni CI (`omni-ci.yaml`) runs eight CPU unit-test partitions on GitHub-hosted
   Ubuntu VMs directly after preflight, in parallel with shared H100 setup and PR Test
-  (`test.yaml` accelerator unit tests). When PR Test finishes, ASR CI, TTS CI,
+  (`self-hosted-accelerator.yaml` accelerator unit tests). When PR Test finishes, ASR CI, TTS CI,
   MPS CI and Omni model CI start independently and run in parallel without
   waiting for the hosted CPU partitions (MPS uses `github.sha`, the merge commit
   on a regular `pull_request` run). Any CI stage

@@ -16,7 +16,7 @@ import yaml
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 WORKFLOW = yaml.safe_load(
-    (REPO_ROOT / ".github/workflows/mac-metal-ci.yaml").read_text()
+    (REPO_ROOT / ".github/workflows/self-hosted-mac-metal.yaml").read_text()
 )
 STEPS = {step["name"]: step for step in WORKFLOW["jobs"]["preflight"]["steps"]}
 

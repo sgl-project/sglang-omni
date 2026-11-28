@@ -382,7 +382,7 @@ To find where the time goes, see the `model-profiling` skill in this repository.
 
 ## Running the CI stages locally
 
-This runs the 10 MiniCPM-o stage files of Omni model CI (`.github/workflows/test-qwen3-omni-ci.yaml`) as they are, on both GPUs with compile off. Stage 11 runs only for Qwen3-Omni. Open a new shell without the shell block, and set the output directory:
+This runs the 10 MiniCPM-o stage files of Omni model CI (`.github/workflows/self-hosted-omni-model.yaml`) as they are, on both GPUs with compile off. Stage 11 runs only for Qwen3-Omni. Open a new shell without the shell block, and set the output directory:
 
 ```bash
 export CI_OUT=/results/$(git -C /sglang-omni rev-parse --short HEAD)/ci/run1

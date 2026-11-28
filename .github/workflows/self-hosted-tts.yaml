@@ -12,29 +12,27 @@ on:
         description: TTS CI model preset selected by the parent omni-ci preflight.
         type: string
         default: higgs
-      omni_ci_home:
-        description: PR-scoped CI home from the parent omni-ci workflow.
-        type: string
-        required: false
-        default: ""
 
 env:
-  OMNI_CI_HOME: >-
-    ${{ inputs.omni_ci_home != ''
-        && inputs.omni_ci_home
-        || format('/data/omni-ci/run-{0}', github.run_id) }}
+  OMNI_CI_HOME: /data/omni-ci/run-${{ github.run_id }}
 
 # Invoked by omni-ci.yaml after unit tests. Restores omni only.
 # No job waits for another, so all three run side by side. seedtts runs the
 # non-streaming and streaming benchmarks back to back and then checks that
 # their results agree: the check only reads two JSON files, and as its own job
 # it waited for a free H100 runner after both benchmarks.
-# The MPS validation runs separately in test-mps-ci.yaml.
+# The MPS validation runs separately in self-hosted-mps.yaml.
 
 jobs:
+  authorize:
+    uses: ./.github/workflows/authorize-self-hosted.yml
+
   seedtts:
+    needs: authorize
     name: SeedTTS voice cloning
-    runs-on: [self-hosted, h100]
+    runs-on:
+      group: sglang-omni-ci
+      labels: [h100]
     timeout-minutes: 50
     container:
       image: hongccc/sglang-omni@sha256:d2fbd80ec42c8a6d9dff4b8a4fdbee35d50c5a1b41aa8dc872925da6e0c82f6a
@@ -49,6 +47,9 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
 
       - id: setup
         uses: ./.github/actions/omni-setup
@@ -157,9 +158,12 @@ jobs:
           TTS_CONSISTENCY_CONCURRENCY: "16"
 
   latency:
+    needs: authorize
     name: streaming first audio
     if: startsWith(inputs.tts_ci_model, 'qwen3-tts')
-    runs-on: [self-hosted, h100]
+    runs-on:
+      group: sglang-omni-ci
+      labels: [h100]
     timeout-minutes: 30
     container:
       image: hongccc/sglang-omni@sha256:d2fbd80ec42c8a6d9dff4b8a4fdbee35d50c5a1b41aa8dc872925da6e0c82f6a
@@ -174,6 +178,9 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
 
       - uses: ./.github/actions/omni-setup
         with:
@@ -220,9 +227,12 @@ jobs:
             */speed_results.json
 
   higgs-serving-stress:
+    needs: authorize
     name: Higgs serving stress
     if: inputs.run_serving
-    runs-on: [self-hosted, h100]
+    runs-on:
+      group: sglang-omni-ci
+      labels: [h100]
     timeout-minutes: 75
     container:
       image: hongccc/sglang-omni@sha256:d2fbd80ec42c8a6d9dff4b8a4fdbee35d50c5a1b41aa8dc872925da6e0c82f6a
@@ -237,6 +247,9 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
 
       - uses: ./.github/actions/omni-setup
         with:

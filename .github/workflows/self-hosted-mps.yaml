@@ -11,20 +11,9 @@ on:
         description: MPS-DP pipeline config of mps_ci_model, resolved by the parent omni-ci preflight.
         type: string
         required: true
-      exact_sha:
-        type: string
-        required: true
-      omni_ci_home:
-        description: PR-scoped CI home from the parent omni-ci workflow.
-        type: string
-        required: false
-        default: ""
 
 env:
-  OMNI_CI_HOME: >-
-    ${{ inputs.omni_ci_home != ''
-        && inputs.omni_ci_home
-        || format('/data/omni-ci/run-{0}', github.run_id) }}
+  OMNI_CI_HOME: /data/omni-ci/run-${{ github.run_id }}
 
 # Invoked by omni-ci.yaml when MPS is selected. omni-setup may rebuild the
 # shared OMNI_CI_HOME if environment validation fails. Restores omni only.
@@ -32,13 +21,19 @@ env:
 # group serializes MPS use; the queued execution order is unspecified.
 
 jobs:
+  authorize:
+    uses: ./.github/workflows/authorize-self-hosted.yml
+
   stage-1-mps-nonstream:
+    needs: authorize
     name: stage 1 - MPS non-streaming
     concurrency: &mps_serial
       group: omni-mps-${{ github.run_id }}
       cancel-in-progress: false
       queue: max
-    runs-on: [self-hosted, h100]
+    runs-on:
+      group: sglang-omni-ci
+      labels: [h100]
     timeout-minutes: 25
     container:
       image: hongccc/sglang-omni@sha256:d2fbd80ec42c8a6d9dff4b8a4fdbee35d50c5a1b41aa8dc872925da6e0c82f6a
@@ -51,21 +46,16 @@ jobs:
         -v /data/cache/huggingface:/github/home/.cache/huggingface
         -v /data/cache/huggingface:/root/.cache/huggingface
     env:
-      TTS_MPS_OUTPUT_ROOT: >-
-        ${{ inputs.omni_ci_home != ''
-            && inputs.omni_ci_home
-            || format('/data/omni-ci/run-{0}', github.run_id) }}/tts-stage-results/mps-nonstream/run-${{ github.run_id }}/attempt-${{ github.run_attempt }}
-      TTS_MPS_STATE_ROOT: >-
-        ${{ inputs.omni_ci_home != ''
-            && inputs.omni_ci_home
-            || format('/data/omni-ci/run-{0}', github.run_id) }}/tts-mps-state
+      TTS_MPS_OUTPUT_ROOT: /data/omni-ci/run-${{ github.run_id }}/tts-stage-results/mps-nonstream/run-${{ github.run_id }}/attempt-${{ github.run_attempt }}
+      TTS_MPS_STATE_ROOT: /data/omni-ci/run-${{ github.run_id }}/tts-mps-state
       TTS_MPS_RUN_ID: run-${{ github.run_id }}-${{ github.run_attempt }}
       TTS_MPS_GPU_ID: "0"
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.exact_sha }}
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
 
       - uses: ./.github/actions/omni-setup
         with:
@@ -92,7 +82,7 @@ jobs:
           source omni/bin/activate
           python -m tests.utils.tts_mps_runtime initialize \
             --summary "${TTS_MPS_OUTPUT_ROOT}/tts_mps_summary.json" \
-            --exact-sha "${{ inputs.exact_sha }}" \
+            --exact-sha "${{ github.event.pull_request.head.sha || github.sha }}" \
             --run-id "${TTS_MPS_RUN_ID}" \
             --run-attempt "${GITHUB_RUN_ATTEMPT}" \
             --selected-model "${{ inputs.mps_ci_model }}"
@@ -109,7 +99,7 @@ jobs:
           SEEDTTS_SIM_CACHE_DIR: /github/home/seedtts-wavlm-sim
           TTS_CI_MODEL: ${{ inputs.mps_ci_model }}
           TTS_MPS_CONFIG: ${{ inputs.mps_ci_config }}
-          TTS_MPS_EXACT_SHA: ${{ inputs.exact_sha }}
+          TTS_MPS_EXACT_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
           TORCHINDUCTOR_CACHE_DIR: ${{ env.OMNI_CI_HOME }}/.torchinductor
 
       - name: Finalize TTS MPS cleanup evidence
@@ -159,9 +149,12 @@ jobs:
           rm -rf "${TTS_MPS_OUTPUT_ROOT}" "${TTS_MPS_STATE_ROOT}"
 
   stage-2-native-mps:
+    needs: authorize
     name: stage 2 - native MPS lifecycle
     concurrency: *mps_serial
-    runs-on: [self-hosted, h100]
+    runs-on:
+      group: sglang-omni-ci
+      labels: [h100]
     timeout-minutes: 120
     container:
       image: hongccc/sglang-omni@sha256:d2fbd80ec42c8a6d9dff4b8a4fdbee35d50c5a1b41aa8dc872925da6e0c82f6a
@@ -181,7 +174,8 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.exact_sha }}
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
 
       - uses: ./.github/actions/omni-setup
         with:
@@ -229,9 +223,12 @@ jobs:
           stage-label: Native MPS lifecycle validation
 
   stage-3-native-weight-share:
+    needs: authorize
     name: stage 3 - native weight-sharing lifecycle
     concurrency: *mps_serial
-    runs-on: [self-hosted, h100]
+    runs-on:
+      group: sglang-omni-ci
+      labels: [h100]
     timeout-minutes: 120
     container:
       image: hongccc/sglang-omni@sha256:d2fbd80ec42c8a6d9dff4b8a4fdbee35d50c5a1b41aa8dc872925da6e0c82f6a
@@ -251,7 +248,8 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.exact_sha }}
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
 
       - uses: ./.github/actions/omni-setup
         with:

@@ -2,7 +2,7 @@
 
 This page runs the ASR benchmarks of SGLang-Omni on one GPU and explains how to measure them accurately. Audio goes in and text comes out. Correctness is WER, or CER and cpCER for MOSS-Transcribe-Diarize. Performance is throughput, latency and RTF.
 
-The workloads are the ones in the ASR CI (`.github/workflows/test-asr-ci.yaml`). Run every command in `bash`, in order. The only values you set yourself are in [Variables](#variables).
+The workloads are the ones in the ASR CI (`.github/workflows/self-hosted-asr.yaml`). Run every command in `bash`, in order. The only values you set yourself are in [Variables](#variables).
 
 ## What is Measured
 

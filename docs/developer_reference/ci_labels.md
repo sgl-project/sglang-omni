@@ -2,9 +2,32 @@
 
 SGLang-Omni CI has two parts. A few fast checks run on GitHub-hosted runners for every pull request, though one that changes only the MLX path runs just Lint among them. Everything else runs on self-hosted runners (H100 machines for the GPU stages, an Intel Xeon host and an Intel GPU host), except Mac CI, which runs on GitHub's macOS runners but also needs its label.
 
-**A pull request runs none of the self-hosted CI until a maintainer adds CI labels.** Once labeled, every later push re-runs CI for as long as the labels stay. Draft pull requests are blocked from self-hosted CI even when they are labeled.
+Self-hosted PR jobs require an eligible stage label, a ready PR and authorization for its current head commit. For an external PR, inspect the diff, submit an **Approve** review on the current commit and then select the stage or use **Re-run all jobs** on the current run. Each new head needs its own approval. GitHub's separate approval to run workflows from forks still applies.
 
 Two kinds of labels combine: a stage label runs a part of the self-hosted CI, and a model label picks the model it runs on. An ASR, TTS or Omni model label alone also runs the jobs that test its model. `.github/scripts/resolve_ci_labels.py` implements the [label rules](#label-rules), and every self-hosted workflow resolves its labels through that script.
+
+## Self-hosted runner access
+
+The hosted authorization job reads the live PR and its review history. It accepts a human review on the exact head SHA from someone other than the author who currently has write access or higher. A dismissal or a later request for changes from that reviewer invalidates their approval. A label, a rerun, a review of an earlier commit or GitHub's fork-workflow approval alone grants no hardware access. Manual hardware runs use the workflow and code on protected `main`.
+
+Repository administrators can set the Actions variable `SELF_HOSTED_CI_TRUSTED_USER_IDS` to comma- or whitespace-separated numeric GitHub user IDs. Start with the variable empty to require human review for every PR. A listed human author can use their own fork or an upstream branch without an additional hardware review. This delegates trust in code pushed to those branches. Review membership in this list when maintainers change.
+
+### Organization administrator rollout
+
+1. Confirm that branch rules protect changes to the workflows and authorization script on `main`, and keep the existing fork workflow approval policy. Remove this repository's access to unrestricted self-hosted runners during the cutover. Drain old jobs and remove direct repository registrations or other accessible runner groups that would still accept arbitrary PR workflows.
+2. Create the organization runner group `sglang-omni-ci`. Set **Repository access** to this repository only and permit this public repository. Move the H100, Intel CPU, Intel XPU and Apple Silicon Metal runners into the group with their existing hardware labels.
+3. Set **Workflow access** to **Selected workflows**. Enable access only after the guarded workflows have merged. For each filename below, enter the full path in the form `sgl-project/sglang-omni/.github/workflows/self-hosted-omni.yaml@refs/heads/main`. GitHub checks the workflow that directly defines the hardware job, including each reusable H100 suite. These hardware workflow paths are new so the allowlist excludes historical versions of the old entry points. The PR entry workflows run without access to the group.
+
+| Hardware | Allowed workflow filenames on protected main |
+| --- | --- |
+| H100 | `self-hosted-omni.yaml`, `self-hosted-accelerator.yaml`, `self-hosted-asr.yaml`, `self-hosted-tts.yaml`, `self-hosted-mps.yaml`, `self-hosted-duplex.yaml`, `self-hosted-omni-model.yaml` |
+| Intel CPU | `self-hosted-cpu.yaml` |
+| Intel XPU | `self-hosted-xpu.yaml` |
+| Mac Metal | `self-hosted-mac-metal.yaml` |
+
+If the same XPU machine serves the existing image release, allow `omni-xpu-docker-release.yaml@refs/heads/main` using the same full path format, or keep the release runner in a separate group restricted to that protected workflow. If the organization cannot restrict workflow access, keep the hardware unavailable to this public repository. Runner labels alone do not enforce access control. [GitHub runner group settings](https://docs.github.com/en/actions/how-tos/manage-runners/self-hosted-runners/manage-access)
+
+Verify cutover with a harmless fork PR that selects a hardware stage. Confirm zero hardware assignments before approval, checkout of the reviewed SHA after approval, and zero assignments for a new head until it receives another approval. Verify that a close without prior setup schedules no hardware cleanup. Each H100 run cleans its own run directory after setup and tests; keep host-side expiry for interrupted runs and existing PR directories.
 
 ## Choosing labels
 
@@ -283,7 +306,7 @@ A bot keeps one comment on a pull request with the `/tag-and-rerun-ci` targets t
 | --- | --- |
 | `No CI label found. Add run-lint-only, a model label or a stage label: ...` | The pull request has none of those labels. Add one of them. |
 | `Keep only one <stage> model label: ...` | Two model labels name the same stage. Remove one of them. |
-| `'lint' check completed with conclusion=failure; skip staged CI.` | Lint failed on this commit. Fix it and push; self-hosted CI starts once lint passes. |
+| `'lint' check completed with conclusion=failure; skip staged CI.` | Lint failed on this commit. Fix it and push; the new head also needs hardware authorization. |
 | `PR has merge conflicts with the base branch; skip staged CI.` | Merge or rebase onto the current `main` first. |
 
 A branch created before these labels existed does not contain `resolve_ci_labels.py`. On such a branch, the Omni CI and Mac CI gates fail until the branch merges the current `main`.

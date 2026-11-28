@@ -612,12 +612,12 @@ def test_every_rate_reference_is_a_share_of_its_cases(strategy_name: str) -> Non
 
 def test_every_duplex_ci_job_selects_a_known_strategy() -> None:
     workflow = yaml.safe_load(
-        (REPO_ROOT / ".github" / "workflows" / "test-duplex-ci.yaml").read_text()
+        (REPO_ROOT / ".github" / "workflows" / "self-hosted-duplex.yaml").read_text()
     )
     selected = [
         step["env"]["FDB_CI_STRATEGY"]
         for job in workflow["jobs"].values()
-        for step in job["steps"]
+        for step in job.get("steps", [])
         if "FDB_CI_STRATEGY" in step.get("env", {})
     ]
     assert sorted(selected) == sorted(fdb_ci_config.FDB_CI_PRESETS)
