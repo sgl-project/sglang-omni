@@ -253,6 +253,8 @@ tests/
     │   ├── test_request_builders.py
     │   ├── test_timestamp_logit_processor.py
     │   └── test_transcription_adapter.py
+    ├── scripts/
+    │   └── test_pr_ci_admission_gate.py
     └── voxtral_tts/
         └── test_pipeline.py
 ```
