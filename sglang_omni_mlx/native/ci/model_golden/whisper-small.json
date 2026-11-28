@@ -11,7 +11,7 @@
   "none": "en"
  },
  "baseline": {
-  "source": "Swift-path reference on MLX 0.31.1 (the original Voxt cannot load this npz checkpoint; 392/392 texts identical to native)",
+  "source": "Legacy baseline before automatic language detection: Swift-path reference on MLX 0.31.1 (the original Voxt cannot load this npz checkpoint; 392/392 texts identical to native)",
   "wer_en": 0.09391,
   "cer_zh": 0.28561,
   "mer_mixed": 2.85347
@@ -21,11 +21,11 @@
   "min_identical": 0.8
  },
  "devices": {
-  "Apple M1 Pro": {
+  "Apple M4": {
    "metrics": {
     "wer_en": 0.09391,
     "cer_zh": 0.28561,
-    "mer_mixed": 2.85347
+    "mer_mixed": 0.32048
    },
    "clips": {
     "0000_en_short": {
@@ -455,9 +455,9 @@
      "finish_reason": "stop"
     },
     "0071_en_mid": {
-     "text": "It was the white rabbit returning, splendidly dressed with a pair of white kid gloves in one hand and a large fan in the other. He came trotting along in a great hurry, muttering to himself as he came. Oh, the Duchess, the Duchess!",
+     "text": "It was the white rabbit returning, splendidly dressed with a pair of white kid gloves in one hand and a large fan in the other. He came trotting along in a great hurry, muttering to himself as he came. Oh, the duchess, the duchess!",
      "language": "en",
-     "generated_token_count": 57,
+     "generated_token_count": 59,
      "finish_reason": "stop"
     },
     "0072_en_mid": {
@@ -935,9 +935,9 @@
      "finish_reason": "stop"
     },
     "0151_zh_numbers": {
-     "text": "真正隐心团队的存在也是虚拟团队的一个独特组成部分",
+     "text": "真正隐心团队的存在也是虚拟团队的一个独特组成部分。",
      "language": "zh",
-     "generated_token_count": 30,
+     "generated_token_count": 31,
      "finish_reason": "stop"
     },
     "0152_zh_short": {
@@ -1067,9 +1067,9 @@
      "finish_reason": "stop"
     },
     "0173_zh_short": {
-     "text": "消防救援人員最終在晚上11點35分鋪滅了大火",
+     "text": "消防救援人員最終在晚上11點35分撲滅了大火",
      "language": "zh",
-     "generated_token_count": 23,
+     "generated_token_count": 22,
      "finish_reason": "stop"
     },
     "0174_zh_short": {
@@ -1709,387 +1709,387 @@
      "finish_reason": "stop"
     },
     "0280_mixed": {
-     "text": "Then",
-     "language": null,
-     "generated_token_count": 1,
+     "text": "那你現在會不會去gim打那個B球",
+     "language": "zh",
+     "generated_token_count": 12,
      "finish_reason": "stop"
     },
     "0281_mixed": {
-     "text": "Self Driving",
-     "language": null,
-     "generated_token_count": 2,
-     "finish_reason": "stop"
-    },
-    "0282_mixed": {
-     "text": "But if you are a self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self self",
-     "language": null,
-     "generated_token_count": 444,
-     "finish_reason": "length"
-    },
-    "0283_mixed": {
-     "text": "And",
-     "language": null,
-     "generated_token_count": 1,
-     "finish_reason": "stop"
-    },
-    "0284_mixed": {
-     "text": "Because mistakes make mistakes.",
-     "language": null,
-     "generated_token_count": 5,
-     "finish_reason": "stop"
-    },
-    "0285_mixed": {
-     "text": "I",
-     "language": null,
-     "generated_token_count": 1,
-     "finish_reason": "stop"
-    },
-    "0286_mixed": {
-     "text": "and",
-     "language": null,
-     "generated_token_count": 1,
-     "finish_reason": "stop"
-    },
-    "0287_mixed": {
-     "text": "I",
-     "language": null,
-     "generated_token_count": 1,
-     "finish_reason": "stop"
-    },
-    "0288_mixed": {
-     "text": "So you will work slowly and then you should.",
-     "language": null,
-     "generated_token_count": 10,
-     "finish_reason": "stop"
-    },
-    "0289_mixed": {
-     "text": "What",
-     "language": null,
-     "generated_token_count": 1,
-     "finish_reason": "stop"
-    },
-    "0290_mixed": {
-     "text": "So that's going to be going to be going to be going to be going to be going to be going to be going to be going to be going to be going to be going to be going to be going to be going to be going to be going to be going to be going to be going to be going to be going to be going to be going to be going to be going to be going to be going to be going to be going to be going to be going to be going to be going to be going to be going to be going to be going to be going to be going to be going to be going to be going to be going to be going to be going to be going to be going to be going to be going to be going to be going to be going to be going to be going to be going to be going to be going to be going to be going to be going to be going to be going to be going to be going to be going to be going to be going to be going to be going to be going to be going to be going to be going to be going to be going to be going to be going to be going to be going to be going to be going to be going to be going to be going to be going to be going to be going to be going to be going to be going to be going to be going to be going to be going to be going to be going to be going to be going to be going to be going to be going to be going to be going to be going to be going to be going to be going to be going to be going to be going to be going to be going to be going to be going to be going to be going to be going to be going to be going to be going to be going to be going to be going to be going to be going to be going to be going to be going to be going to be going to be going to be going to be going to be going to be going to be going to be going to be going to be going to be going to be going to be going to be going to be going to be going to be going to be",
-     "language": null,
-     "generated_token_count": 444,
-     "finish_reason": "length"
-    },
-    "0291_mixed": {
-     "text": "It",
-     "language": null,
-     "generated_token_count": 1,
-     "finish_reason": "stop"
-    },
-    "0292_mixed": {
-     "text": "I",
-     "language": null,
-     "generated_token_count": 1,
-     "finish_reason": "stop"
-    },
-    "0293_mixed": {
-     "text": "I",
-     "language": null,
-     "generated_token_count": 1,
-     "finish_reason": "stop"
-    },
-    "0294_mixed": {
-     "text": "Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good. Good.",
-     "language": null,
-     "generated_token_count": 444,
-     "finish_reason": "length"
-    },
-    "0295_mixed": {
-     "text": "Okay, so I can confirm that I have a copy of the document.",
-     "language": null,
+     "text": "Self-driving方面 自動駕駛方面",
+     "language": "zh",
      "generated_token_count": 15,
      "finish_reason": "stop"
     },
-    "0296_mixed": {
-     "text": "I",
-     "language": null,
-     "generated_token_count": 1,
+    "0282_mixed": {
+     "text": "但是如果你就是单纯的sell这个technology就是说告诉他就是我的self driving这个function是perfect",
+     "language": "zh",
+     "generated_token_count": 24,
      "finish_reason": "stop"
     },
-    "0297_mixed": {
-     "text": "You",
-     "language": null,
-     "generated_token_count": 1,
+    "0283_mixed": {
+     "text": "然後準備了一個月考完之後又用了一個月準備Gmatt",
+     "language": "zh",
+     "generated_token_count": 17,
      "finish_reason": "stop"
     },
-    "0298_mixed": {
-     "text": "yeah",
-     "language": null,
-     "generated_token_count": 1,
-     "finish_reason": "stop"
-    },
-    "0299_mixed": {
-     "text": "You",
-     "language": null,
-     "generated_token_count": 1,
-     "finish_reason": "stop"
-    },
-    "0300_mixed": {
-     "text": "So",
-     "language": null,
-     "generated_token_count": 1,
-     "finish_reason": "stop"
-    },
-    "0301_mixed": {
-     "text": "Because because it's often that we have to go to the place where there's a place where there's a place where there's a place where there's a place where there's a place where there's a place where there's a place where there's a place where there's a place where there's a place where there's a place where there's a place where there's a place where there's a place where there's a place where there's a place where there's a place where there's a place where there's a place where there's a place where there's a place where there's a place where there's a place where there's a place where there's a place where there's a place where there's a place where there's a place where there's a place where there's a place where there's a place where there's a place where there's a place where there's a place where there's a place where there's a place where there's a place where there's a place where there's a place where there's a place where there's a place where there's a place where there's a place where there's a place where there's a place where there's a place where there's a place where there's a place where there's a place where there's a place where there's a place where there's a place where there's a place where there's a place where there's a place where there's a place where there's a place where there's a place where there's a place where there's a place where there's a place where there's a place where there's a place where there's a place where there's a place where there's a place where there's a place where there's a place where there's a place where there's a place where there's a place where there's a place where there's a place where there's a place where there's a place where there's a place where there's a place where there's a place where there's a place where there's a place where there's a place where there's a place where there's a place where there's a place where there's a place where there's a place where",
-     "language": null,
-     "generated_token_count": 444,
-     "finish_reason": "length"
-    },
-    "0302_mixed": {
-     "text": "We",
-     "language": null,
-     "generated_token_count": 1,
-     "finish_reason": "stop"
-    },
-    "0303_mixed": {
-     "text": "So",
-     "language": null,
-     "generated_token_count": 1,
-     "finish_reason": "stop"
-    },
-    "0304_mixed": {
-     "text": "They",
-     "language": null,
-     "generated_token_count": 1,
-     "finish_reason": "stop"
-    },
-    "0305_mixed": {
-     "text": "in",
-     "language": null,
-     "generated_token_count": 1,
-     "finish_reason": "stop"
-    },
-    "0306_mixed": {
-     "text": "I",
-     "language": null,
-     "generated_token_count": 1,
-     "finish_reason": "stop"
-    },
-    "0307_mixed": {
-     "text": "I",
-     "language": null,
-     "generated_token_count": 1,
-     "finish_reason": "stop"
-    },
-    "0308_mixed": {
-     "text": "But I just 3 pointers is a very efficient way to get a.........................................",
-     "language": null,
-     "generated_token_count": 54,
-     "finish_reason": "stop"
-    },
-    "0309_mixed": {
-     "text": "What?",
-     "language": null,
-     "generated_token_count": 2,
-     "finish_reason": "stop"
-    },
-    "0310_mixed": {
-     "text": "Is",
-     "language": null,
-     "generated_token_count": 1,
-     "finish_reason": "stop"
-    },
-    "0311_mixed": {
-     "text": "So",
-     "language": null,
-     "generated_token_count": 1,
-     "finish_reason": "stop"
-    },
-    "0312_mixed": {
-     "text": "I",
-     "language": null,
-     "generated_token_count": 1,
-     "finish_reason": "stop"
-    },
-    "0313_mixed": {
-     "text": "and then it's for dinner, it's for lunch, it's for breakfast, and then study and go to bed. So.",
-     "language": null,
-     "generated_token_count": 27,
-     "finish_reason": "stop"
-    },
-    "0314_mixed": {
-     "text": "What",
-     "language": null,
-     "generated_token_count": 1,
-     "finish_reason": "stop"
-    },
-    "0315_mixed": {
-     "text": "Because you can't ask your female friends to play basketball.",
-     "language": null,
+    "0284_mixed": {
+     "text": "因為 mistakes 依蠻人的 make mistakes",
+     "language": "zh",
      "generated_token_count": 12,
      "finish_reason": "stop"
     },
-    "0316_mixed": {
-     "text": "I",
-     "language": null,
-     "generated_token_count": 1,
+    "0285_mixed": {
+     "text": "聽起來蠻 make sense我當初來",
+     "language": "zh",
+     "generated_token_count": 11,
      "finish_reason": "stop"
     },
-    "0317_mixed": {
-     "text": "and",
-     "language": null,
-     "generated_token_count": 1,
+    "0286_mixed": {
+     "text": "對,當時當時是最好的原因,我認識的名人,麥克里",
+     "language": "zh",
+     "generated_token_count": 22,
      "finish_reason": "stop"
     },
-    "0318_mixed": {
-     "text": "My mom is chemistry teacher and my dad is history teacher.",
-     "language": null,
-     "generated_token_count": 12,
+    "0287_mixed": {
+     "text": "就吃的方面還算是normal",
+     "language": "zh",
+     "generated_token_count": 8,
      "finish_reason": "stop"
     },
-    "0319_mixed": {
-     "text": "And",
-     "language": null,
-     "generated_token_count": 1,
+    "0288_mixed": {
+     "text": "So it will work slowly and slowly and then you should",
+     "language": "en",
+     "generated_token_count": 11,
      "finish_reason": "stop"
     },
-    "0320_mixed": {
-     "text": "Yeah.",
-     "language": null,
-     "generated_token_count": 2,
+    "0289_mixed": {
+     "text": "聊一些你現在做什麼 research 方向",
+     "language": "zh",
+     "generated_token_count": 10,
      "finish_reason": "stop"
     },
-    "0321_mixed": {
-     "text": "Or",
-     "language": null,
-     "generated_token_count": 1,
+    "0290_mixed": {
+     "text": "所以那是跟Major没关系的你说Major可能是我接下来要Apply到QG school的时候我要往Tabra Science 或者Electric Engineering",
+     "language": "zh",
+     "generated_token_count": 40,
      "finish_reason": "stop"
     },
-    "0322_mixed": {
-     "text": "We",
-     "language": null,
-     "generated_token_count": 1,
+    "0291_mixed": {
+     "text": "It's because I need to get a job.",
+     "language": "en",
+     "generated_token_count": 10,
      "finish_reason": "stop"
     },
-    "0323_mixed": {
-     "text": "And",
-     "language": null,
-     "generated_token_count": 1,
+    "0292_mixed": {
+     "text": "那我專案是那個ISM Information Systems Management",
+     "language": "zh",
+     "generated_token_count": 11,
      "finish_reason": "stop"
     },
-    "0324_mixed": {
-     "text": "I",
-     "language": null,
-     "generated_token_count": 1,
-     "finish_reason": "stop"
-    },
-    "0325_mixed": {
-     "text": "for",
-     "language": null,
-     "generated_token_count": 1,
-     "finish_reason": "stop"
-    },
-    "0326_mixed": {
-     "text": "Because basketball is mainly basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball basketball",
-     "language": null,
-     "generated_token_count": 444,
-     "finish_reason": "length"
-    },
-    "0327_mixed": {
-     "text": "I",
-     "language": null,
-     "generated_token_count": 1,
-     "finish_reason": "stop"
-    },
-    "0328_mixed": {
-     "text": "I",
-     "language": null,
-     "generated_token_count": 1,
-     "finish_reason": "stop"
-    },
-    "0329_mixed": {
-     "text": "I",
-     "language": null,
-     "generated_token_count": 1,
-     "finish_reason": "stop"
-    },
-    "0330_mixed": {
-     "text": "to",
-     "language": null,
-     "generated_token_count": 1,
-     "finish_reason": "stop"
-    },
-    "0331_mixed": {
-     "text": "Yeah",
-     "language": null,
-     "generated_token_count": 1,
-     "finish_reason": "stop"
-    },
-    "0332_mixed": {
-     "text": "So you like Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong Hong",
-     "language": null,
-     "generated_token_count": 444,
-     "finish_reason": "length"
-    },
-    "0333_mixed": {
-     "text": "I",
-     "language": null,
-     "generated_token_count": 1,
-     "finish_reason": "stop"
-    },
-    "0334_mixed": {
-     "text": "Because because the",
-     "language": null,
-     "generated_token_count": 3,
-     "finish_reason": "stop"
-    },
-    "0335_mixed": {
-     "text": "and",
-     "language": null,
-     "generated_token_count": 1,
-     "finish_reason": "stop"
-    },
-    "0336_mixed": {
-     "text": "So we can talk about our research topics.",
-     "language": null,
+    "0293_mixed": {
+     "text": "我就在那个group 上info你们",
+     "language": "zh",
      "generated_token_count": 9,
      "finish_reason": "stop"
     },
+    "0294_mixed": {
+     "text": "Good under personalities. I wanna go",
+     "language": "en",
+     "generated_token_count": 7,
+     "finish_reason": "stop"
+    },
+    "0295_mixed": {
+     "text": "OK,所以我康封福建。",
+     "language": "zh",
+     "generated_token_count": 11,
+     "finish_reason": "stop"
+    },
+    "0296_mixed": {
+     "text": "所以我現在主要在做Diablox System相關就是對話系統的研究",
+     "language": "zh",
+     "generated_token_count": 23,
+     "finish_reason": "stop"
+    },
+    "0297_mixed": {
+     "text": "就是你申请那些University你不是要Apply就是",
+     "language": "zh",
+     "generated_token_count": 15,
+     "finish_reason": "stop"
+    },
+    "0298_mixed": {
+     "text": "就是那些basketball或者sucker",
+     "language": "zh",
+     "generated_token_count": 9,
+     "finish_reason": "stop"
+    },
+    "0299_mixed": {
+     "text": "你可以邀一些你的就是female friends",
+     "language": "zh",
+     "generated_token_count": 9,
+     "finish_reason": "stop"
+    },
+    "0300_mixed": {
+     "text": "所以當時候就很",
+     "language": "zh",
+     "generated_token_count": 5,
+     "finish_reason": "stop"
+    },
+    "0301_mixed": {
+     "text": "对因为就是很经常就是我们早上上午有一个 lecture 刚上完然后中午去填一个 lunch talk",
+     "language": "zh",
+     "generated_token_count": 28,
+     "finish_reason": "stop"
+    },
+    "0302_mixed": {
+     "text": "我們之前有聊過一個AI Robert",
+     "language": "zh",
+     "generated_token_count": 8,
+     "finish_reason": "stop"
+    },
+    "0303_mixed": {
+     "text": "I since law software to function",
+     "language": "en",
+     "generated_token_count": 6,
+     "finish_reason": "stop"
+    },
+    "0304_mixed": {
+     "text": "他們之所以不用阿里佩的原因就是因為他們覺得阿里佩很輕易的就能",
+     "language": "zh",
+     "generated_token_count": 24,
+     "finish_reason": "stop"
+    },
+    "0305_mixed": {
+     "text": "是不会不会有这意外发生的但是你犯到真实的scenario又是另一回事",
+     "language": "zh",
+     "generated_token_count": 26,
+     "finish_reason": "stop"
+    },
+    "0306_mixed": {
+     "text": "我小時候我也沒有smartphone但是我是小時候比較早接觸的電腦",
+     "language": "zh",
+     "generated_token_count": 21,
+     "finish_reason": "stop"
+    },
+    "0307_mixed": {
+     "text": "會有那種活動或者是你參加lunch talk就會請一些比如說fin tag就你感興趣的fin tag然後或者是AIR",
+     "language": "zh",
+     "generated_token_count": 34,
+     "finish_reason": "stop"
+    },
+    "0308_mixed": {
+     "text": "但我觉得3.0是一个非常efficient的一个方式去得分",
+     "language": "zh",
+     "generated_token_count": 17,
+     "finish_reason": "stop"
+    },
+    "0309_mixed": {
+     "text": "那你有沒有什麼favourite food?",
+     "language": "zh",
+     "generated_token_count": 9,
+     "finish_reason": "stop"
+    },
+    "0310_mixed": {
+     "text": "是不是像歐西亞那種語音識別",
+     "language": "zh",
+     "generated_token_count": 12,
+     "finish_reason": "stop"
+    },
+    "0311_mixed": {
+     "text": "認真的看那個協議條款就是你要它其實是要先拿到你的concent然後才就是說你同不同意我們去collect你的這些data",
+     "language": "zh",
+     "generated_token_count": 36,
+     "finish_reason": "stop"
+    },
+    "0312_mixed": {
+     "text": "就是我可以就是swim properly",
+     "language": "zh",
+     "generated_token_count": 7,
+     "finish_reason": "stop"
+    },
+    "0313_mixed": {
+     "text": "And then it's for dinner, it's for lunch, it's for breakfast, and then study and go to bed.",
+     "language": "en",
+     "generated_token_count": 25,
+     "finish_reason": "stop"
+    },
+    "0314_mixed": {
+     "text": "但是像Rollin或者是举重的东西就比较不可能男生肯定会比你",
+     "language": "zh",
+     "generated_token_count": 27,
+     "finish_reason": "stop"
+    },
+    "0315_mixed": {
+     "text": "因為你不可能要你的female friends去做我們玩的給帳篷",
+     "language": "zh",
+     "generated_token_count": 19,
+     "finish_reason": "stop"
+    },
+    "0316_mixed": {
+     "text": "大四上學期好像是反正好像是六月份的時候才開始準備IS",
+     "language": "zh",
+     "generated_token_count": 19,
+     "finish_reason": "stop"
+    },
+    "0317_mixed": {
+     "text": "也是英語方向為主然後整個亞洲這樣看下來不是Hong Kong就是Singapore",
+     "language": "zh",
+     "generated_token_count": 23,
+     "finish_reason": "stop"
+    },
+    "0318_mixed": {
+     "text": "所以我的 parents,我的媽媽是 chemistry 老師, and my dad is history 老師。",
+     "language": "zh",
+     "generated_token_count": 20,
+     "finish_reason": "stop"
+    },
+    "0319_mixed": {
+     "text": "然後McGrady他本身打球就是也是特別帥的那一種",
+     "language": "zh",
+     "generated_token_count": 18,
+     "finish_reason": "stop"
+    },
+    "0320_mixed": {
+     "text": "嗯,因為體積比較小",
+     "language": "zh",
+     "generated_token_count": 8,
+     "finish_reason": "stop"
+    },
+    "0321_mixed": {
+     "text": "或者就是往那个Software方向走",
+     "language": "zh",
+     "generated_token_count": 10,
+     "finish_reason": "stop"
+    },
+    "0322_mixed": {
+     "text": "我们还是不能够trust AI",
+     "language": "zh",
+     "generated_token_count": 8,
+     "finish_reason": "stop"
+    },
+    "0323_mixed": {
+     "text": "对,然后我们UG的时候我们会有分那个",
+     "language": "zh",
+     "generated_token_count": 12,
+     "finish_reason": "stop"
+    },
+    "0324_mixed": {
+     "text": "我觉得Hong Kong 这样比较in between就是western 还有eastern 的那种",
+     "language": "zh",
+     "generated_token_count": 21,
+     "finish_reason": "stop"
+    },
+    "0325_mixed": {
+     "text": "but for iPhone it will be more",
+     "language": "en",
+     "generated_token_count": 7,
+     "finish_reason": "stop"
+    },
+    "0326_mixed": {
+     "text": "其实呢,Banmington有一个,就是Banmington,因为Buskyball的话,主要是",
+     "language": "zh",
+     "generated_token_count": 26,
+     "finish_reason": "stop"
+    },
+    "0327_mixed": {
+     "text": "我没有Mention Any Dropback就是我就告诉你我这个这个方向它能Work 它能Work Properly",
+     "language": "zh",
+     "generated_token_count": 25,
+     "finish_reason": "stop"
+    },
+    "0328_mixed": {
+     "text": "正妝然後去拍Portrait拍個人的還有機會",
+     "language": "zh",
+     "generated_token_count": 14,
+     "finish_reason": "stop"
+    },
+    "0329_mixed": {
+     "text": "其实也是之前做的一个project",
+     "language": "zh",
+     "generated_token_count": 8,
+     "finish_reason": "stop"
+    },
+    "0330_mixed": {
+     "text": "做一些油化cleaning啊",
+     "language": "zh",
+     "generated_token_count": 7,
+     "finish_reason": "stop"
+    },
+    "0331_mixed": {
+     "text": "對,反正我們就只能做一些這種比較延續的東西",
+     "language": "zh",
+     "generated_token_count": 17,
+     "finish_reason": "stop"
+    },
+    "0332_mixed": {
+     "text": "所以你還蠻喜歡也蠻習慣Fong Kong Live",
+     "language": "zh",
+     "generated_token_count": 18,
+     "finish_reason": "stop"
+    },
+    "0333_mixed": {
+     "text": "大多數那一桌是在床上睡覺",
+     "language": "zh",
+     "generated_token_count": 14,
+     "finish_reason": "stop"
+    },
+    "0334_mixed": {
+     "text": "因為GP不是一個硬性條件",
+     "language": "zh",
+     "generated_token_count": 10,
+     "finish_reason": "stop"
+    },
+    "0335_mixed": {
+     "text": "做的也还是能让我们有对学到的一些comcepts,能有一进一步的运用",
+     "language": "zh",
+     "generated_token_count": 26,
+     "finish_reason": "stop"
+    },
+    "0336_mixed": {
+     "text": "So we're going to talk about our research topics.",
+     "language": "en",
+     "generated_token_count": 11,
+     "finish_reason": "stop"
+    },
     "0337_mixed": {
-     "text": "This",
-     "language": null,
-     "generated_token_count": 1,
+     "text": "那這個又是另一回事,那就是第三方那個take list responsibility",
+     "language": "zh",
+     "generated_token_count": 17,
      "finish_reason": "stop"
     },
     "0338_mixed": {
-     "text": "like",
-     "language": null,
-     "generated_token_count": 1,
+     "text": "就是像那些就是没有灯 light的时候也不会那么 stress",
+     "language": "zh",
+     "generated_token_count": 14,
      "finish_reason": "stop"
     },
     "0339_mixed": {
-     "text": "He",
-     "language": null,
-     "generated_token_count": 1,
+     "text": "他的任務就是說給你一個article",
+     "language": "zh",
+     "generated_token_count": 9,
      "finish_reason": "stop"
     },
     "0340_mixed": {
-     "text": "The",
-     "language": null,
-     "generated_token_count": 1,
+     "text": "第二个呢它的测试也很复杂就是说你在测试的时候你只能simulate这个scenario",
+     "language": "zh",
+     "generated_token_count": 30,
      "finish_reason": "stop"
     },
     "0341_mixed": {
-     "text": "Oh",
-     "language": null,
-     "generated_token_count": 1,
+     "text": "哦 這是...你們剛開始不會拍那個Portrait嘛",
+     "language": "zh",
+     "generated_token_count": 14,
      "finish_reason": "stop"
     },
     "0342_mixed": {
-     "text": "I",
-     "language": null,
-     "generated_token_count": 1,
+     "text": "AI可以就是很大很大程度上改善我们的生活比如说什么一些translation啊还有一些就是",
+     "language": "zh",
+     "generated_token_count": 27,
      "finish_reason": "stop"
     },
     "0343_mixed": {
-     "text": "I",
-     "language": null,
-     "generated_token_count": 1,
+     "text": "可以用mobile payments但是大多数一些设置品品或者是一些mode里面",
+     "language": "zh",
+     "generated_token_count": 22,
      "finish_reason": "stop"
     },
     "0344_en_long": {
@@ -2261,9 +2261,9 @@
      "finish_reason": "stop"
     },
     "0372_zh_long": {
-     "text": "教小的岛屿大多是独立国家且所属于法国他们以豪华海滩度假圣地而文明人工智能有很强的科幻色彩但它其实是计算器科学非常重要的一个分支研究的是机器的行为学习和智能适应也可以到北部参观法地马圣母院圣地它是举世文明的圣母马利亚显现之地 週日晚些時候,美國總統塔納德·特朗普通過新聞秘書發表聲明宣布美軍將撤離敘利亞 台的取消政策並沒有延長到2020年7月,原定奧運會舉辦時間。",
+     "text": "教小的岛屿大多是独立国家且所属于法国他们以豪华海滩度假圣地而文明人工智能有很强的科幻色彩但它其实是计算器科学非常重要的一个分支研究的是机器的行为学习和智能适应也可以到北部参观法地马圣母院圣地它是举世文明的圣母马利亚显现之地 週日晚些時候,美國總統塔納德·特朗普通過新聞秘書發表聲明,宣布美軍將撤離敘利亞。 台的取消政策並沒有延長到2020年7月,原定奧運會舉辦時間。",
      "language": "zh",
-     "generated_token_count": 196,
+     "generated_token_count": 198,
      "finish_reason": "stop"
     },
     "0373_zh_long": {
