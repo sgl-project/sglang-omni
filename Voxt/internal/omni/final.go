@@ -48,6 +48,7 @@ type finalRequest struct {
 	maxTokens int
 	layout    string
 	preview   bool  // a provisional request with faster disconnect detection
+	piece     bool  // a long session's incremental Final (pieces.go)
 	known     prior // what the live session has of the audio
 	// pieceEnd is the sample a piece of the live session's recording ends
 	// at (0: not a piece): the session decodes it from its Final's start
@@ -57,17 +58,18 @@ type finalRequest struct {
 
 // finalResult is a request's answer.
 type finalResult struct {
-	text        string
-	tokens      int    // generated
-	language    string // detected (or the hint), "" when none
-	length      bool   // the budget ended it
-	windowTexts []string
-	segments    []struct {
+	text     string
+	tokens   int    // generated
+	language string // detected (or the hint), "" when none
+	length   bool   // the budget ended it
+	draft    *asr.DraftStats
+	segments []struct {
 		Start   float64 `json:"start"`
 		End     float64 `json:"end"`
 		Speaker string  `json:"speaker"`
 		Text    string  `json:"text"`
 	}
+	windowTexts []string
 }
 
 // body is the request's multipart form (Voxt's OmniMultipartBody for
@@ -123,6 +125,28 @@ func transcribe(ctx context.Context, l *lease, r finalRequest, stall time.Durati
 }
 
 func transcribeTimed(ctx context.Context, l *lease, r finalRequest, stall time.Duration, requestID uint64) (finalResult, error) {
+	if p := decodeProbeOf(ctx); p != nil {
+		kind := r.decodeKind()
+		ahead := int(p.inflight.Add(1) - 1)
+		submitted := time.Now()
+		res, err := transcribeRound(ctx, l, r, stall, requestID)
+		finished := time.Now()
+		p.inflight.Add(-1)
+		ev := decodeEvent{
+			Kind:        kind,
+			RequestID:   int(p.nextID.Add(1)),
+			SubmittedMS: submitted.UnixMilli(),
+			FinishedMS:  finished.UnixMilli(),
+			Inflight:    ahead,
+			TailSamples: len(r.pcm) / 2,
+		}
+		p.record(ev)
+		return res, err
+	}
+	return transcribeRound(ctx, l, r, stall, requestID)
+}
+
+func transcribeRound(ctx context.Context, l *lease, r finalRequest, stall time.Duration, requestID uint64) (finalResult, error) {
 	totalStarted := time.Now()
 	defer func() { logRequestStage(l.s.rt, requestID, "final", "total", totalStarted, len(r.pcm), 0) }()
 	started := time.Now()
@@ -213,6 +237,9 @@ func parseEvent(payload string) (*finalResult, error) {
 			Tokens      *int     `json:"generated_token_count"`
 			Language    *string  `json:"language"`
 			Finish      string   `json:"finish_reason"`
+			Verify      *int     `json:"verify_round_count"`
+			Proposed    *int     `json:"proposed_draft_token_count"`
+			Accepted    *int     `json:"accepted_draft_token_count"`
 			WindowTexts []string `json:"window_texts"`
 		} `json:"generation_metadata"`
 		Error *struct {
@@ -234,6 +261,9 @@ func parseEvent(payload string) (*finalResult, error) {
 			r.windowTexts = m.WindowTexts
 			if m.Language != nil {
 				r.language = *m.Language
+			}
+			if m.Verify != nil && *m.Verify > 0 && m.Proposed != nil && m.Accepted != nil {
+				r.draft = &asr.DraftStats{VerifyRounds: *m.Verify, Proposed: *m.Proposed, Accepted: *m.Accepted}
 			}
 		}
 		return r, nil

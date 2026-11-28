@@ -151,7 +151,7 @@ func TestLateCandidatesAreOptIn(t *testing.T) {
 			rt := NewRuntime(Config{IdleTimeout: -1})
 			t.Cleanup(rt.Close)
 			proc := &process{}
-			server := newServer(rt, Spec{ID: "candidate-test"}, "", "")
+			server := newServer(rt, Spec{ID: "candidate-test"}, "", "", 0)
 			server.proc, server.leases = proc, 1
 			stream := &live{
 				a: &ASR{spec: Spec{Kind: tc.kind}}, ctx: context.Background(), cancel: func() {},
@@ -235,7 +235,7 @@ func TestFinalPrior(t *testing.T) {
 			t.Fatal(err)
 		}
 		defer l.release()
-		if _, _, err := a.final(ctx, l, tone(130*time.Second, 0.3), tc.lang, bias{}, tc.known); err != nil {
+		if _, _, _, err := a.final(ctx, l, tone(130*time.Second, 0.3), tc.lang, bias{}, tc.known); err != nil {
 			t.Fatal(err)
 		}
 		finals := f.records("final")

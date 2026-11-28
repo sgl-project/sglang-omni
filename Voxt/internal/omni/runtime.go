@@ -54,6 +54,10 @@ type Config struct {
 	// Log gets a line about the servers ("info", "warning", "error"); their
 	// stderr goes there too (they never write audio or text). nil: none.
 	Log func(level, msg string)
+	// DecodeProbe times each Final request a live session makes (the
+	// batch preview's and the pieces') and logs them at the session's
+	// end, for the latency harness. Off: no probe, no overhead.
+	DecodeProbe bool
 	// OnModel is told when a server's model is loaded (the server said it
 	// is ready), busy (its first lease), idle (its last lease ended) and
 	// unloaded (its process exited: idle stop, switch, Unload, Close or a
@@ -145,7 +149,7 @@ func NewRuntime(cfg Config) *Runtime {
 // cacheLimit reports whether spec's server gets --cache-limit-mb: the
 // binary is asked once, as the app may run an older runtime without it.
 func (rt *Runtime) cacheLimit(spec Spec) bool {
-	if spec.ASR == nil || spec.ASR.CacheMB <= 0 {
+	if spec.ASR == nil || spec.ASR.CacheMB <= 0 && !spec.ASR.CacheLimitSet {
 		return false
 	}
 	rt.cacheLimitOnce.Do(func() {
@@ -194,7 +198,14 @@ var errClosed = errors.New("omni: the runtime is closed")
 // speech model retires the other speech models' servers, the same model
 // with another draft among them (they stop once their uses end).
 func (rt *Runtime) acquire(ctx context.Context, spec Spec, dir, draft string) (*lease, error) {
-	key := spec.ID + "\x00" + dir + "\x00" + draft
+	return rt.acquireDraft(ctx, spec, dir, draft, 0)
+}
+
+func (rt *Runtime) acquireDraft(ctx context.Context, spec Spec, dir, draft string, draftBits int) (*lease, error) {
+	if draftBits == 0 && spec.Kind == kindQwen3ASR {
+		draftBits = 8
+	}
+	key := spec.ID + "\x00" + dir + "\x00" + draft + "\x00" + itoa(draftBits) + "\x00" + strings.Join(spec.launchArgs(true), "\x00")
 	rt.mu.Lock()
 	if rt.closed {
 		rt.mu.Unlock()
@@ -202,7 +213,7 @@ func (rt *Runtime) acquire(ctx context.Context, spec Spec, dir, draft string) (*
 	}
 	s := rt.servers[key]
 	if s == nil {
-		s = newServer(rt, spec, dir, draft)
+		s = newServer(rt, spec, dir, draft, draftBits)
 		rt.servers[key] = s
 	}
 	var retire []*server
@@ -222,7 +233,7 @@ func (rt *Runtime) acquire(ctx context.Context, spec Spec, dir, draft string) (*
 	l, err := s.acquire(ctx)
 	if errors.Is(err, errRetired) && ctx.Err() == nil {
 		// Another switch retired s meanwhile: once more, with the map's.
-		return rt.acquire(ctx, spec, dir, draft)
+		return rt.acquireDraft(ctx, spec, dir, draft, draftBits)
 	}
 	return l, err
 }
@@ -313,7 +324,7 @@ func (rt *Runtime) Processes() []Process {
 	defer rt.mu.Unlock()
 	var out []Process
 	for _, s := range rt.servers {
-		if pid := s.pid(); pid > 0 {
+		for _, pid := range s.pids() {
 			out = append(out, Process{ID: s.spec.ID, PID: pid})
 		}
 	}
@@ -335,10 +346,14 @@ func (rt *Runtime) forget(s *server) {
 // the background, so that a first use does not wait for the model's load
 // (a session starting). It is stopped again when idle.
 func (rt *Runtime) Warm(spec Spec, dir, draft string) {
+	rt.warm(spec, dir, draft, 0)
+}
+
+func (rt *Runtime) warm(spec Spec, dir, draft string, draftBits int) {
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), rt.cfg.StartTimeout+time.Second)
 		defer cancel()
-		l, err := rt.acquire(ctx, spec, dir, draft)
+		l, err := rt.acquireDraft(ctx, spec, dir, draft, draftBits)
 		if err != nil {
 			rt.logf("warning", "warming %s: %v", spec.ID, err)
 			return

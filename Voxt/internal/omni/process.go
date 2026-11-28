@@ -54,7 +54,7 @@ type readyEvent struct {
 // speculative draft in draft ("" none); the channel gets its first event
 // (or closes when stdout ends without one).
 // cacheLimit: pass spec's --cache-limit-mb (the binary knows it).
-func spawn(cfg Config, spec Spec, dir, draft string, cacheLimit bool) (*process, <-chan readyEvent, error) {
+func spawn(cfg Config, spec Spec, dir, draft string, draftBits int, cacheLimit bool) (*process, <-chan readyEvent, error) {
 	if fi, err := os.Stat(dir); err != nil || !fi.IsDir() {
 		return nil, nil, fmt.Errorf("no model directory %s", dir)
 	}
@@ -75,9 +75,13 @@ func spawn(cfg Config, spec Spec, dir, draft string, cacheLimit bool) (*process,
 	args = append(args, spec.launchArgs(cacheLimit)...)
 	if draft != "" {
 		args = append(args, "--draft-model-path", draft)
-		if spec.Kind == kindQwen3ASR {
-			// Qwen3-ASR's 8-bit drafts matched bf16 on the eval set (#3874).
-			args = append(args, "--draft-bits", "8")
+		if draftBits != 0 || spec.Kind == kindQwen3ASR {
+			// Qwen3-ASR's default is 8-bit: the same transcripts as bf16 on the eval set,
+			// faster and smaller (#3874). MTD keeps the native default unless asked.
+			if draftBits == 0 {
+				draftBits = 8
+			}
+			args = append(args, "--draft-bits", itoa(draftBits))
 		}
 	}
 	cmd := exec.Command(bin, args...)

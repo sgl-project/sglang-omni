@@ -5,6 +5,8 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 ## [Unreleased]
 
 ### Added
+- **Profile long recordings on a Mac**: an opt-in test harness measures meeting import or plain subtitles with local speech models, optional transcript correction and summaries, per-stage and per-request timings, draft acceptance counters, text accuracy hashes, process and system resources, Go profiles, native logs and Instruments signposts. A loop copies the input, hard-links models, runs three isolated processes per configuration and keeps the raw results and median without touching Voxt's data. A separate overlap experiment compares one-shot, serial, and recording-overlapped scheduling for dictation and meetings with real ASR and an explicitly simulated, deterministic language model. The matrix also has a dedicated `diarize_chunk_seconds` knob for MTD request caps, independent of mic ASR chunks and the production default.
+- **Import a recording as a meeting**: Import recording… on the Meetings page turns an audio file, or the sound of a video (m4a, mp3, wav, aiff, caf, mp4, mov), into a meeting. MOSS-Transcribe-Diarize transcribes the whole file and labels every voice Speaker 1, 2, 3 and so on: the file is one mixed track, so there is no You/Others split. Then the same transcript clean-up and summary as a recorded meeting's run. The meeting keeps the file's name, date and length until the summary names it, the page shows progress with Cancel for long files, and an interrupted import can be finished with Continue processing. Importing needs MOSS-Transcribe-Diarize: without it Voxt says so and opens Speech models, instead of transcribing without speaker labels.
 - **Anthropic's Messages API** (#4747, Language models → Anthropic → Advanced → API format): Chat Completions stays the default. With Messages, Prompt caching can keep Voxt's instructions on Anthropic's side for a few minutes, so the requests after the first cost less; it is off unless you turn it on, and what you dictate is not cached.
 
 ### Changed
@@ -12,11 +14,14 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **Long dictations answer sooner too** (#4747): the stretches recognised while you speak (from 20 seconds on) now reuse what the live preview has worked out, with a dictionary of any size (before, more than 30 terms turned them off), and a stretch still being recognised at Stop no longer holds the result up. On 18 dictations of 20 to 50 seconds, the result came in 0.33 s on average instead of 0.47 s, and with a dictionary of 463 terms in 0.42 s instead of 0.53 s without the stretches.
 
 ### Fixed
+- **Continue processing finishes an interrupted import**: with the after-meeting pass turned off, Continue processing on an interrupted import ran nothing and the meeting stayed finishing forever, and a failed transcript clean-up or summary looked like a success. Continue processing now runs the pass as the import itself does, the meeting ends done, and a clean-up or summary failure is reported.
 - **The transcription preview stays where you drag it** (#4701): dragged while new words came in, the preview jumped back toward where the drag started, and the screen's edge pulled it back before you let go. It now grows where you have it; dragged past the screen's edge, it returns to the screen once you let go.
 
 ### 中文
 
 #### 新增
+- **在 Mac 上测量长录音**：新增显式启用的测试 harness，可测量会议导入或普通字幕的本地语音识别、可选转录稿校对和总结，记录各阶段与每请求耗时、draft acceptance 计数、文本准确率和 hash、进程与系统资源、Go profile、native 日志和 Instruments signpost。配套循环会复制输入、硬链接模型，每个配置用三个独立进程运行并保留原始结果与中位数，不接触 Voxt 的真实数据。另有独立的 overlap 实验，以真实 ASR 和明确标注的 deterministic 模拟语言模型比较听写与会议的整段、停止后串行、录音期重叠调度。矩阵另有专门的 `diarize_chunk_seconds` 旋钮控制 MTD 请求块长，独立于 mic ASR 切块和生产默认值。
+- **把录音导入成会议**：会议页新增“导入录音…”，把音频文件或视频的声音（m4a、mp3、wav、aiff、caf、mp4、mov）变成一场会议。MOSS-Transcribe-Diarize 整段转录，把所有人的声音标为说话人 1、2、3……文件只有一条混合音轨，所以不分“我/对方”；之后照常校对转录稿和写总结。会议先保留文件的名字、日期和时长，总结写完后再改名；导入长文件时页面显示进度并可取消，中断的导入可以用“继续处理”完成。导入需要 MOSS-Transcribe-Diarize，未安装时 Voxt 会说明并打开语音识别模型页，不会不区分说话人就直接转录。
 - **Anthropic 的 Messages API**（#4747，语言模型 → Anthropic → 高级 → API 格式）：默认仍是 Chat Completions。选 Messages 后可以打开“提示词缓存”，Anthropic 会把 Voxt 的指令保留几分钟，之后的请求费用更低；默认关，你说的内容不会被缓存。
 
 #### 变更
@@ -24,6 +29,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **长口述也更快出结果**（#4747）：说话时就识别好的分段（20 秒起）现在会复用实时预览算好的部分，词典多大都行（原来超过 30 个词条就不分段），松键时还在识别的那一段也不再拖住结果。18 段 20 到 50 秒的口述平均 0.33 秒出结果，原来 0.47 秒；词典有 463 个词条时 0.42 秒，不分段要 0.53 秒。
 
 #### 修复
+- **“继续整理”能把中断的导入跑完**：关掉会后重新整理时，对中断的导入点“继续整理”什么都不跑，会议一直停在收尾状态，转录稿校对或总结失败也被当成成功。现在“继续整理”和导入本身一样会跑整理，会议正常完成，校对或总结失败会提示失败。
 - **拖动转录预览时不再跳回去**（#4701）：边说边拖时，每来一批新字，预览会朝拖动开始的位置跳一下；拖到屏幕边缘，还没松手就被拉回来。现在它在拖到的位置上变大；拖出屏幕边缘的，松手后才回到屏幕内。
 
 ## [2.1.4] - 2026-11-26

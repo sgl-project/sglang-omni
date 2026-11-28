@@ -102,14 +102,14 @@ func (s *live) recognisePieces(planningContext context.Context, language string,
 		var err error
 		if sessionPiece {
 			req := finalRequest{pcm: piece, language: language, context: b.context,
-				maxTokens: t.tokenBudget(asr.Duration(piece, sampleRate)), layout: t.AudioLayout, known: known, pieceEnd: end}
+				maxTokens: t.tokenBudget(asr.Duration(piece, sampleRate)), layout: t.AudioLayout, known: known, pieceEnd: end, piece: true}
 			r, err = transcribe(s.ctx, s.l, req, s.a.rt.cfg.StallTimeout)
 			if err == nil {
 				r.text = s.a.trimEcho(s.ctx, s.l, req, s.a.plainText(r.text), r.length, b.terms)
 			}
 		} else if sent, ok := s.a.speechOnly(s.ctx, piece); ok {
 			req := finalRequest{pcm: padPiece(sent, &t), language: language, context: b.context,
-				maxTokens: t.tokenBudget(asr.Duration(sent, sampleRate)), layout: t.AudioLayout}
+				maxTokens: t.tokenBudget(asr.Duration(sent, sampleRate)), layout: t.AudioLayout, piece: true}
 			r, err = transcribe(s.ctx, s.l, req, s.a.rt.cfg.StallTimeout)
 			if err == nil {
 				r.text = s.a.trimEcho(s.ctx, s.l, req, s.a.plainText(r.text), r.length, b.terms)

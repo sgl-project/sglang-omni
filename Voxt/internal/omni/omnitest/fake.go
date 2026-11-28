@@ -95,6 +95,8 @@ type Opts struct {
 	// NoDraft is a server from before --draft-model-path: it refuses the
 	// flag as an unknown argument.
 	NoDraft bool
+	// DraftCounters adds speculative-decoding counters to every Final answer.
+	DraftCounters bool
 	// Segments adds two speaker segments to every Final answer.
 	Segments bool
 	// SegmentTags puts MOSS timestamp and speaker tags in those segments.
@@ -123,6 +125,7 @@ func Env(o Opts) []string {
 	v.Set("failat", strconv.Itoa(o.FailAt))
 	v.Set("older", strconv.FormatBool(o.Older))
 	v.Set("nodraft", strconv.FormatBool(o.NoDraft))
+	v.Set("draftcounters", strconv.FormatBool(o.DraftCounters))
 	v.Set("segments", strconv.FormatBool(o.Segments))
 	v.Set("segmenttags", strconv.FormatBool(o.SegmentTags))
 	v.Set("tokenlimit", strconv.FormatBool(o.TokenLimit))
@@ -149,6 +152,7 @@ func opts() Opts {
 	o.GateURL = v.Get("gate")
 	o.Older, _ = strconv.ParseBool(v.Get("older"))
 	o.NoDraft, _ = strconv.ParseBool(v.Get("nodraft"))
+	o.DraftCounters, _ = strconv.ParseBool(v.Get("draftcounters"))
 	o.Segments, _ = strconv.ParseBool(v.Get("segments"))
 	o.SegmentTags, _ = strconv.ParseBool(v.Get("segmenttags"))
 	o.TokenLimit, _ = strconv.ParseBool(v.Get("tokenlimit"))
