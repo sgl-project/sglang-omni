@@ -48,7 +48,6 @@ SEEDTTS_ASR_DATASET_LABEL = format_benchmark_dataset_label(
 )
 EN_RESULTS_BASENAME = "asr_seedtts_en_results.json"
 ZH_RESULTS_BASENAME = "asr_seedtts_zh_results.json"
-STARTUP_TIMEOUT = 600
 
 
 def require_cuda() -> None:
@@ -86,7 +85,7 @@ def asr_router_server(
         model_name=PRESET.model_path,
         worker_extra_args="",
         router_topology=CiRouterTopology.ASR,
-        wait_timeout=STARTUP_TIMEOUT,
+        wait_timeout=PRESET.startup_timeout_s,
         log_prefix="asr_seedtts_router_logs",
     ) as router:
         yield router
