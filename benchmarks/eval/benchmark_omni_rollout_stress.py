@@ -95,8 +95,12 @@ def _make_rollout_send_fn(
     talker_max_new_tokens: int | None,
     seeds_by_sample_id: dict[str, int],
     talker_params: TalkerSamplingParams,
+    top_p: float | None = None,
+    top_k: int | None = None,
+    min_p: float | None = None,
 ) -> Any:
     modalities = ["text", "audio"] if enable_audio else ["text"]
+    thinker_params = {"top_p": top_p, "top_k": top_k, "min_p": min_p}
 
     async def send_fn(
         session: aiohttp.ClientSession,
@@ -116,6 +120,11 @@ def _make_rollout_send_fn(
             "temperature": temperature,
             "stream": False,
             "user": rollout_group_id,
+            **{
+                name: value
+                for name, value in thinker_params.items()
+                if value is not None
+            },
             **sampling_seed_field(seeds_by_sample_id.get(sample.sample_id)),
             **talker_params,
         }
@@ -256,6 +265,9 @@ async def run_rollout_stress(args: argparse.Namespace) -> dict[str, Any]:
                     rollout_group_id=rollout_group_id,
                     max_tokens=args.max_tokens,
                     temperature=args.temperature,
+                    top_p=args.top_p,
+                    top_k=args.top_k,
+                    min_p=args.min_p,
                     enable_audio=args.enable_audio,
                     talker_max_new_tokens=args.talker_max_new_tokens,
                     seeds_by_sample_id=rollout_request_seeds(
@@ -312,6 +324,9 @@ async def run_rollout_stress(args: argparse.Namespace) -> dict[str, Any]:
             "rollout_counts": args.rollout_counts,
             "max_tokens": args.max_tokens,
             "temperature": args.temperature,
+            "top_p": args.top_p,
+            "top_k": args.top_k,
+            "min_p": args.min_p,
             "seed": args.seed,
             "talker_temperature": args.talker_temperature,
             "talker_top_p": args.talker_top_p,
@@ -357,6 +372,24 @@ def main() -> None:
     parser.add_argument("--rollout-group-id", type=str, default=None)
     parser.add_argument("--max-tokens", type=int, default=256)
     parser.add_argument("--temperature", type=float, default=0.8)
+    parser.add_argument(
+        "--top-p",
+        type=float,
+        default=None,
+        help="Thinker nucleus sampling probability. Unset keeps the server default.",
+    )
+    parser.add_argument(
+        "--top-k",
+        type=int,
+        default=None,
+        help="Thinker top-k sampling limit. Unset keeps the server default.",
+    )
+    parser.add_argument(
+        "--min-p",
+        type=float,
+        default=None,
+        help="Thinker minimum probability ratio. Unset keeps the server default.",
+    )
     parser.add_argument(
         "--seed",
         type=int,

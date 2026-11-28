@@ -4,17 +4,22 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import base64
 import json
 import logging
+import socket
+import sys
 import time
 from dataclasses import replace
+from pathlib import Path
 
 import aiohttp
 import httpx
 import pytest
 from aiohttp import web
 
+import benchmarks.eval.benchmark_omni_rollout_stress as rollout_stress
 from benchmarks.benchmarker.conditions import (
     SWEEP_METRIC_NAMES,
     aggregate_numbers,
@@ -425,6 +430,111 @@ async def test_rollout_request_uses_per_index_seed_and_talker() -> None:
     await send_fn(session, sample)
     assert session.payloads[0]["seed"] == 11
     assert session.payloads[0]["talker_temperature"] == 0.2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("sampling_arguments", "expected_sampling"),
+    [
+        (
+            [
+                "--temperature",
+                "0.7",
+                "--top-p",
+                "0.9",
+                "--top-k",
+                "20",
+                "--min-p",
+                "0.0",
+            ],
+            {"temperature": 0.7, "top_p": 0.9, "top_k": 20, "min_p": 0.0},
+        ),
+        ([], {"temperature": 0.8}),
+    ],
+)
+async def test_rollout_cli_preserves_thinker_sampling_in_requests_and_results(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    sampling_arguments: list[str],
+    expected_sampling: dict[str, float | int],
+) -> None:
+    """Rollout CLI sampling reaches HTTP and the saved config without changing defaults."""
+    received_requests: list[str] = []
+
+    async def health(request: web.Request) -> web.Response:
+        return web.json_response({"status": "ok"})
+
+    def load_sample(
+        count: int, repo_id: str, instruction_override: str | None
+    ) -> list[MMMUSample]:
+        assert count == 1
+        assert repo_id == "zhaochenyang20/mmmu-ci-50"
+        assert instruction_override is None
+        return [mmmu_sample()]
+
+    async def complete(request: web.Request) -> web.Response:
+        payload = await request.json()
+        assert isinstance(payload, dict)
+        for field_name in ("temperature", "top_p", "top_k", "min_p"):
+            if field_name in expected_sampling:
+                assert payload[field_name] == expected_sampling[field_name]
+            else:
+                assert field_name not in payload
+        assert payload["talker_top_k"] == 1
+        assert payload["modalities"] == ["text"]
+        received_requests.append(payload["request_id"])
+        return web.json_response(
+            {
+                "choices": [{"message": {"content": "Answer"}}],
+                "usage": {"prompt_tokens": 3, "completion_tokens": 1},
+            }
+        )
+
+    application = web.Application()
+    application.router.add_get("/health", health)
+    application.router.add_post("/v1/chat/completions", complete)
+    server = web.AppRunner(application)
+    await server.setup()
+    listener = socket.socket()
+    listener.bind(("127.0.0.1", 0))
+    port = listener.getsockname()[1]
+    await web.SockSite(server, listener).start()
+    monkeypatch.setattr(
+        rollout_stress,
+        "load_mmmu_samples",
+        load_sample,
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "rollout-stress",
+            "--base-url",
+            f"http://127.0.0.1:{port}",
+            "--rollout-counts",
+            "1",
+            "--talker-top-k",
+            "1",
+            "--text-only",
+            "--no-profile",
+            "--disable-tqdm",
+            "--output-dir",
+            str(tmp_path),
+            *sampling_arguments,
+        ],
+    )
+    try:
+        await asyncio.to_thread(rollout_stress.main)
+    finally:
+        await server.cleanup()
+
+    saved = json.loads((tmp_path / "rollout_stress_results.json").read_text())
+    assert len(received_requests) == 1
+    assert saved["results"][0]["success"] == 1
+    assert saved["results"][0]["requests"][0]["text"] == "Answer"
+    for field_name in ("temperature", "top_p", "top_k", "min_p"):
+        assert saved["config"][field_name] == expected_sampling.get(field_name)
+    assert saved["config"]["talker_top_k"] == 1
 
 
 @pytest.mark.asyncio
