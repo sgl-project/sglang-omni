@@ -44,8 +44,10 @@ from sglang_omni.scheduling.sglang_backend.output_processor import SGLangOutputP
 from sglang_omni.utils.checkpoint import resolve_checkpoint
 from sglang_omni.vendor.sglang.server_args import override_server_args
 
-ATTENTION_BACKEND = "triton"
-PAGE_SIZE = 1
+# Ascend's fused attention serves NPU; every other device keeps the triton backend that splits the hybrid backbone's attention.
+ATTENTION_BACKEND = "ascend" if current_platform.is_npu() else "triton"
+# Ascend's fused attention reads KV pages in multiples of 128; the triton backend takes single-token pages, so only NPU takes 128.
+PAGE_SIZE = 128 if current_platform.is_npu() else 1
 # note (zhaochenyang20): A 60 s voice reference is about 900 prompt rows at 15 frames per second; larger prefills run eagerly. SeedTTS EN prompts (sheared reference, three condition rows, three silence rows) are 69-178 rows, and at concurrency 16 every prefill batch, at most 1275 rows, replayed a captured bucket on one H100.
 PREFILL_CUDA_GRAPH_MAX_TOKENS = 2048
 # The file name the SGLang loader looks for next to config.json.
@@ -56,8 +58,10 @@ class Zonos3EngineBuilder(SGLangGenerationEngineBuilder[Zonos3RequestData]):
     """Single-GPU engine; no radix cache or chunked prefill; async decode overlaps the host and device steps."""
 
     model_name = "Zonos3"
+    # note: A breakable prefill graph replays the gated delta net extend on per-bucket static tables and needs the CUDA graph backend that captures it; other devices run the prefill eagerly.
     supports_breakable_prefill_cuda_graph = (
         CAPABILITIES.supports_breakable_prefill_cuda_graph
+        and current_platform.is_cuda()
     )
 
     def __init__(
@@ -101,7 +105,11 @@ class Zonos3EngineBuilder(SGLangGenerationEngineBuilder[Zonos3RequestData]):
         """Register the classes the shim config names and the gated delta net backend; the directory is the contract."""
         AutoConfig.register(MODEL_TYPE, Zonos3Config, exist_ok=True)
         ModelRegistry.models[SGLANG_ARCHITECTURE] = Zonos3SGLangModel
-        install_gdn_prefill_graph()
+        # The backend replacement only adds the per-bucket static tables a CUDA prefill graph replays.
+        if current_platform.is_cuda():
+            install_gdn_prefill_graph()
+        else:
+            pass
 
     def generation_defaults(self, *, dtype: str) -> GenerationDefaults:
         return {
@@ -110,7 +118,7 @@ class Zonos3EngineBuilder(SGLangGenerationEngineBuilder[Zonos3RequestData]):
             # note (zhaochenyang20): an eager prefill launches every kernel of the residual mixing and the experts from Python while the running requests wait.
             "cuda_graph_backend_prefill": (
                 CudaGraphBackend.BREAKABLE
-                if self.cuda_graph
+                if self.cuda_graph and self.supports_breakable_prefill_cuda_graph
                 else CudaGraphBackend.DISABLED
             ),
             "cuda_graph_max_bs_prefill": PREFILL_CUDA_GRAPH_MAX_TOKENS,

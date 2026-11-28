@@ -60,10 +60,8 @@ def create_preprocessing_executor(
     reference_encoder = Zonos3CodecEncoder.from_model_directory(
         snapshot_directory, resolve_concrete_device(device, gpu_id)
     )
-    if reference_encoder.input_conv.weight.is_cuda:
-        reference_encoder.capture_encode_graphs()
-    else:
-        pass
+    # Every platform with a graph backend captures the lane buckets; elsewhere this returns immediately and every lane runs eager.
+    reference_encoder.capture_encode_graphs()
     preprocessor = Zonos3SpeechPreprocessor(
         tokenizer=Tokenizer.from_file(
             os.path.join(language_model_directory, tokenizer_spec["path"])
@@ -143,10 +141,8 @@ def create_vocoder_executor(
         snapshot_directory, resolve_concrete_device(device, gpu_id)
     )
     # note (zhaochenyang20): A fresh server otherwise captures or eagerly decodes about 40 single-request trunk lengths and builds a synthesis plan per new length while serving SeedTTS EN non-streaming; capturing them first served 3.5% more requests per second on one H100 (4 ABBA pairs, streaming unchanged) for about 2.5 s more startup and 0.25 GB.
-    if decoder.to_external_kernel.is_cuda:
-        decoder.capture_decode_graphs()
-    else:
-        pass
+    # Every platform with a graph backend captures the trunk lengths; on a device without one this returns immediately.
+    decoder.capture_decode_graphs()
     stream_slot_count = max_running_requests if stream_slots is None else stream_slots
     # Slots need FA3's paged appending window attention and were measured only on the sm90 GPUs that run the fused trunk.
     if stream_slot_count > 0 and decoder.uses_fused_trunk and _is_fa3_supported():

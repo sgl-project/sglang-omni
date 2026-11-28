@@ -117,7 +117,7 @@ class Zonos3ModelRunner(ModelRunner[Zonos3RequestData]):
             self.text_pad_id
         ]
         self.is_fused_embedding = (
-            device.type == "cuda"
+            device.type in ("cuda", "npu")
             and all(
                 embedder.weight.dtype == torch.bfloat16 for embedder in model.embedders
             )
