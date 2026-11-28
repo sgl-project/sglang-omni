@@ -297,9 +297,8 @@ void TestInvalidHintsKeepAudioAndDoNotSchedule() {
             name + " malformed pause hint scheduled work");
 
     Require(fixture.AppendMilliseconds(
-                100,
-                nlohmann::json{{"speech_start_sample", 0},
-                               {"speech_end_sample", kSpeechEndSample}})),
+                100, nlohmann::json{{"speech_start_sample", 0},
+                                    {"speech_end_sample", kSpeechEndSample}}),
             name + " valid follow-up append was rejected");
     decoded.Wait(name + " follow-up decode timed out");
     Require(decoded_samples.load() ==
