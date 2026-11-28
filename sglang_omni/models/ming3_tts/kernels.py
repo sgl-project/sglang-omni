@@ -6,8 +6,26 @@ from __future__ import annotations
 import logging
 
 import torch
+import torch.nn.functional as F
+
+from sglang_omni.platforms import current_platform
 
 logger = logging.getLogger(__name__)
+
+# The custom kernels are Triton/CUDA only; other devices run the same math with
+# native torch ops so the fused flow head still skips the per-step concatenations.
+_TRITON_ACTIVE: bool | None = None
+
+
+def use_triton_kernels() -> bool:
+    """Whether the Triton implementations below are the ones to launch."""
+    global _TRITON_ACTIVE
+    if _TRITON_ACTIVE is None:
+        _TRITON_ACTIVE = HAS_TRITON and current_platform.is_cuda()
+    else:
+        pass
+    return _TRITON_ACTIVE
+
 
 try:
     import triton
@@ -193,10 +211,132 @@ else:
     pass
 
 
-def rotary_attention(
+def apply_rotary_inplace(
+    query: torch.Tensor,
+    key: torch.Tensor,
+    cos_sin_cache: torch.Tensor,
+    positions: torch.Tensor,
+) -> None:
+    """Rotate the interleaved pairs of contiguous [tokens, heads, head_dim] rows."""
+    kernel = current_platform.get_joint_rope_inplace_kernel()
+    if kernel is not None:
+        kernel(query, key, cos_sin_cache, positions, is_neox=False)
+    else:
+        apply_rotary_torch(query, key, cos_sin_cache, positions)
+
+
+def apply_rotary_torch(
+    query: torch.Tensor,
+    key: torch.Tensor,
+    cos_sin_cache: torch.Tensor,
+    positions: torch.Tensor,
+) -> None:
+    """Rotate with the cached angles when no fused rotary kernel is available."""
+    half = cos_sin_cache.shape[-1] // 2
+    # note (rsi): both halves see the same angles; positions index the cache rows.
+    cos = cos_sin_cache[:, :half][positions].unsqueeze(1)
+    sin = cos_sin_cache[:, half:][positions].unsqueeze(1)
+
+    def rotate(states: torch.Tensor) -> torch.Tensor:
+        pairs = states.view(states.shape[0], states.shape[1], half, 2)
+        even = pairs[..., 0].float()
+        odd = pairs[..., 1].float()
+        rotated = torch.stack((even * cos - odd * sin, odd * cos + even * sin), dim=-1)
+        return rotated.flatten(-2).to(states.dtype)
+
+    query.copy_(rotate(query))
+    key.copy_(rotate(key))
+
+
+def rotary_attention_torch(
     qkv: torch.Tensor, cos_sin_cache: torch.Tensor, heads: int
 ) -> torch.Tensor:
+    """Rotary attention of packed q, k, v rows without the fused CUDA kernel."""
+    batch_size, sequence_length, packed_width = qkv.shape
+    width = packed_width // 3
+    head_dim = width // heads
+    query, key, value = qkv.split(width, dim=-1)
+    tokens = (batch_size * sequence_length, heads, head_dim)
+    query = query.reshape(tokens).contiguous()
+    key = key.reshape(tokens).contiguous()
+    value = value.reshape(tokens).contiguous()
+    positions = torch.arange(sequence_length, device=qkv.device).repeat(batch_size)
+    apply_rotary_inplace(query, key, cos_sin_cache, positions)
+    query = query.view(batch_size, sequence_length, heads, head_dim).transpose(1, 2)
+    key = key.view(batch_size, sequence_length, heads, head_dim).transpose(1, 2)
+    value = value.view(batch_size, sequence_length, heads, head_dim).transpose(1, 2)
+    attended = F.scaled_dot_product_attention(
+        query, key, value, dropout_p=0.0, is_causal=False
+    )
+    return (
+        attended.transpose(1, 2)
+        .reshape(batch_size, sequence_length, width)
+        .to(qkv.dtype)
+    )
+
+
+def rotary_attention_bsnd(
+    qkv: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor, heads: int
+) -> torch.Tensor:
+    """Ascend rotary attention with once-expanded [1, tokens, 1, head_dim] angles.
+
+    The gathered and interleaved coefficients are constant for a whole run, so
+    the per-step index and repeat work moves to cache construction.
+    """
+    import torch_npu
+
+    batch_size, sequence_length, packed_width = qkv.shape
+    width = packed_width // 3
+    head_dim = width // heads
+    query, key, value = qkv.split(width, dim=-1)
+    layout = (batch_size, sequence_length, heads, head_dim)
+    query = query.reshape(layout).contiguous()
+    key = key.reshape(layout).contiguous()
+    value = value.reshape(layout).contiguous()
+    query = torch_npu.npu_rotary_mul(query, cos, sin, "interleave")
+    key = torch_npu.npu_rotary_mul(key, cos, sin, "interleave")
+    # note (rsi): the v3 entry is the FlashAttention SDPA dispatches to, without
+    # the wrapper work around it; it stays graph-capturable and numerically equal.
+    fused = getattr(torch_npu, "npu_fusion_attention_v3", None)
+    if fused is not None:
+        attended = fused(
+            query,
+            key,
+            value,
+            heads,
+            "BSND",
+            scale=head_dim**-0.5,
+            keep_prob=1.0,
+            sparse_mode=0,
+        )[0]
+    else:
+        attended = F.scaled_dot_product_attention(
+            query.transpose(1, 2),
+            key.transpose(1, 2),
+            value.transpose(1, 2),
+            dropout_p=0.0,
+            is_causal=False,
+        ).transpose(1, 2)
+    attended = attended.reshape(batch_size, sequence_length, width)
+    return attended.to(qkv.dtype)
+
+
+def rotary_attention(
+    qkv: torch.Tensor,
+    cos_sin_cache: torch.Tensor,
+    heads: int,
+    cos: torch.Tensor | None = None,
+    sin: torch.Tensor | None = None,
+) -> torch.Tensor:
     """Attention of packed [batch, tokens, 3 * width] bfloat16 q, k, v rows."""
+    if cos is not None:
+        return rotary_attention_bsnd(qkv, cos, sin, heads)
+    else:
+        pass
+    if not use_triton_kernels():
+        return rotary_attention_torch(qkv, cos_sin_cache, heads)
+    else:
+        pass
     batch_size, sequence_length, packed_width = qkv.shape
     width = packed_width // 3
     head_dim = width // heads
@@ -220,6 +360,22 @@ def add_rmsnorm(
     states: torch.Tensor, update: torch.Tensor, weight: torch.Tensor, eps: float
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Return states + update and its RMSNorm, both bfloat16 like the eager ops."""
+    if current_platform.is_npu():
+        # note (rsi): one Ascend fused kernel replaces the separate residual add
+        # and the pow/mean/rsqrt chain F.rms_norm decomposes into on this backend.
+        fused = current_platform.get_add_rmsnorm()
+        normed, total = fused(states, update, weight, eps)
+        return total, normed
+    else:
+        pass
+    if not use_triton_kernels():
+        total = states + update
+        normed = F.rms_norm(
+            total.reshape(-1, total.shape[-1]), (total.shape[-1],), weight, eps
+        ).view(total.shape)
+        return total, normed
+    else:
+        pass
     total = torch.empty_like(states)
     normed = torch.empty_like(states)
     width = states.shape[-1]
@@ -238,6 +394,22 @@ def assemble_flow_states(
 
     The guided and unguided halves share the B history and sample rows.
     """
+    if not use_triton_kernels():
+        rows, _tokens, width = token_rows.shape
+        batch_size = history_rows.shape[0]
+        states = torch.empty(
+            (rows, 3, width), device=token_rows.device, dtype=token_rows.dtype
+        )
+        # note (rsi): row copies replace the per-step cat/stack; history and
+        # sample rows are written to both guidance halves.
+        states[:, 0].copy_(token_rows[:, 0])
+        states[:batch_size, 1].copy_(history_rows[:, 0])
+        states[batch_size:, 1].copy_(history_rows[:, 0])
+        states[:batch_size, 2].copy_(sample_rows[:, 0])
+        states[batch_size:, 2].copy_(sample_rows[:, 0])
+        return states
+    else:
+        pass
     rows, _tokens, width = token_rows.shape
     states = torch.empty(
         (rows, 3, width), device=token_rows.device, dtype=token_rows.dtype
@@ -267,6 +439,19 @@ def cfg_solver_step(
 ) -> torch.Tensor:
     """The next [B, 1, latent] sample from [2B, 1, latent] guided and unguided velocities."""
     batch_size, _tokens, latent_dim = sample.shape
+    if not use_triton_kernels():
+        return cfg_solver_step_torch(
+            velocity,
+            sample,
+            guidance,
+            noise_scale,
+            step_size,
+            noise_step_scale,
+            solver_noise,
+            add_noise,
+        )
+    else:
+        pass
     next_sample = torch.empty_like(sample)
     cfg_solver_step_kernel[(batch_size,)](
         velocity,
@@ -282,3 +467,28 @@ def cfg_solver_step(
         add_noise=add_noise,
     )
     return next_sample
+
+
+def cfg_solver_step_torch(
+    velocity: torch.Tensor,
+    sample: torch.Tensor,
+    guidance: torch.Tensor,
+    noise_scale: torch.Tensor,
+    step_size: torch.Tensor,
+    noise_step_scale: torch.Tensor,
+    solver_noise: torch.Tensor,
+    add_noise: bool,
+) -> torch.Tensor:
+    """The solver step in fp32 with the same rounding order as the fused kernel."""
+    batch_size = sample.shape[0]
+    conditional = velocity[:batch_size].float()
+    unconditional = velocity[batch_size:].float()
+    difference = (conditional - unconditional).to(velocity.dtype).float()
+    drift = conditional + difference * guidance.float()
+    stepped = sample.float() + drift * step_size.float()
+    if add_noise:
+        scale = noise_scale.float() * noise_step_scale.float()
+        stepped = stepped + scale * solver_noise.float()
+    else:
+        pass
+    return stepped.to(sample.dtype)
