@@ -9,6 +9,8 @@ import triton
 import triton.language as tl
 from torch import nn
 
+from sglang_omni.platforms import current_platform
+
 # note (zhaochenyang20): Triton's default 4 warps; a 999-row, 1024-wide residual norm took 3.3 us with 4 warps against 3.1-3.3 us for 1 to 8 and 4.1 us for 16 (CUDA graph replay, one H100).
 NORM_WARPS = 4
 
@@ -109,7 +111,7 @@ def residual_layer_norm(
     The sum is update * update_scale + residual in residual's dtype, or residual itself without an update; norms are float32, and SiLU, when applied, acts on the first norm's float32 output. Non-CUDA tensors run the same math in torch ops.
     """
     width = residual.shape[-1]
-    if residual.is_cuda:
+    if current_platform.is_cuda():
         if update is None:
             sum_states = residual
         else:

@@ -66,7 +66,8 @@ class IstftHead(nn.Module):
         """Inverse STFT of each resolution's (B, bins, T) spectrum, mixed to a (B, sample_count) waveform."""
         branch_waveforms: list[torch.Tensor] = []
         for fft_size, spectrum in zip(ISTFT_FFT_SIZES, spectra, strict=True):
-            window = torch.hann_window(fft_size, periodic=True, device=spectrum.device)
+            # note: the NPU window kernel takes no int64 sample index, so the Hann window is built on the host and moved; the values are the ones torch.hann_window returns anywhere.
+            window = torch.hann_window(fft_size, periodic=True).to(spectrum.device)
             branch_waveforms.append(
                 torch.istft(
                     spectrum,

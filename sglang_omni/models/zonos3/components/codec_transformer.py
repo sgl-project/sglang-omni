@@ -25,11 +25,55 @@ CODEC_ATTENTION_BACKENDS = [SDPBackend.EFFICIENT_ATTENTION, SDPBackend.MATH]
 CODEC_ATTENTION_BACKEND_LOCK = threading.Lock()
 # note (zhaochenyang20): The memory-efficient attention kernel tiles 64 queries by 64 keys; local-window attention runs 64-frame query blocks over whole key tiles.
 LOCAL_ATTENTION_BLOCK_FRAMES = 64
+# note: The fused infer attention kernel derives the local window from its band bounds, so the additive block mask and the padded blocks disappear; its sparse modes only take a mask of at most 2048 rows, longer stages keep the block path.
+NPU_ATTENTION_MAX_FRAMES = 2048
+NPU_ATTENTION_MASK_CACHE: dict[torch.device, torch.Tensor] = {}
 # Checkpoint names of a layer's feedforward linears, renamed to the module's.
 TRANSFORMER_INFIX_RENAMES: list[tuple[str, str]] = [
     (".ffn.0.", ".ffn_input."),
     (".ffn.3.", ".ffn_output."),
 ]
+
+
+def npu_attention_mask(device: torch.device) -> torch.Tensor:
+    """The (2048, 2048) upper-triangular mask the fused kernel needs in sparse modes, shared per device."""
+    mask = NPU_ATTENTION_MASK_CACHE.get(device)
+    if mask is None:
+        mask = torch.triu(
+            torch.ones(
+                (NPU_ATTENTION_MAX_FRAMES, NPU_ATTENTION_MAX_FRAMES), device=device
+            ),
+            diagonal=1,
+        ).bool()
+        NPU_ATTENTION_MASK_CACHE[device] = mask
+    else:
+        pass
+    return mask
+
+
+def npu_fused_attention(
+    query: torch.Tensor,
+    key: torch.Tensor,
+    value: torch.Tensor,
+    head_count: int,
+    pre_tokens: int,
+    sparse_mode: int,
+) -> torch.Tensor:
+    """Fused infer attention of (B, heads, frames, head dimension) states, causal (3) or band-limited (4)."""
+    import torch_npu
+
+    return torch_npu.npu_fused_infer_attention_score(
+        query,
+        key,
+        value,
+        atten_mask=npu_attention_mask(query.device),
+        num_heads=head_count,
+        scale=query.shape[-1] ** -0.5,
+        input_layout="BNSD",
+        pre_tokens=pre_tokens,
+        next_tokens=0,
+        sparse_mode=sparse_mode,
+    )[0]
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -76,6 +120,7 @@ class ProjectedTransformerLayer(nn.Module):
         self.ffn_input = nn.Linear(model_dimension, feedforward_dimension, bias=False)
         self.ffn_output = nn.Linear(feedforward_dimension, model_dimension, bias=False)
         self.ffn_scale = nn.Parameter(torch.empty(model_dimension))
+        self.scales_folded: bool = False
 
     def rotated_states(
         self,
@@ -116,11 +161,36 @@ class ProjectedTransformerLayer(nn.Module):
         self, hidden_states: torch.Tensor, attention_output: torch.Tensor
     ) -> torch.Tensor:
         """Add the layer-scaled attention output (B, T, C) and then the feedforward branch to the (B, T, C) states."""
+        if self.scales_folded:
+            hidden_states = hidden_states + self.attention_out(attention_output)
+            feedforward = self.ffn_output(
+                F.gelu(self.ffn_input(self.norm2(hidden_states)))
+            )
+            return hidden_states + feedforward
+        else:
+            pass
         hidden_states = scaled_residual(
             hidden_states, self.attention_out(attention_output), self.attention_scale
         )
         feedforward = self.ffn_output(F.gelu(self.ffn_input(self.norm2(hidden_states))))
         return scaled_residual(hidden_states, feedforward, self.ffn_scale)
+
+    def fold_scales(self) -> None:
+        """Fold the layer scales into the output projection weights so the forward needs no scaling multiply."""
+        with torch.no_grad():
+            self.attention_out.weight.copy_(
+                (self.attention_out.weight.float() * self.attention_scale[:, None]).to(
+                    self.attention_out.weight.dtype
+                )
+            )
+            self.ffn_output.weight.copy_(
+                (self.ffn_output.weight.float() * self.ffn_scale[:, None]).to(
+                    self.ffn_output.weight.dtype
+                )
+            )
+            self.attention_scale.fill_(1.0)
+            self.ffn_scale.fill_(1.0)
+        self.scales_folded = True
 
     def forward(
         self,
@@ -128,10 +198,34 @@ class ProjectedTransformerLayer(nn.Module):
         rotary_cos: torch.Tensor,
         rotary_signed_sin: torch.Tensor,
         window_mask: torch.Tensor | None,
+        context_frames: int | None = None,
     ) -> torch.Tensor:
         """window_mask is None when every earlier frame lies in the attention window, else the additive block mask."""
         batch_size, frame_count, model_dimension = hidden_states.shape
         head_dimension = model_dimension // self.head_count
+        if (
+            context_frames is not None
+            and hidden_states.device.type == "npu"
+            and hidden_states.dtype in (torch.bfloat16, torch.float16)
+            and frame_count <= NPU_ATTENTION_MAX_FRAMES
+        ):
+            query, key, value = self.rotated_states(
+                hidden_states, rotary_cos, rotary_signed_sin, 0, frame_count
+            )
+            if frame_count > context_frames:
+                sparse_mode, pre_tokens = 4, context_frames
+            else:
+                sparse_mode, pre_tokens = 3, 2147483647
+            attention_output = (
+                npu_fused_attention(
+                    query, key, value, self.head_count, pre_tokens, sparse_mode
+                )
+                .transpose(1, 2)
+                .reshape(batch_size, frame_count, model_dimension)
+            )
+            return self.add_attention(hidden_states, attention_output)
+        else:
+            pass
         if window_mask is None:
             leading_frames = 0
             padded_frames = frame_count
@@ -216,6 +310,12 @@ class ProjectedTransformer(nn.Module):
         context_frames = self.spec.context_frames
         if frame_count <= context_frames:
             window_mask = None
+        elif (
+            hidden_states.device.type == "npu"
+            and frame_count <= NPU_ATTENTION_MAX_FRAMES
+        ):
+            # The fused kernel takes the window from its band bounds instead of the additive block mask.
+            window_mask = None
         else:
             block_count = math.ceil(frame_count / LOCAL_ATTENTION_BLOCK_FRAMES)
             window_frames = (
@@ -239,7 +339,11 @@ class ProjectedTransformer(nn.Module):
             ).masked_fill_(~is_visible, float("-inf"))
         for layer in self.layers:
             hidden_states = layer(
-                hidden_states, rotary_cos, rotary_signed_sin, window_mask
+                hidden_states,
+                rotary_cos,
+                rotary_signed_sin,
+                window_mask,
+                context_frames,
             )
         if self.output_proj is None:
             pass
