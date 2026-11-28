@@ -20,10 +20,13 @@ jobs:
   label:
     runs-on: ubuntu-latest
     permissions:
+      contents: read
       pull-requests: write
     steps:
       - name: Suggest pull request labels
         uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8.0.0
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number || inputs.pr_number }}
         with:
           github-token: ${{ github.token }}
           script: |
@@ -32,7 +35,7 @@ jobs:
               (await github.rest.pulls.get({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
-                pull_number: Number('${{ github.event.pull_request.number || inputs.pr_number }}'),
+                pull_number: Number(process.env.PR_NUMBER),
               })).data;
             const existingLabels = new Set(
               pullRequest.labels.map(({ name }) => name)
@@ -63,19 +66,15 @@ jobs:
               changedFiles.push(...files);
             }
 
-            const docsOnlyPullRequest =
-              changedFiles.length > 0 &&
-              changedFiles.every(({ filename }) => isDocumentationPath(filename));
-
             const hasOnlyDocumentationChanges =
-              docsOnlyPullRequest &&
-              changedFiles.every(({ previous_filename }) =>
-                !previous_filename || isDocumentationPath(previous_filename)
+              changedFiles.length > 0 &&
+              changedFiles.every(({ filename, previous_filename }) =>
+                isDocumentationPath(filename) &&
+                (!previous_filename || isDocumentationPath(previous_filename))
               );
 
-            const hasRunCiLabel = [...existingLabels].some((name) =>
-              name.startsWith('run-')
-            );
+            const isRunCiLabel = (label) => label.startsWith('run-');
+            const hasRunCiLabel = [...existingLabels].some(isRunCiLabel);
 
             const addedModelPackageInit = changedFiles.some(
               ({ filename, status }) =>
@@ -98,10 +97,56 @@ jobs:
               'help wanted': 'help wanted',
             };
 
+            const authorLogin = pullRequest.user?.login?.toLowerCase() ?? '';
+            const authorAssociation = pullRequest.author_association ?? '';
+            const defaultBranch = pullRequest.base?.repo?.default_branch ?? 'main';
+            const TRUSTED_AUTHOR_ASSOCIATIONS = new Set(['OWNER', 'MEMBER', 'COLLABORATOR']);
+            async function resolveTrustDecision() {
+              if (TRUSTED_AUTHOR_ASSOCIATIONS.has(authorAssociation)) {
+                return `author_association=${authorAssociation}`;
+              }
+              try {
+                const { data } = await github.rest.repos.getContent({
+                  owner, repo, path: '.github/CODEOWNERS', ref: defaultBranch,
+                });
+                if (data.type !== 'file' || data.encoding !== 'base64' || typeof data.content !== 'string') {
+                  throw new Error('Expected a base64-encoded CODEOWNERS file');
+                }
+                const bytes = Uint8Array.from(atob(data.content), char => char.charCodeAt(0));
+                const contents = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+                const owners = new Set();
+                for (const line of contents.split('\n')) {
+                  const [, ...tokens] = line.split('#', 1)[0].trim().split(/\s+/);
+                  for (const token of tokens) {
+                    if (/^@[A-Za-z0-9-]+$/.test(token)) {
+                      owners.add(token.slice(1).toLowerCase());
+                    }
+                  }
+                }
+                if (owners.has(authorLogin)) {
+                  return `matched .github/CODEOWNERS on ${defaultBranch}`;
+                }
+              } catch (error) {
+                core.warning(`Cannot read .github/CODEOWNERS on ${defaultBranch}: ${error.message}`);
+              }
+              return null;
+            }
+
+            const trustReason = await resolveTrustDecision();
+            const isTrustedContributor = trustReason !== null;
+            core.info(isTrustedContributor
+              ? `Author @${authorLogin} is trusted (${trustReason})`
+              : `Author @${authorLogin} is untrusted (author_association=${authorAssociation})`);
+
             const labelsToAdd = new Set();
+            const skippedRunCiLabels = new Set();
             const suggest = (label, matched) => {
               if (matched && !existingLabels.has(label)) {
-                labelsToAdd.add(label);
+                if (isRunCiLabel(label) && (!isTrustedContributor || pullRequest.draft)) {
+                  skippedRunCiLabels.add(label);
+                } else {
+                  labelsToAdd.add(label);
+                }
               }
             };
 
@@ -116,8 +161,11 @@ jobs:
 
             suggest('documentation', hasOnlyDocumentationChanges);
             suggest('model support', addedModelPackageInit);
-            suggest('run-lint-only', docsOnlyPullRequest && !hasRunCiLabel);
+            suggest('run-lint-only', hasOnlyDocumentationChanges && !hasRunCiLabel);
 
+            if (skippedRunCiLabels.size) {
+              core.info(`Suppressed CI labels (draft=${pullRequest.draft}): ${[...skippedRunCiLabels].join(', ')}`);
+            }
             if (labelsToAdd.size) {
               await github.rest.issues.addLabels({
                 owner,
@@ -126,7 +174,7 @@ jobs:
                 labels: [...labelsToAdd],
               });
             }
-            if (!docsOnlyPullRequest && existingLabels.has('run-lint-only')) {
+            if (!hasOnlyDocumentationChanges && existingLabels.has('run-lint-only')) {
               await github.rest.issues.removeLabel({
                 owner,
                 repo,

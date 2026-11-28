@@ -2,9 +2,14 @@ import json
 import shutil
 import subprocess
 from pathlib import Path
+from typing import TypedDict
 
 import pytest
 import yaml
+
+pytestmark = pytest.mark.skipif(
+    shutil.which("node") is None, reason="Node.js is required"
+)
 
 WORKFLOW_PATH = (
     Path(__file__).resolve().parents[3]
@@ -26,17 +31,28 @@ async function* fileIterator() {
     yield {data};
   }
 }
+const contentRequests = [];
 const github = {
   paginate: {iterator: () => fileIterator()},
   rest: {
     pulls: {get: async () => ({data: pullRequest})},
+    repos: {getContent: async request => {
+      contentRequests.push(request);
+      if (input.codeowners === null) throw new Error('404 Not Found');
+      return {data: {
+        type: 'file', encoding: 'base64',
+        content: input.encodedContent ?? Buffer.from(input.codeowners).toString('base64'),
+      }};
+    }},
     issues: {
       addLabels: async request => {added = request.labels},
       removeLabel: async request => {removed.push(request.name)},
     },
   },
 };
-const core = {info: () => {}};
+const messages = [];
+const warnings = [];
+const core = {info: text => messages.push(text), warning: text => warnings.push(text)};
 const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
 (async () => {
   await new AsyncFunction('github', 'context', 'core', input.script)(
@@ -45,6 +61,7 @@ const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
     core
   );
   process.stdout.write(JSON.stringify({
+    contentRequests, messages, warnings,
     added: added.sort(),
     removed: removed.sort(),
   }));
@@ -57,6 +74,14 @@ def labeler_script() -> str:
     return workflow["jobs"]["label"]["steps"][0]["with"]["script"]
 
 
+class LabelerResult(TypedDict):
+    added: list[str]
+    removed: list[str]
+    messages: list[str]
+    warnings: list[str]
+    contentRequests: list[dict[str, str]]
+
+
 def run_labeler(
     *,
     title: str,
@@ -64,9 +89,19 @@ def run_labeler(
     files: list[dict[str, str]],
     existing_labels: list[str] | None = None,
     action: str = "opened",
-) -> tuple[list[str], list[str]]:
+    association: str | None = "MEMBER",
+    login: str = "author",
+    default_branch: str = "main",
+    codeowners: str | None = "",
+    encoded_content: str | None = None,
+    draft: bool = False,
+) -> LabelerResult:
     pull_request = {
         "number": 42,
+        "author_association": association,
+        "user": {"login": login},
+        "base": {"repo": {"default_branch": default_branch}},
+        "draft": draft,
         "title": title,
         "head": {"ref": branch},
         "labels": [{"name": name} for name in (existing_labels or [])],
@@ -76,6 +111,8 @@ def run_labeler(
         "pullRequest": pull_request,
         "files": files,
         "action": action,
+        "codeowners": codeowners,
+        "encodedContent": encoded_content,
     }
     result = subprocess.run(
         ["node", "-e", NODE_RUNNER],
@@ -84,11 +121,9 @@ def run_labeler(
         text=True,
         check=True,
     )
-    changes = json.loads(result.stdout)
-    return changes["added"], changes["removed"]
+    return json.loads(result.stdout)
 
 
-@pytest.mark.skipif(shutil.which("node") is None, reason="Node.js is required")
 @pytest.mark.parametrize(
     ("title", "branch", "files", "existing_labels", "expected_labels"),
     [
@@ -147,7 +182,7 @@ def run_labeler(
                     "status": "renamed",
                 }
             ],
-            ["run-unit-test-ci-only"],
+            None,
             [],
         ),
         (
@@ -241,19 +276,20 @@ def test_suggested_labels(
     existing_labels: list[str] | None,
     expected_labels: list[str],
 ) -> None:
-    added, removed = run_labeler(
+    result = run_labeler(
         title=title,
         branch=branch,
         files=files,
         existing_labels=existing_labels,
     )
-    assert added == sorted(expected_labels)
-    assert removed == []
+    assert result["added"] == sorted(expected_labels)
+    assert result["removed"] == []
 
 
-@pytest.mark.skipif(shutil.which("node") is None, reason="Node.js is required")
-def test_code_push_removes_stale_run_lint_only() -> None:
-    added, removed = run_labeler(
+@pytest.mark.parametrize("association", ["MEMBER", "CONTRIBUTOR"])
+def test_code_push_removes_stale_run_lint_only(association: str) -> None:
+    result = run_labeler(
+        association=association,
         title="docs plus code",
         branch="neutral",
         files=[
@@ -263,29 +299,142 @@ def test_code_push_removes_stale_run_lint_only() -> None:
         existing_labels=["documentation", "run-lint-only"],
         action="synchronize",
     )
-    assert added == []
-    assert removed == ["run-lint-only"]
+    assert result["added"] == []
+    assert result["removed"] == ["run-lint-only"]
 
 
-@pytest.mark.skipif(shutil.which("node") is None, reason="Node.js is required")
 def test_synchronize_does_not_restore_removed_title_label() -> None:
-    added, removed = run_labeler(
+    result = run_labeler(
         title="[Fix] Restore MoE expert probability normalization",
         branch="codex/fix/timeout",
         files=[{"filename": "sglang_omni/x.py", "status": "modified"}],
         action="synchronize",
     )
-    assert added == []
-    assert removed == []
+    assert result["added"] == []
+    assert result["removed"] == []
 
 
-@pytest.mark.skipif(shutil.which("node") is None, reason="Node.js is required")
 def test_edited_title_still_adds_category_label() -> None:
-    added, removed = run_labeler(
+    result = run_labeler(
         title="[Fix] Restore MoE expert probability normalization",
         branch="neutral",
         files=[{"filename": "sglang_omni/x.py", "status": "modified"}],
         action="edited",
     )
-    assert added == ["bug"]
-    assert removed == []
+    assert result["added"] == ["bug"]
+    assert result["removed"] == []
+
+
+@pytest.mark.parametrize("association", ["OWNER", "MEMBER", "COLLABORATOR"])
+def test_repository_role_skips_codeowners_lookup(association: str) -> None:
+    result = run_labeler(
+        title="[Fix] Typo",
+        branch="feature",
+        files=[{"filename": "README.md"}],
+        association=association,
+    )
+    assert result["added"] == ["bug", "documentation", "run-lint-only"]
+    assert result["contentRequests"] == []
+
+
+@pytest.mark.parametrize(
+    ("association", "default_branch"),
+    [("FIRST_TIME_CONTRIBUTOR", "main"), ("CONTRIBUTOR", "main"), ("NONE", "stable")],
+)
+def test_individual_codeowner_on_default_branch(
+    association: str, default_branch: str
+) -> None:
+    result = run_labeler(
+        title="Typo",
+        branch="feature",
+        files=[{"filename": "README.md"}],
+        association=association,
+        login="frankleeeee",
+        default_branch=default_branch,
+        codeowners="docs/* @other @FrankLeeeee # reviewers",
+    )
+    assert result["added"] == ["documentation", "run-lint-only"]
+    assert result["contentRequests"] == [
+        {
+            "owner": "example",
+            "repo": "example",
+            "path": ".github/CODEOWNERS",
+            "ref": default_branch,
+        }
+    ]
+
+
+@pytest.mark.parametrize(
+    "association",
+    [
+        "FIRST_TIME_CONTRIBUTOR",
+        "FIRST_TIMER",
+        "CONTRIBUTOR",
+        "NONE",
+        "MANNEQUIN",
+        "UNKNOWN",
+        None,
+    ],
+)
+def test_external_author_receives_triage_only(association: str | None) -> None:
+    result = run_labeler(
+        title="[Fix] Typo",
+        branch="feature",
+        files=[{"filename": "README.md"}],
+        association=association,
+        codeowners="# @author\n@author @other\n* @author/team author@example.com # @author",
+    )
+    assert result["added"] == ["bug", "documentation"]
+    assert any("untrusted" in message for message in result["messages"])
+    assert any(
+        "Suppressed" in message and "run-lint-only" in message
+        for message in result["messages"]
+    )
+
+
+@pytest.mark.parametrize(
+    ("codeowners", "encoded_content"),
+    [(None, None), ("", "KiBAYXV0aG9yCg==!"), ("", "KiBAYXV0aG9yCv8=")],
+)
+def test_unreadable_codeowners_preserves_triage(
+    codeowners: str | None, encoded_content: str | None
+) -> None:
+    result = run_labeler(
+        title="[Fix] Typo",
+        branch="feature",
+        files=[{"filename": "README.md"}],
+        association="NONE",
+        codeowners=codeowners,
+        encoded_content=encoded_content,
+    )
+    assert result["added"] == ["bug", "documentation"]
+    assert result["warnings"]
+
+
+def test_trusted_draft_receives_triage_only() -> None:
+    result = run_labeler(
+        title="[Fix] Typo",
+        branch="feature",
+        files=[{"filename": "README.md"}],
+        draft=True,
+    )
+    assert result["added"] == ["bug", "documentation"]
+
+
+def test_rename_from_code_removes_stale_lint_label() -> None:
+    result = run_labeler(
+        title="Move example",
+        branch="feature",
+        files=[
+            {
+                "filename": "docs/example.py",
+                "previous_filename": "examples/example.py",
+                "status": "renamed",
+            }
+        ],
+        existing_labels=["run-lint-only"],
+        action="synchronize",
+        association="NONE",
+    )
+    assert result["removed"] == ["run-lint-only"]
+    assert result["added"] == []
