@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/egoist/mygo/ui"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/helper/proto"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/overlay/layout"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/session"
@@ -427,6 +428,39 @@ func TestSessionTitleAndRename(t *testing.T) {
 	a.setSessionTitle(late, "x", "Late")
 	if got := chipLine(a); strings.Contains(got, "Late") || len(a.sessionChips()) != 1 {
 		t.Fatalf("after the delete: %q", got)
+	}
+}
+
+// TestSessionMenuRenameStartsEmpty: the menu's rename field starts empty
+// after both a submitted name and a cancelled, dirty edit.
+func TestSessionMenuRenameStartsEmpty(t *testing.T) {
+	chat := &fakeChat{texts: []string{"one"}}
+	a, _, _ := rewriteSelecting(t, chat, chatA, "summarize")
+	sessionsOn(a)
+	a.measureHook = nil
+	a.renameCurrentSession()
+	width, height, _ := a.sessionOverlaySize(&a.ov.projection.view)
+	a.ov.w, a.ov.h = width, height
+	tester := newSessionProductionComparisonTester(a.app, width+2*layout.Pad, height+2*layout.Pad)
+	frames(tester)
+
+	longName := strings.Repeat("x", sessionNameMax+10)
+	tester.Type(longName)
+	tester.Key(0, ui.KeyEnter)
+	frames(tester)
+	a.renameCurrentSession()
+	frames(tester)
+	if got := a.answer.ui.sessionName; got != "" {
+		t.Fatalf("second menu rename kept the submitted input %q", got)
+	}
+
+	tester.Type("Unsaved escape")
+	a.hotkeyFired(proto.HotkeyEventParams{Binding: proto.HotkeyCancel, Phase: proto.PhaseTrigger})
+	frames(tester)
+	a.renameCurrentSession()
+	frames(tester)
+	if got := a.answer.ui.sessionName; got != "" {
+		t.Fatalf("menu rename after Escape kept the dirty input %q", got)
 	}
 }
 

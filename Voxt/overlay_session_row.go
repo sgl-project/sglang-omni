@@ -109,7 +109,6 @@ func sessionChip(context *ui.Context, number int, chip sessionChipViewState, act
 		})
 		switch {
 		case button.DoubleClicked():
-			local.sessionName = ""
 			actions.renameSession(chip.ID)
 		case button.Clicked() && !chip.Current:
 			actions.switchSession(chip.ID)

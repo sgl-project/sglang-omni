@@ -13,6 +13,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 ### Fixed
 - **The transcription preview stays where you drag it** (#4701): dragged while new words came in, the preview jumped back toward where the drag started, and the screen's edge pulled it back before you let go. It now grows where you have it; dragged past the screen's edge, it returns to the screen once you let go.
+- **Session rename always starts empty** (#4005): opening Rename session again no longer brings back the last submitted or cancelled input, so an empty Return can restore the automatic title.
 
 ### 中文
 
@@ -25,6 +26,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 #### 修复
 - **拖动转录预览时不再跳回去**（#4701）：边说边拖时，每来一批新字，预览会朝拖动开始的位置跳一下；拖到屏幕边缘，还没松手就被拉回来。现在它在拖到的位置上变大；拖出屏幕边缘的，松手后才回到屏幕内。
+- **每次重命名会话都从空输入框开始**（#4005）：再次打开「重命名会话」时，不再残留上次提交或取消的输入，直接按回车即可恢复自动标题。
 
 ## [2.1.4] - 2026-11-26
 

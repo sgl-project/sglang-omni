@@ -80,3 +80,4 @@ report	fix	symptom	level	check
 #4605	#4607	Without Accessibility, the recording overlay still follows the pointer instead of the window server's front window	L	TestFocusedWindowFrameFallsBackToWindowServer
 #4493	#4514	The preview-drain regression waits on real Final and drain delays instead of a controlled deadline	L	TestLiveFinalFailsWhenTheDrainTimesOut
 #4701	#4745	The transcription preview jumps back toward where the drag started when new words come in while it is dragged	L	TestPreviewDraggedWhileItGrows
+#4005	#4721	Menu rename reopens the last submitted or cancelled input instead of an empty field	L	TestSessionMenuRenameStartsEmpty
