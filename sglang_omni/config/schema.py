@@ -621,8 +621,8 @@ class AudioChunkingConfig(BaseModel):
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
-    max_audio_clip_s: float = Field(default=30.0, gt=0)
-    max_total_audio_s: float | None = Field(default=3600.0, gt=0)
+    max_audio_clip_s: float = Field(default=30.0, gt=0, allow_inf_nan=False)
+    max_total_audio_s: float | None = Field(default=3600.0, gt=0, allow_inf_nan=False)
     max_concurrent_chunks: int = Field(default=8, ge=1)
     max_concurrent_long_audio_requests: int | None = Field(default=None, ge=1)
 
