@@ -335,7 +335,14 @@ class SGLangGenerationEngineBuilder(ABC, Generic[RequestDataT]):
         self.compile_model(model, server_args)
 
         if want_cuda_graph:
-            scheduling_bootstrap.init_sglang_cuda_graphs(model_worker)
+            scheduling_bootstrap.init_sglang_cuda_graphs_with_bounded_fallback(
+                model_worker,
+                server_args,
+            )
+            scheduling_bootstrap.report_sglang_memory_phase(
+                "after_cuda_graph_capture",
+                gpu_id,
+            )
             self.post_cuda_graph_setup(model, server_args)
             if prefill_graph_backend != CudaGraphBackend.DISABLED:
                 from sglang_omni.utils import cuda_graph_batch_validator
