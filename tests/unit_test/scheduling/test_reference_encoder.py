@@ -259,6 +259,8 @@ def test_exception_propagates_to_all_waiters_and_does_not_poison(
     assert all(str(error) == "boom" for error in errors.values())
     for index, error in errors.items():
         assert error.__notes__ == [f"Reference encode context: caller-{index}"]
+        assert error.__cause__ is None
+        assert error.__context__ is None
     assert len({id(error) for error in errors.values()}) == len(errors)
     assert service.stats()["entries"] == 0
     result = service.get_or_encode("flaky")
