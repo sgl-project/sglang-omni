@@ -451,6 +451,10 @@ class StageConfig(BaseModel):
         description="Per-replica total physical VRAM budget in bytes (weights, KV, activations); accepts an int or an exact binary-size string. Drives placement capacity checks and MPS preflight arithmetic, and unless enforce_total_reserve is false it is enforced at stage startup through a per-process torch allocator cap, so a stage that outgrows its budget fails itself instead of a co-tenant. The cap bounds torch allocations only; declared budgets need headroom above the measured model footprint.",
     )
     enforce_total_reserve: bool = True
+    torch_profiler_owner: bool = Field(
+        default=False,
+        description="Start and stop the process-wide torch profiler on this stage's scheduler thread, so a single-thread capture records model-execution CPU operators. Read only when SGLANG_TORCH_PROFILER_SCHEDULER_THREAD=1; at most one stage per OS process may set it.",
+    )
 
     @field_validator("total_reserve_bytes", mode="before")
     @classmethod

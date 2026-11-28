@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import multiprocessing
+import os
 from collections.abc import Mapping
 from typing import TypedDict
 
@@ -44,6 +45,7 @@ from sglang_omni.pipeline.runtime_config import (
     build_comm_config,
     prepare_pipeline_runtime,
 )
+from sglang_omni.pipeline.stage.runtime import SCHEDULER_THREAD_PROFILER_ENV
 from sglang_omni.pipeline.stage_workers import (
     StageGroup,
     StageLaunchConfig,
@@ -103,6 +105,7 @@ class StageLaunchKwargs(TypedDict):
     is_stream_receiver: bool
     can_accept_stream_before_payload: bool
     disable_direct_cuda_ipc_payload: bool
+    torch_profiler_owner: bool
     replica_topology: dict[str, list[str]]
 
 
@@ -212,6 +215,7 @@ def build_stage_groups(
             is_stream_receiver=stage_cfg.name in stream_receivers,
             can_accept_stream_before_payload=stage_cfg.can_accept_stream_before_payload,
             disable_direct_cuda_ipc_payload=stage_cfg.disable_direct_cuda_ipc_payload,
+            torch_profiler_owner=stage_cfg.torch_profiler_owner,
             replica_topology=replica_topology.to_dict(),
         )
         if tp_size == 1:
@@ -268,6 +272,7 @@ def build_stage_groups(
             )
         )
     groups.extend(tp_groups)
+    resolve_torch_profiler_ownership(groups)
     attach_process_memory_fraction_defaults(groups)
 
     return groups
@@ -321,6 +326,58 @@ def apply_cpu_thread_plan(groups: list[StageGroup]) -> dict[str, int]:
         f"allocations={allocations}"
     )
     return plan
+
+
+def resolve_torch_profiler_ownership(groups: list[StageGroup]) -> None:
+    """Stamp each stage with whether its OS process has a torch profiler owner.
+
+    The profiler is a per-process singleton shared by colocated stages, so at most one owner per process; an ownerless process keeps direct start and stop.
+    """
+
+    owners: list[str] = []
+    for group in groups:
+        for process_spec in group.process_specs:
+            process_owners = [
+                stage.stage_name
+                for stage in process_spec.stage_specs
+                if stage.torch_profiler_owner
+            ]
+            if len(process_owners) > 1:
+                raise ValueError(
+                    f"Process {process_spec.process_name!r} has multiple Torch "
+                    f"profiler owners: {process_owners}"
+                )
+            else:
+                pass
+            for stage_spec in process_spec.stage_specs:
+                stage_spec.torch_profiler_process_has_owner = bool(process_owners)
+            owners.extend(process_owners)
+
+    if scheduler_thread_profiling_requested(groups) and not owners:
+        raise ValueError(
+            f"{SCHEDULER_THREAD_PROFILER_ENV}=1 requires at least one "
+            "stage with torch_profiler_owner=true"
+        )
+    else:
+        pass
+
+
+def scheduler_thread_profiling_requested(groups: list[StageGroup]) -> bool:
+    """Whether workers will see the flag, counting stage env config that is only injected at spawn time."""
+
+    launcher_value = os.environ.get(SCHEDULER_THREAD_PROFILER_ENV)
+    if launcher_value is not None:
+        # Spawn defaults only apply to keys absent from the launcher env, so
+        # this value is what every worker ends up seeing.
+        return launcher_value == "1"
+    else:
+        pass
+    return any(
+        stage_spec.env_defaults.get(SCHEDULER_THREAD_PROFILER_ENV) == "1"
+        for group in groups
+        for process_spec in group.process_specs
+        for stage_spec in process_spec.stage_specs
+    )
 
 
 def attach_process_memory_fraction_defaults(groups: list[StageGroup]) -> None:

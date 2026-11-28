@@ -179,3 +179,28 @@ def test_repeated_capture_with_running_worker(
         worker.join(timeout=10)
     assert not worker.is_alive()
     assert not errors, errors
+
+
+@pytest.mark.parametrize("second_run_id", ["first-run", "second-run", None])
+def test_start_while_a_run_is_active(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, second_run_id: str | None
+) -> None:
+    """A second start while a profiler runs used to raise UnboundLocalError for rank; the same run is a no-op, any other run restarts."""
+    monkeypatch.delenv("SGLANG_TORCH_PROFILER_PROFILE_MEMORY", raising=False)
+    first_trace = TorchProfiler.start(str(tmp_path / "first"), run_id="first-run")
+    first_profiler = TorchProfiler.profiler
+    try:
+        second_trace = TorchProfiler.start(
+            str(tmp_path / "second"), run_id=second_run_id
+        )
+        if second_run_id == "first-run":
+            assert (second_trace, TorchProfiler.profiler) == (
+                first_trace,
+                first_profiler,
+            )
+        else:
+            assert second_trace == f"{tmp_path / 'second'}_rank0.trace.json.gz"
+            assert TorchProfiler.profiler is not first_profiler
+        assert TorchProfiler.get_active_run_id() == second_run_id
+    finally:
+        TorchProfiler.stop(run_id=second_run_id)

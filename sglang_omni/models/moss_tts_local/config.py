@@ -57,6 +57,7 @@ def stages(*, codec_gpu: int, colocated: bool) -> list[StageConfig]:
                 else _AR_MEM_FRACTION_STATIC
             ),
             gpu=0,
+            torch_profiler_owner=True,
             next="vocoder",
             stream_to=["vocoder"],
         ),

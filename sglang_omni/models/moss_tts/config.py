@@ -135,6 +135,7 @@ def stages(*, colocated: bool) -> list[StageConfig]:
                 _COLOCATED_AR_GPU_MEMORY_FRACTION if colocated else None
             ),
             gpu=0,
+            torch_profiler_owner=True,
             next="vocoder",
             stream_to=["vocoder"],
         ),
