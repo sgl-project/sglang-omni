@@ -1,0 +1,23 @@
+# Conservative single-GPU profile for FishAudio S2-Pro on one RTX 4090
+# (SM89, 24 GB). Bounds follow #1243 functional evidence (concurrency 4,
+# CUDA Graph batches 1/2/4, torch.compile off), plus Docker 4090 measurement:
+# GPU preprocessing + mem_fraction 0.75 left only ~169 MiB free after graph
+# capture, so this profile moves reference encoding to CPU and lowers the
+# static fraction for headroom. Not a SeedTTS quality claim.
+config_cls: S2ProPipelineConfig
+name: s2pro-tts-rtx4090
+model_path: fishaudio/s2-pro
+
+stages:
+  preprocessing:
+    gpu: null
+    total_reserve_bytes: null
+
+  tts_engine:
+    engine:
+      max_running_requests: 4
+      mem_fraction_static: 0.65
+      cuda_graph_bs: [1, 2, 4]
+      cuda_graph_max_bs: 4
+      enable_torch_compile: false
+      dtype: bfloat16
