@@ -42,6 +42,8 @@ from sglang_omni.models.minicpm_o.components.token2wav.fixed_packed import (
 from sglang_omni.models.minicpm_o.components.token2wav.flow_cuda_graph import (
     CapturedPackedFlowGraph,
     FlowCudaGraphRunner,
+    euler_step_times,
+    step_modulations,
 )
 from sglang_omni.models.minicpm_o.components.token2wav.packed_dit_cuda_graph import (
     CapturedPackedDiTGraph,
@@ -120,8 +122,6 @@ class CausalConditionalCFM(torch.nn.Module):
         *,
         packed_valid_frames: int | None = None,
     ) -> tuple[torch.Tensor, list[DiTState] | None]:
-        t = t_span[0].expand(x.size(0))
-        dt = t_span[1] - t_span[0]
         assert self.inference_cfg_rate > 0, "inference_cfg_rate better > 0"
         paired_mask = torch.cat([mask, mask], dim=0)
         paired_mu = torch.cat([mu, torch.zeros_like(mu)], dim=0)
@@ -178,7 +178,13 @@ class CausalConditionalCFM(torch.nn.Module):
                 if packed_layout is not None
                 else None
             )
-            for step in range(1, len(t_span)):
+            modulations = (
+                step_modulations(self.estimator, t_span)
+                if captured_flow is None and (states is not None or not is_packed)
+                else None
+            )
+            for step, (step_time, dt) in enumerate(euler_step_times(t_span)):
+                t = step_time.expand(x.size(0))
                 if states is not None:
                     derivative, next_state = self.estimator.forward_chunk(
                         torch.cat([x, x], dim=0),
@@ -186,7 +192,8 @@ class CausalConditionalCFM(torch.nn.Module):
                         torch.cat([t, t], dim=0),
                         paired_speaker_embeddings,
                         paired_mel_conditioning,
-                        states[step - 1],
+                        states[step],
+                        modulation=modulations[step],
                     )
                     next_states.append(next_state)
                     conditional, unconditional = derivative.chunk(2, dim=0)
@@ -199,7 +206,7 @@ class CausalConditionalCFM(torch.nn.Module):
                         captured_flow, packed_runner, captured_packed, t, dt
                     )
                 elif captured_flow is not None:
-                    graph_runner.run_step(captured_flow, t, dt)
+                    graph_runner.run_step(captured_flow, step, dt)
                 else:
                     x = self.euler_step(
                         x,
@@ -209,14 +216,12 @@ class CausalConditionalCFM(torch.nn.Module):
                         paired_mask,
                         paired_speaker_embeddings,
                         paired_mel_conditioning,
+                        modulation=(
+                            modulations[step] if modulations is not None else None
+                        ),
                         packed_layout=packed_layout,
                         packed_graph=captured_packed,
                     )
-                t = t + dt
-                if step < len(t_span) - 1:
-                    dt = t_span[step + 1] - t_span[step]
-                else:
-                    pass
             output = (
                 captured_flow.output[:, :, : x.shape[2]].clone()
                 if captured_flow is not None
@@ -234,6 +239,7 @@ class CausalConditionalCFM(torch.nn.Module):
         paired_speaker_embeddings: torch.Tensor,
         paired_mel_conditioning: torch.Tensor,
         *,
+        modulation: torch.Tensor | None = None,
         packed_layout: FixedPackedLayout | None = None,
         packed_graph: CapturedPackedDiTGraph | None = None,
     ) -> torch.Tensor:
@@ -244,6 +250,7 @@ class CausalConditionalCFM(torch.nn.Module):
             torch.cat([t, t], dim=0),
             paired_speaker_embeddings,
             paired_mel_conditioning,
+            modulation=modulation,
             packed_layout=packed_layout,
             packed_graph=packed_graph,
         )

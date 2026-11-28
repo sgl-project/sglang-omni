@@ -19,7 +19,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from threading import Lock
-from typing import Protocol
+from typing import Iterator, Protocol
 
 import torch
 import torch.nn.functional as F
@@ -47,13 +47,41 @@ class FlowEulerStep(Protocol):
         paired_mask: torch.Tensor,
         paired_speaker_embeddings: torch.Tensor,
         paired_mel_conditioning: torch.Tensor,
+        *,
+        modulation: torch.Tensor | None = None,
     ) -> torch.Tensor: ...
+
+
+def euler_step_times(
+    time_span: torch.Tensor,
+) -> Iterator[tuple[torch.Tensor, torch.Tensor]]:
+    """Each Euler step's time and size, the time accumulated over the steps."""
+    t, dt = time_span[0], time_span[1] - time_span[0]
+    for step in range(1, len(time_span)):
+        yield t, dt
+        t = t + dt
+        if step < len(time_span) - 1:
+            dt = time_span[step + 1] - time_span[step]
+        else:
+            pass
+
+
+def step_modulations(estimator: DiT, time_span: torch.Tensor) -> torch.Tensor:
+    """Each Euler step's estimator modulations concatenated on the last axis, (steps, 1, 1, width)."""
+    # note (Dayuxiaoshui): One row broadcast over the batch; every row of a step shares t.
+    return torch.stack(
+        [
+            torch.cat(estimator.modulations(t.expand(1)), dim=-1)
+            for t, _ in euler_step_times(time_span)
+        ]
+    )
 
 
 @dataclass(kw_only=True)
 class CapturedFlowGraph:
     graph: torch.cuda.CUDAGraph
     inputs: tuple[torch.Tensor, ...]
+    modulation: torch.Tensor
     output: torch.Tensor
 
 
@@ -77,9 +105,13 @@ class FlowCudaGraphRunner:
         *,
         estimator: DiT,
         inference_cfg_rate: float,
+        time_span: torch.Tensor,
         minimum_free_gibibytes: float = 3.0,
     ) -> None:
         self.estimator: DiT = estimator
+        self.time_span: torch.Tensor = time_span
+        # note (Dayuxiaoshui): A dense graph reads its step's row rather than embedding t.
+        self.step_modulations: torch.Tensor | None = None
         self.inference_cfg_rate: float = inference_cfg_rate
         self.packed_step_replays: int = 0
         self.euler_step: FlowEulerStep = euler_step
@@ -137,6 +169,10 @@ class FlowCudaGraphRunner:
         graphs: dict[tuple[int, int], CapturedFlowGraph | CapturedPackedFlowGraph] = {}
         packed_runner = self.estimator.packed_graph_runner
         with torch.cuda.device(self.device), torch.cuda.stream(stream):
+            with torch.autocast(
+                "cuda", dtype=self.dtype, enabled=self.dtype != torch.float32
+            ):
+                self.step_modulations = step_modulations(self.estimator, self.time_span)
             self.pool = torch.cuda.graph_pool_handle()
             for batch_size, frames in sorted(
                 shapes, key=lambda value: value[0] * value[1], reverse=True
@@ -184,6 +220,7 @@ class FlowCudaGraphRunner:
                         paired_speaker_embeddings,
                         paired_mel_conditioning,
                     ) = inputs
+                    modulation = self.step_modulations[0].clone()
                     if is_packed:
                         workspace = packed_runner.workspaces[batch_size]
 
@@ -234,7 +271,7 @@ class FlowCudaGraphRunner:
                             enabled=self.dtype != torch.float32,
                         ):
                             for _ in range(3):
-                                self.euler_step(*inputs)
+                                self.euler_step(*inputs, modulation=modulation)
                 except torch.cuda.OutOfMemoryError as exc:
                     logger.warning(
                         f"MiniCPM-o Flow graph preparation failed for "
@@ -281,9 +318,12 @@ class FlowCudaGraphRunner:
                                 stream=stream,
                                 capture_error_mode="thread_local",
                             ):
-                                x.copy_(self.euler_step(*inputs))
+                                x.copy_(self.euler_step(*inputs, modulation=modulation))
                         graphs[shape] = CapturedFlowGraph(
-                            graph=graph, inputs=inputs, output=x
+                            graph=graph,
+                            inputs=inputs,
+                            modulation=modulation,
+                            output=x,
                         )
                 except TorchDynamoException:
                     raise
@@ -317,6 +357,9 @@ class FlowCudaGraphRunner:
             x.device != self.device
             or x.dtype != self.dtype
             or time_span.dtype != torch.float32
+            # note (Dayuxiaoshui): Every span is CausalConditionalCFM.time_span of its
+            # step count, so the count stands for the times; comparing values would sync.
+            or len(time_span) != len(self.time_span)
             or batch_frame_shape is None
         ):
             self.graph_misses += 1
@@ -370,9 +413,10 @@ class FlowCudaGraphRunner:
         self.packed_step_replays += 1
 
     def run_step(
-        self, captured: CapturedFlowGraph, t: torch.Tensor, dt: torch.Tensor
+        self, captured: CapturedFlowGraph, step: int, dt: torch.Tensor
     ) -> None:
-        captured.inputs[1].copy_(t)
+        assert self.step_modulations is not None
+        captured.modulation.copy_(self.step_modulations[step])
         captured.inputs[2].copy_(dt)
         captured.graph.replay()
         self.graph_replays += 1
