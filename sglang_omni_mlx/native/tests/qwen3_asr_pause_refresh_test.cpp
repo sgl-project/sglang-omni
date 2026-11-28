@@ -4,9 +4,7 @@
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
-#include <cstdlib>
 #include <exception>
-#include <execinfo.h>
 #include <functional>
 #include <future>
 #include <iostream>
@@ -799,14 +797,7 @@ void TestPauseRefreshFinalOrdering(bool queue_behind_blocker,
   } else {
   }
   if (close_during_pause) {
-    worker.Submit(
-        [](const std::atomic<bool> &) { return TranscriptionResult{}; },
-        NewCancelFlag(),
-        [&worker_drained](std::optional<TranscriptionResult>,
-                          std::exception_ptr error) {
-          worker_drained.Notify(error);
-        });
-    worker_drained.Wait("worker did not drain after close");
+    DrainWorker(worker, worker_drained);
     Require(decoded_samples.load() ==
                     (queue_behind_blocker
                          ? 0
@@ -1015,12 +1006,6 @@ void TestPauseRefreshRequiresSessionOptIn() {
 } // namespace qwen3_asr::tests
 
 int main() {
-  std::set_terminate([] {
-    void *frames[64];
-    const int frame_count = backtrace(frames, 64);
-    backtrace_symbols_fd(frames, frame_count, 2);
-    std::abort();
-  });
   try {
     std::cerr << "TestAdmissionPolicy\n";
     qwen3_asr::tests::TestAdmissionPolicy();
