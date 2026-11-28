@@ -71,13 +71,16 @@ SGLang-Omni is a multi-stage serving runtime for omni, speech, and TTS models. I
 
 ## Hardware Support
 
-| Backend | Status | Notes |
-|---------|--------|-------|
-| **NVIDIA CUDA** | Supported | Default backend with full model coverage. |
-| **Apple Silicon** | Experimental | Qwen3-ASR runs through Torch MPS on macOS arm64. Install with [`install.sh`](./install.sh) and follow the [Qwen3-ASR guide](./docs/cookbook/qwen3_asr.md#apple-silicon). |
-| **Intel GPU (XPU)** | Supported | Intel Arc GPUs via PyTorch XPU. **Qwen3-ASR, Whisper ASR, Fun-ASR-Nano, Nemotron 3.5 ASR, MOSS-Transcribe-Diarize, Qwen3-TTS, Fun-CosyVoice3, ZONOS2, Audar-TTS, Qwen3-Omni, MiniMax Music 3, MiniCPM-o, Ming-Omni, Ming-Omni-TTS, Nemotron VoiceChat, PersonaPlex, AuK/AuK-Flash and dots.tts serve end-to-end**. The [Intel XPU guide](./docs/other_platforms/installation_xpu.md) has the install steps, each model's launch command and how many cards it needs; the backend is auto-detected. |
+| Platform | Status |
+|----------|--------|
+| [NVIDIA GPU](./docs/get_started/installation.md) | Supported |
+| [Intel GPU (XPU)](./docs/other_platforms/installation_xpu.md) | Supported |
+| [Apple Silicon](./docs/other_platforms/installation_apple_silicon.md) | Experimental |
+| [Huawei Ascend NPU](./docs/other_platforms/installation_npu.md) | Experimental |
+| [Moore Threads GPU (MUSA)](./docs/other_platforms/installation_musa.md) | Experimental |
+| [Intel CPU](./docs/other_platforms/installation_cpu.md) | Experimental |
 
-Additional model guides, including experimental and research-oriented paths, are available in the [Cookbook](https://sgl-project.github.io/sglang-omni/).
+See each platform guide for supported models and setup, and the [Cookbook](https://sgl-project.github.io/sglang-omni/) for per-model guides.
 
 ## Quick Start
 
