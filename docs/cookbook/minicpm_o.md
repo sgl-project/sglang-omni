@@ -111,7 +111,7 @@ Add `"return_spec_tokens_details": true` to a chat request to get the acceptance
 ## Known limitations
 
 - `/v1/audio/speech` output is non-streaming.
-- With a draft, requests with `frequency_penalty`, `presence_penalty`, logprobs, or a non-greedy `min_p` are rejected. With speculative decoding enabled, sampled requests can use `seed` only with DSpark at TP=1 with static verification. On CUDA, DSpark and DFlash support `repetition_penalty`. Single-token requests (`max_tokens=1`) are exempt.
+- With a draft, requests with `frequency_penalty`, `presence_penalty` or logprobs are rejected. With speculative decoding enabled, sampled requests can use `seed` and `min_p` only with DSpark at TP=1 with static verification; other drafts reject a sampled `min_p`. On CUDA, DSpark and DFlash support `repetition_penalty`. Single-token requests (`max_tokens=1`) are exempt.
 - DSpark uses static verification by default; `SGLANG_RAGGED_VERIFY_MODE=compact` (with `--thinker.engine.speculative_dspark_sps_table_path`) also rejects `length_penalty` and `repetition_penalty`.
 - The limits shared by all omni models are in [Known Limitations](../basic_usage/omni.md#known-limitations).
 

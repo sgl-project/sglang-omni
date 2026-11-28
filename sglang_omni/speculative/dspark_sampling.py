@@ -66,6 +66,25 @@ def sample_draft_block(
     return torch.stack(drafted_tokens, 1), torch.stack(corrected_logits, 1)
 
 
+def filter_min_p(
+    target_probabilities: torch.Tensor, min_probabilities: torch.Tensor
+) -> torch.Tensor:
+    """Drop tokens below each request's min_p of its top probability and renormalize.
+
+    SGLang's sampler applies min_p this way after top-k and top-p, against the
+    renormalized row, so the kept set is the same.
+
+    Args:
+        target_probabilities: [requests, rows, vocab] after top-k and top-p.
+        min_probabilities: [requests]; 0 keeps every token.
+    """
+    floor = min_probabilities.view(-1, 1, 1) * target_probabilities.amax(
+        -1, keepdim=True
+    )
+    kept = torch.where(target_probabilities >= floor, target_probabilities, 0.0)
+    return kept / kept.sum(-1, keepdim=True)
+
+
 def verify_draft_block(
     target_probabilities: torch.Tensor,
     draft_logits: torch.Tensor,

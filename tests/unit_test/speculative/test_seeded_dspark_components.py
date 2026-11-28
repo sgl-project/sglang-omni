@@ -95,6 +95,7 @@ def test_mixed_greedy_ties_keep_original_logits_argmax(device: str) -> None:
         top_ks=torch.tensor([1, 2], device=device),
         need_top_k_sampling=True,
         need_top_p_sampling=False,
+        need_min_p_sampling=False,
         is_any_greedy=True,
     )
     draft_input = DFlashDraftInputV2.create_idle_input(device=device)
@@ -133,6 +134,7 @@ def test_seeded_proposal_and_verification_keep_committed_token_prefix(
         top_ks=torch.full((2,), vocab_size, device=device),
         need_top_k_sampling=False,
         need_top_p_sampling=False,
+        need_min_p_sampling=False,
         is_any_greedy=False,
     )
     verifier = seeded_verifier(device, gamma)

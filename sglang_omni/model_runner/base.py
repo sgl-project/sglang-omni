@@ -192,6 +192,8 @@ class ModelRunner(Generic[RequestDataInput]):
     speculative_verify_takes_logits_hooks: bool = False
     # True when the model's sampled DFlash or DSpark verify draws without the request seed.
     speculative_ignores_request_seed: bool = False
+    # True when the model's sampled DSpark verify filters the target distribution by min_p.
+    speculative_verify_applies_min_p: bool = False
     # An EAGLE draft extends on the embeddings the target prefilled with, which a
     # runner composing multimodal inputs keeps here for one prefill.
     retain_prefill_input_embeds: bool = False
@@ -1351,7 +1353,7 @@ class ModelRunner(Generic[RequestDataInput]):
         """
         sampling_info = forward_batch.sampling_info
         if sampling_info.sampling_seed is not None:
-            self.validate_seeded_sampling_supported(sampling_info)
+            self.validate_seeded_batch(sampling_info)
             return
         else:
             pass
@@ -1360,7 +1362,7 @@ class ModelRunner(Generic[RequestDataInput]):
             return
         else:
             pass
-        self.validate_seeded_sampling_supported(sampling_info)
+        self.validate_seeded_batch(sampling_info)
         for sp in sampling_params:
             if sp.sampling_seed is not None and not (
                 0 <= sp.sampling_seed <= SAMPLING_SEED_MASK
@@ -1396,6 +1398,22 @@ class ModelRunner(Generic[RequestDataInput]):
         ).to(sampling_info.device, non_blocking=True)
         self.sampling_seed_batch_key = batch_key
         self.sampling_seed_batch_tensor = sampling_info.sampling_seed
+
+    def validate_seeded_batch(self, sampling_info: SamplingBatchInfo) -> None:
+        """Refuse a seeded min_p batch unless this runner's sampler applies min_p to it."""
+        if sampling_info.need_min_p_sampling:
+            # note (wilsonzheng0327): imported here, as model_worker does, so that runners
+            # without an SGLang model runner, such as the Torch-MPS ones, never load it.
+            from sglang_omni.model_runner.sglang_model_runner import (
+                PyTorchSeededSampler,
+            )
+
+            if isinstance(self.tp_worker.model_runner.sampler, PyTorchSeededSampler):
+                pass
+            else:
+                self.validate_seeded_sampling_supported(sampling_info)
+        else:
+            pass
 
     @staticmethod
     def validate_seeded_sampling_supported(sampling_info: SamplingBatchInfo) -> None:

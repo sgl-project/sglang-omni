@@ -85,7 +85,80 @@ def install_prefill_runner_dispatch() -> None:
         _PREFILL_RUNNER_DISPATCH_DEFAULT = default_cls
 
 
-class FlashInferSeededSampler(Sampler):
+def drop_below_min_p(probs: torch.Tensor, min_ps: torch.Tensor) -> torch.Tensor:
+    """Zero each row's tokens below its min_p of the top probability, without renormalizing.
+
+    Top-p then sums the same higher-probability tokens, so top-k, top-p and min_p keep
+    the tokens they keep in either order.
+
+    Args:
+        probs: [rows, vocab].
+        min_ps: [rows]; 0 keeps every token.
+    """
+    floor = min_ps.view(-1, 1) * probs.amax(-1, keepdim=True)
+    return torch.where(probs >= floor, probs, 0.0)
+
+
+def draw_with_pytorch_backend(
+    probs: torch.Tensor,
+    sampling_info: SamplingBatchInfo,
+    positions: torch.Tensor,
+) -> tuple[torch.Tensor, _SamplingMaskCapture | None]:
+    """Draw and capture the mask as the PyTorch backend does, also for a seeded batch with min_p rows."""
+    capture_rows = sampling_info.sampling_mask_batch_indices
+    if sampling_info.sampling_seed is not None and sampling_info.need_min_p_sampling:
+        # note (wilsonzheng0327): the PyTorch backend asserts on min_p with a seed. Its
+        # min_p keeps the tokens at or above min_p of the top probability, and dropping
+        # the others first leaves the same tokens to its top-k and top-p cuts.
+        probs = drop_below_min_p(probs, sampling_info.min_ps)
+        need_min_p_sampling = False
+    else:
+        need_min_p_sampling = sampling_info.need_min_p_sampling
+    sample_result = top_k_top_p_min_p_sampling_from_probs_torch(
+        probs,
+        sampling_info.top_ks,
+        sampling_info.top_ps,
+        sampling_info.min_ps,
+        need_min_p_sampling,
+        sampling_info.sampling_seed,
+        positions,
+        return_filtered_probs=capture_rows is not None,
+    )
+    if capture_rows is None:
+        return sample_result, None
+    else:
+        pass
+    batch_next_token_ids, filtered_probs, token_ids, selected_weight = sample_result
+    return batch_next_token_ids, _SamplingMaskCapture(
+        weights=_select_sampling_mask_rows(filtered_probs, capture_rows),
+        token_ids=_select_sampling_mask_rows(token_ids, capture_rows),
+        selected_weight=_select_sampling_mask_rows(selected_weight, capture_rows),
+        batch_rows=capture_rows,
+    )
+
+
+class PyTorchSeededSampler(Sampler):
+    """The PyTorch backend's sampler, which also draws a seeded batch with min_p rows."""
+
+    def _sample_from_probs(  # noqa: leading-underscore
+        self,
+        probs: torch.Tensor,
+        sampling_info: SamplingBatchInfo,
+        positions: torch.Tensor,
+        simple_sampling_case: bool,
+    ) -> tuple[torch.Tensor, _SamplingMaskCapture | None]:
+        if (
+            sampling_info.sampling_seed is not None
+            and sampling_info.need_min_p_sampling
+        ):
+            return draw_with_pytorch_backend(probs, sampling_info, positions)
+        else:
+            return super()._sample_from_probs(  # noqa: leading-underscore
+                probs, sampling_info, positions, simple_sampling_case
+            )
+
+
+class FlashInferSeededSampler(PyTorchSeededSampler):
     def _sample_from_probs(  # noqa: leading-underscore
         self,
         probs: torch.Tensor,
@@ -105,34 +178,19 @@ class FlashInferSeededSampler(Sampler):
         # note (ratish): FlashInfer seeds a batch from its first row's seed and each
         # row's index, and with min_p it cuts top_p after renormalizing top_k, for every
         # row of the batch, so either batch takes the PyTorch backend's draw and mask.
-        capture_rows = sampling_info.sampling_mask_batch_indices
-        sample_result = top_k_top_p_min_p_sampling_from_probs_torch(
-            probs,
-            sampling_info.top_ks,
-            sampling_info.top_ps,
-            sampling_info.min_ps,
-            sampling_info.need_min_p_sampling,
-            sampling_info.sampling_seed,
-            positions,
-            return_filtered_probs=capture_rows is not None,
-        )
-        if capture_rows is None:
-            return sample_result, None
-        else:
-            pass
-        batch_next_token_ids, filtered_probs, token_ids, selected_weight = sample_result
-        return batch_next_token_ids, _SamplingMaskCapture(
-            weights=_select_sampling_mask_rows(filtered_probs, capture_rows),
-            token_ids=_select_sampling_mask_rows(token_ids, capture_rows),
-            selected_weight=_select_sampling_mask_rows(selected_weight, capture_rows),
-            batch_rows=capture_rows,
-        )
+        return draw_with_pytorch_backend(probs, sampling_info, positions)
 
 
 @functools.cache
 def register_flashinfer_seeded_sampler() -> None:
     """Make the FlashInfer backend build FlashInferSeededSampler, once per process."""
     register_sampler_backend("flashinfer", FlashInferSeededSampler)
+
+
+@functools.cache
+def register_pytorch_seeded_sampler() -> None:
+    """Make the PyTorch backend build PyTorchSeededSampler, once per process."""
+    register_sampler_backend("pytorch", PyTorchSeededSampler)
 
 
 def filter_weights_by_prefix(
@@ -523,6 +581,7 @@ class SGLModelRunner(ModelRunner):
         self.prefill_graph_runner_class: type[PrefillCudaGraphRunner] | None = None
         self.register_omni_model()
         register_flashinfer_seeded_sampler()
+        register_pytorch_seeded_sampler()
 
         super().__init__(
             model_config=model_config,

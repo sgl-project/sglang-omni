@@ -14,7 +14,10 @@ from sglang.srt.sampling.sampling_batch_info import SamplingBatchInfo
 
 from sglang_omni.model_runner.base import ModelRunner
 from sglang_omni.model_runner.sglang_model_runner import (
+    FlashInferSeededSampler,
+    PyTorchSeededSampler,
     register_flashinfer_seeded_sampler,
+    register_pytorch_seeded_sampler,
 )
 from sglang_omni.sampling.seed import derive_sampling_seed, resolve_row_seed
 
@@ -30,10 +33,11 @@ def req(seed, request_id="req"):
     )
 
 
-def seed_runner() -> ModelRunner:
+def seed_runner(sampler: object | None = None) -> ModelRunner:
     runner = object.__new__(ModelRunner)
     runner.sampling_seed_batch_key = ()
     runner.sampling_seed_batch_tensor = None
+    runner.tp_worker = SimpleNamespace(model_runner=SimpleNamespace(sampler=sampler))
     return runner
 
 
@@ -87,6 +91,20 @@ def test_rejects_seeded_min_p_before_upstream_sampler():
     runner = seed_runner()
     with pytest.raises(ValueError, match="min_p"):
         runner.install_sampling_seeds(make_fb(min_p=True), [req(42)])
+
+
+@pytest.mark.parametrize(
+    "sampler_class", [FlashInferSeededSampler, PyTorchSeededSampler]
+)
+def test_installs_seeded_min_p_when_the_sampler_applies_it(sampler_class):
+    """A seeded request can share a batch with a min_p one under either seeded sampler."""
+    runner = seed_runner(object.__new__(sampler_class))
+    fb = make_fb(min_p=True)
+    runner.install_sampling_seeds(fb, [req(42, "seeded"), req(None, "min_p")])
+    assert fb.sampling_info.sampling_seed.tolist() == [
+        42,
+        derive_sampling_seed("sglang-omni-unseeded-row", "min_p"),
+    ]
 
 
 def test_installs_seeded_top_k_and_top_p_on_flashinfer() -> None:
@@ -320,3 +338,49 @@ def test_min_p_batches_keep_the_pytorch_backend_support_on_every_row() -> None:
     assert masks["flashinfer"].lengths.tolist() == [2, 2]
     assert torch.equal(masks["flashinfer"].token_ids, masks["pytorch"].token_ids)
     assert torch.equal(masks["flashinfer"].lengths, masks["pytorch"].lengths)
+
+
+@pytest.mark.accelerator
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
+def test_seeded_min_p_rows_keep_the_pytorch_backend_unseeded_support() -> None:
+    """A seeded draw on either backend applies min_p and keeps the tokens the
+    PyTorch backend keeps without a seed, after top-k and top-p."""
+    register_flashinfer_seeded_sampler()
+    register_pytorch_seeded_sampler()
+    logits = torch.full((2, VOCAB_SIZE), float("-inf"), device="cuda")
+    logits[:, :4] = torch.tensor([0.4, 0.3, 0.2, 0.1], device="cuda").log()
+    positions = torch.tensor([3, 17], device="cuda")
+
+    def support(sampling_backend: str, sampling_seeds: list[int] | None):
+        tokens, logits_output = draw(
+            sampling_backend,
+            logits,
+            sampling_info_for(
+                2,
+                sampling_seeds,
+                top_k=4,
+                top_p=0.75,
+                min_ps=[0.6, 0.0],
+                sampling_mask_rows=[0, 1],
+            ),
+            positions,
+        )
+        mask = logits_output.sampling_mask_output
+        kept = [
+            mask.token_ids[row, :length].tolist()
+            for row, length in enumerate(mask.lengths.tolist())
+        ]
+        return tokens, kept
+
+    _, unseeded_kept = support("pytorch", None)
+
+    # note (wilsonzheng0327): at temperature 0.9 top-p keeps tokens 0-2 and min_p 0.6
+    # of the top probability keeps 0-1.
+    assert unseeded_kept == [[0, 1], [0, 1, 2]]
+    for sampling_backend in ("flashinfer", "pytorch"):
+        seeded_tokens, seeded_kept = support(sampling_backend, [11, 22])
+        assert seeded_kept == unseeded_kept
+        assert all(
+            token in kept
+            for token, kept in zip(seeded_tokens, seeded_kept, strict=True)
+        )
