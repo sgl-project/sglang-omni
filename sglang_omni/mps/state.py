@@ -21,11 +21,11 @@ _SUN_PATH_LIMIT = 107
 
 def validate_control_socket(control_socket: Path) -> None:
     socket_bytes = len(str(control_socket).encode())
-    if socket_bytes > _SUN_PATH_LIMIT:
+    if socket_bytes >= _SUN_PATH_LIMIT:
         # Note (Jiaxin Deng): over the limit the daemon starts, fails to bind,
         # and exits reporting only "Cannot find MPS control daemon process".
         raise ValueError(
-            f"MPS control socket path is {socket_bytes} bytes, over the "
+            f"MPS control socket path is {socket_bytes} bytes, reaching the "
             f"{_SUN_PATH_LIMIT}-byte AF_UNIX sun_path limit: "
             f"{control_socket}. Use a shorter state root."
         )
