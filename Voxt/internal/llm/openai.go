@@ -351,6 +351,7 @@ type oaChoice struct {
 	} `json:"message"`
 	Delta *struct {
 		Content *string `json:"content"`
+		Refusal *string `json:"refusal"`
 	} `json:"delta"`
 	FinishReason *string `json:"finish_reason"`
 }
@@ -411,6 +412,7 @@ func (o *OpenAI) readStream(ctx context.Context, body io.Reader, onDelta func(st
 	var text strings.Builder
 	var perr error
 	done := false
+	refused := false
 	err := readSSE(body, func(data string) bool {
 		if data == "[DONE]" {
 			done = true
@@ -434,6 +436,9 @@ func (o *OpenAI) readStream(ctx context.Context, body io.Reader, onDelta func(st
 			out.Usage = r.Usage.usage()
 		}
 		for _, c := range r.Choices {
+			if c.Delta != nil && c.Delta.Refusal != nil && *c.Delta.Refusal != "" {
+				refused = true
+			}
 			if c.Delta != nil && c.Delta.Content != nil && *c.Delta.Content != "" {
 				text.WriteString(*c.Delta.Content)
 				onDelta(*c.Delta.Content)
@@ -460,5 +465,8 @@ func (o *OpenAI) readStream(ctx context.Context, body io.Reader, onDelta func(st
 		return Response{}, e
 	}
 	out.Text = text.String()
+	if out.Text == "" && refused {
+		out.FinishReason = FinishFilter
+	}
 	return out, nil
 }

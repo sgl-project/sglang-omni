@@ -174,6 +174,28 @@ func TestOpenAIStreaming(t *testing.T) {
 	}
 }
 
+// A streamed refusal with a normal stop reason has the same error as a
+// non-streamed refusal, and none of its explanation becomes answer text.
+func TestOpenAIStreamingRefusal(t *testing.T) {
+	f := newFakeServer(t,
+		jsonReply(200, map[string]any{"choices": []any{map[string]any{
+			"message": map[string]any{"content": nil, "refusal": "I cannot help."}, "finish_reason": "stop",
+		}}}),
+		sse(
+			`data: {"choices":[{"index":0,"delta":{"refusal":"I cannot "}}]}`+"\n\n",
+			`data: {"choices":[{"index":0,"delta":{"refusal":"help."},"finish_reason":"stop"}]}`+"\n\n",
+			"data: [DONE]\n\n",
+		),
+	)
+	c := &Client{Backend: NewOpenAI(presetAt(t, "openai", f.srv.URL), "sk-test", f.srv.Client())}
+	_, plainErr := c.Chat(context.Background(), Request{Messages: msgs("hi")})
+	var deltas []string
+	resp, streamErr := c.Chat(context.Background(), Request{Messages: msgs("hi"), OnDelta: func(s string) { deltas = append(deltas, s) }})
+	if Code(plainErr) != CodeFiltered || Code(streamErr) != CodeFiltered || resp.Text != "" || len(deltas) != 0 {
+		t.Fatalf("plain %v, stream %v, resp %+v, deltas %q", plainErr, streamErr, resp, deltas)
+	}
+}
+
 // TestOpenAIRelaxed: parameters a server rejects are dropped, one at a
 // time: stream_options, temperature, then the preset's thinking switch.
 func TestOpenAIRelaxed(t *testing.T) {
