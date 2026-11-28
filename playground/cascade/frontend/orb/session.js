@@ -352,11 +352,18 @@ export class DuplexSession {
       case "input_audio_buffer.speech_started":
       case "input_audio_buffer.speech_stopped":
         this.userSpeaking = event.type === "input_audio_buffer.speech_started";
+        if (this.userSpeaking && this.turnBased && !this.responseOpen) {
+          const reply = this.reply(this.lastReplyId);
+          // Note (ruiling): response.done can precede the end of browser playback; the server no longer has an open reply to cancel.
+          if (reply?.status === "completed" && !reply.stopped && reply.playedMs < reply.audioSamples * 1000 / this.outputRate) {
+            this.emit("playback", { type: "cancel", responseId: this.lastReplyId });
+          } else {}
+        } else {}
         break;
       case "response.created":
         this.responseOpen = true;
         this.responseId = (event.response && event.response.id) || null;
-        this.replies.set(this.responseId, { text: "", itemId: null, progress: [], playedMs: 0, stopped: false, status: null, keptEnd: null });
+        this.replies.set(this.responseId, { text: "", itemId: null, progress: [], playedMs: 0, audioSamples: 0, stopped: false, status: null, keptEnd: null });
         this.lastReplyId = this.responseId;
         if (this.replies.size > MAX_REPLIES_KEPT) this.replies.delete(this.replies.keys().next().value);
         this.emit("response", { open: true, id: this.responseId });
@@ -366,7 +373,10 @@ export class DuplexSession {
         const unitId = extension.unit_id || "unknown";
         this.unitAudio.set(unitId, (this.unitAudio.get(unitId) || 0) + bytes.byteLength / 2);
         const reply = this.reply(event.response_id);
-        if (reply) reply.itemId = event.item_id;
+        if (reply) {
+          reply.itemId = event.item_id;
+          reply.audioSamples += bytes.byteLength / 2;
+        } else {}
         this.emit("audio", { bytes, responseId: event.response_id || this.responseId });
         break;
       }
