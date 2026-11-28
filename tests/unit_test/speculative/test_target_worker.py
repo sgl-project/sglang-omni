@@ -145,3 +145,45 @@ def test_verify_rows_take_only_the_hooks_their_runner_opted_into(
     target_worker.forward_batch_generation(None, verify_batch, is_verify=True)
 
     assert runner.applied_hooks == applied_hooks
+
+
+@pytest.mark.parametrize(
+    ("algorithm", "keeps_relaxed_penalty"),
+    [(SpeculativeAlgorithm.EAGLE, False), (SpeculativeAlgorithm.DFLASH, True)],
+)
+def test_an_eagle_verify_leaves_repetition_penalty_to_the_exact_one(
+    algorithm: SpeculativeAlgorithm, keeps_relaxed_penalty: bool
+) -> None:
+    """SGLang's EAGLE sampler scales verify rows by its relaxed penalty, so the exactly penalized rows drop it."""
+    verify_output = SimpleNamespace(
+        logits_output=SimpleNamespace(next_token_logits=torch.zeros(6, 5)),
+        can_run_graph=False,
+        expert_distribution_metrics=None,
+        routed_experts_output=None,
+        indexer_topk_output=None,
+    )
+    model_worker = SimpleNamespace(
+        model_runner=SimpleNamespace(forward=lambda forward_batch: verify_output),
+        model_config=None,
+        device="cpu",
+        random_seed=0,
+    )
+    target_worker = SpeculativeTargetWorker(model_worker, algorithm)
+    runner = VerifyRunner(model_worker, False, "verify_logits")
+    target_worker.attach_runner(runner)
+    target_worker.verify_requests = [SimpleNamespace(), SimpleNamespace()]
+    relaxed_penalty = torch.full((2, 5), 1.2)
+    verify_batch = SimpleNamespace(
+        apply_deprecated_skip_attn_backend_init=lambda skip_attn_backend_init: None,
+        kv_loc_plan=None,
+        spec_info=SimpleNamespace(ragged_verify_layout=None),
+        sampling_info=SimpleNamespace(acc_scaling_penalties=relaxed_penalty),
+    )
+
+    target_worker.forward_batch_generation(None, verify_batch, is_verify=True)
+
+    assert runner.applied_hooks == ["repetition penalty on (2, 3, 5)"]
+    if keeps_relaxed_penalty:
+        assert verify_batch.sampling_info.acc_scaling_penalties is relaxed_penalty
+    else:
+        assert verify_batch.sampling_info.acc_scaling_penalties is None

@@ -128,6 +128,7 @@ type remoteGenerationFormViewState struct {
 	ExtraBody   string `json:"extra_body,omitempty"`
 	Advanced    bool   `json:"advanced,omitempty"`
 	API         string `json:"api,omitempty"`
+	PromptCache bool   `json:"prompt_cache,omitempty"`
 }
 
 type remoteDialogStateInput struct {
@@ -249,7 +250,7 @@ func buildRemoteGenerationViewState(translator *i18n.Translator, form genForm, c
 		ShortUnderPlaceholder: strconv.Itoa(shortUnderDefault), ShowMax: caps.MaxOutputTokens,
 		VerbosityOptions: remoteOptions(verbosities, func(value string) string { return verbosityTitleFor(translator, value) }),
 		ShowKeepAlive:    caps.KeepAlive, ShowUsage: caps.IncludeUsage,
-		APIOptions: remoteOptions(apiFormats, apiFormatTitle), ServiceDefault: translator.T("Service default"),
+		APIOptions: remoteOptions(caps.APIFormats, apiFormatTitle), ServiceDefault: translator.T("Service default"),
 		ShowTemperature: caps.Temperature, ShowTopP: caps.TopP, ShowTopK: caps.TopK, ShowMinP: caps.MinP,
 		FrequencyOnly: caps.FrequencyOnly, ShowPenalties: caps.Penalties, ShowSeed: caps.Seed,
 		ShowExtraBody: caps.ExtraBody, Form: remoteGenerationFormStateOf(form),
@@ -266,7 +267,7 @@ func buildRemoteGenerationViewState(translator *i18n.Translator, form genForm, c
 	if !caps.Verbosity {
 		state.VerbosityOptions = nil
 	}
-	if !caps.APIFormat {
+	if len(caps.APIFormats) == 0 {
 		state.APIOptions = nil
 	}
 	formats := responseFormats[:2]
@@ -294,6 +295,7 @@ func remoteGenerationFormStateOf(form genForm) remoteGenerationFormViewState {
 		Presence: form.presence, Frequency: form.frequency, Repetition: form.repetition, Logprobs: form.logprobs,
 		TopLogprobs: form.topLogprobs, Format: form.format, Schema: form.schema, Stop: form.stop, Verbosity: form.verbosity,
 		KeepAlive: form.keepAlive, Usage: form.usage, ExtraBody: form.extraBody, Advanced: form.advanced, API: form.api,
+		PromptCache: form.promptCache,
 	}
 }
 
@@ -304,6 +306,7 @@ func remoteGenerationLocalState(state remoteGenerationFormViewState) genForm {
 		presence: state.Presence, frequency: state.Frequency, repetition: state.Repetition, logprobs: state.Logprobs,
 		topLogprobs: state.TopLogprobs, format: state.Format, schema: state.Schema, stop: state.Stop, verbosity: state.Verbosity,
 		keepAlive: state.KeepAlive, usage: state.Usage, extraBody: state.ExtraBody, advanced: state.Advanced, api: state.API,
+		promptCache: state.PromptCache,
 	}
 }
 

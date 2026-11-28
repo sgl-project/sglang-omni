@@ -136,16 +136,18 @@ func TestGenerationDialogUntouched(t *testing.T) {
 	}
 }
 
-// TestRemoteAPIFormat: OpenAI and custom services choose the API format in
-// Advanced, Chat Completions unless changed; Responses hides the fields it
-// has no use for, is saved, and comes back in the dialog.
+// TestRemoteAPIFormat: OpenAI, Anthropic and custom services choose the
+// API format in Advanced, Chat Completions unless changed; Responses hides
+// the fields it has no use for, is saved, and comes back in the dialog;
+// Anthropic's Messages offers prompt caching, off unless turned on, and
+// kept only with Messages.
 func TestRemoteAPIFormat(t *testing.T) {
 	useKeys(t, &memKeys{m: map[string]string{}})
 	a, _, tt := newTestApp(t)
 	tt.SetSize(windowWidth, 2400)
 	a.navigate(remotePath)
 	frames(tt)
-	for service, want := range map[string]bool{"openai": true, llm.Custom: true, "deepseek": false} {
+	for service, want := range map[string]bool{"openai": true, "anthropic": true, llm.Custom: true, "deepseek": false} {
 		a.openProviderDialog(local.LLM, service)
 		frames(tt)
 		if has(tt, "API format") {
@@ -189,6 +191,29 @@ func TestRemoteAPIFormat(t *testing.T) {
 	frames(tt)
 	if a.provDlg.gen.api != "Responses" || a.provDlg.unsaved() {
 		t.Errorf("reopened: %q, unsaved %v", a.provDlg.gen.api, a.provDlg.unsaved())
+	}
+	a.provDlg.open = false
+	frames(tt)
+
+	a.openProviderDialog(local.LLM, "anthropic")
+	frames(tt)
+	click(t, tt, "Advanced")
+	if d.gen.api != "Chat Completions" || has(tt, "Prompt caching") || slices.Contains(tt.Texts(), "Responses") {
+		t.Fatalf("Anthropic: %q, prompt caching or Responses shown: %q", d.gen.api, tt.Texts())
+	}
+	d.gen.api = "Messages"
+	frames(tt)
+	if !has(tt, "Prompt caching") || d.gen.promptCache {
+		t.Fatalf("Messages: prompt caching shown %v, on %v", has(tt, "Prompt caching"), d.gen.promptCache)
+	}
+	d.gen.promptCache = true
+	if p := d.setup(); p.APIFormat != llm.APIMessages || !p.Generation.PromptCache {
+		t.Errorf("Messages with caching: %+v", p)
+	}
+	d.gen.api = "Chat Completions"
+	frames(tt)
+	if p := d.setup(); has(tt, "Prompt caching") || p.APIFormat != "" || p.Generation.PromptCache {
+		t.Errorf("back to Chat Completions: %+v", p)
 	}
 }
 

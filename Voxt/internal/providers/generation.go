@@ -29,8 +29,9 @@ type GenCaps struct {
 	// A service's own options: OpenAI's verbosity, Ollama's keep alive,
 	// oMLX's usage in stream events.
 	Verbosity, KeepAlive, IncludeUsage bool
-	// APIFormat: Chat Completions or the Responses API.
-	APIFormat bool
+	// APIFormats are the API format menu's choices (llm.APIResponses,
+	// llm.APIMessages; "" Chat Completions first); none: no menu.
+	APIFormats []string
 }
 
 // The effort levels of Voxt 1.x's menus.
@@ -49,13 +50,15 @@ func Capabilities(id, model string) GenCaps {
 	var toggle, effort, budget bool
 	switch id {
 	case "openai", llm.Custom:
-		effort, c.Logprobs, c.ResponseFormat, c.Verbosity, c.APIFormat = true, true, true, true, true
+		effort, c.Logprobs, c.ResponseFormat, c.Verbosity = true, true, true, true
+		c.APIFormats = []string{"", llm.APIResponses}
 		c.Efforts = effortsOpenAI
 		if id == llm.Custom {
 			c.Efforts = effortsCustom
 		}
 	case "anthropic":
 		budget, c.TopK = true, true
+		c.APIFormats = []string{"", llm.APIMessages}
 	case "gemini":
 		budget, c.TopK, c.ResponseFormat = true, true, true
 	case "ollama":
@@ -111,6 +114,7 @@ func Generation(g settings.Generation) llm.Generation {
 		RepetitionPenalty: g.RepetitionPenalty, Logprobs: g.Logprobs, TopLogprobs: g.TopLogprobs,
 		ResponseFormat: g.ResponseFormat, Verbosity: g.Verbosity, KeepAlive: g.KeepAlive, IncludeUsage: g.IncludeUsage,
 		Thinking: llm.Thinking{Mode: g.Thinking, Effort: g.ThinkingEffort, Budget: g.ThinkingBudget}, ThinkOffUnder: g.ThinkingOffUnder,
+		PromptCache: g.PromptCache,
 	}
 	out.JSONSchema, _ = jsonObject(g.JSONSchema)
 	out.ExtraBody, _ = jsonObject(g.ExtraBodyJSON)

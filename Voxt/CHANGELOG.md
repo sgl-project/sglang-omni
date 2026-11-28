@@ -2,6 +2,30 @@
 
 All notable changes to Voxt. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [Semantic Versioning](https://semver.org/). Each version's section is its release notes: English first, then the same in Chinese under `### 中文`, with `####` headings below it (docs/release.md §2.1).
 
+## [Unreleased]
+
+### Added
+- **Anthropic's Messages API** (#4747, Language models → Anthropic → Advanced → API format): Chat Completions stays the default. With Messages, Prompt caching can keep Voxt's instructions on Anthropic's side for a few minutes, so the requests after the first cost less; it is off unless you turn it on, and what you dictate is not cached.
+
+### Changed
+- **Local Qwen3-ASR's result comes even sooner after you stop** (#4747): while you speak, the speech model recognises the recording so far in the background every 8 seconds, and the result after Stop starts from that and from the live preview, picking the preview up again after a word that differs; the GPU stays at speed while you record. On an M4 MacBook Air with the 1.7B model and Faster transcription, 40 dictations of 4 to 50 seconds came in 0.29 s on average instead of 0.53 s, with the same text but for a few punctuation marks.
+- **Long dictations answer sooner too** (#4747): the stretches recognised while you speak (from 20 seconds on) now reuse what the live preview has worked out, with a dictionary of any size (before, more than 30 terms turned them off), and a stretch still being recognised at Stop no longer holds the result up. On 18 dictations of 20 to 50 seconds, the result came in 0.33 s on average instead of 0.47 s, and with a dictionary of 463 terms in 0.42 s instead of 0.53 s without the stretches.
+
+### Fixed
+- **The transcription preview stays where you drag it** (#4701): dragged while new words came in, the preview jumped back toward where the drag started, and the screen's edge pulled it back before you let go. It now grows where you have it; dragged past the screen's edge, it returns to the screen once you let go.
+
+### 中文
+
+#### 新增
+- **Anthropic 的 Messages API**（#4747，语言模型 → Anthropic → 高级 → API 格式）：默认仍是 Chat Completions。选 Messages 后可以打开“提示词缓存”，Anthropic 会把 Voxt 的指令保留几分钟，之后的请求费用更低；默认关，你说的内容不会被缓存。
+
+#### 变更
+- **本地 Qwen3-ASR 松键后出结果更快了**（#4747）：你说话时，语音识别模型每 8 秒在后台把已录的部分识别一遍，松键后的结果从这份结果和实时预览接着算，预览中途有字对不上也能接回去；录音期间 GPU 保持在高速状态。M4 MacBook Air 上用 1.7B 模型并开启“转录加速”，40 段 4 到 50 秒的口述平均 0.29 秒出结果，原来 0.53 秒，文字除了个别标点都相同。
+- **长口述也更快出结果**（#4747）：说话时就识别好的分段（20 秒起）现在会复用实时预览算好的部分，词典多大都行（原来超过 30 个词条就不分段），松键时还在识别的那一段也不再拖住结果。18 段 20 到 50 秒的口述平均 0.33 秒出结果，原来 0.47 秒；词典有 463 个词条时 0.42 秒，不分段要 0.53 秒。
+
+#### 修复
+- **拖动转录预览时不再跳回去**（#4701）：边说边拖时，每来一批新字，预览会朝拖动开始的位置跳一下；拖到屏幕边缘，还没松手就被拉回来。现在它在拖到的位置上变大；拖出屏幕边缘的，松手后才回到屏幕内。
+
 ## [2.1.4] - 2026-11-26
 
 ### Added

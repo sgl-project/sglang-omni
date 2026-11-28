@@ -84,6 +84,8 @@ The table lists only Whisper-specific behavior. For the shared fields `file`, `m
 | `language` | string | unset | Optional source-language hint; on translations this is a SGLang-Omni extension |
 | `prompt` | string | unset | Optional text used as Whisper prev-context conditioning. Only the last 223 prompt tokens are kept (224 prev-context tokens including `<\|startofprev\|>`); the prompt must not contain Whisper special tokens |
 | `response_format` | string | `json` | Use `srt` or `vtt` for a single, non-streamed clip with model-derived timestamps. Streaming accepts `json` and `text` |
+| `beam_width` | int | `1` | Beam search width, 1 to 16. Above 1, supported on transcriptions only. See [Beam Search](#beam-search) for N-best output and limits |
+| `beam_search_diversity_rate` | float | `0.0` | Ranking-only diversity bonus for beam search |
 
 The serving route selects the internal `task` from the endpoint (`transcribe`
 or `translate`); it is not a public form field. The route uses the ASR stage
@@ -95,6 +97,35 @@ Both endpoints return HTTP 400 for streaming subtitles. Transcription also retur
 Prompt, task prefix, and output share Whisper's 448-token decoder context, so
 the prompt keeps fewer prev-context tokens when `max_new_tokens` is large;
 `max_new_tokens` is likewise clamped to that context.
+
+## Beam Search
+
+Set `beam_width` above 1 to decode with beam search. The response keeps the best hypothesis in `text` and returns all `beam_width` hypotheses, best first, in `sglext.n_best`, a SGLang-Omni extension:
+
+```bash
+curl -X POST http://localhost:8000/v1/audio/transcriptions \
+  -F model=openai/whisper-large-v3 \
+  -F file=@tests/data/query_to_cars.wav \
+  -F beam_width=5 \
+  -F response_format=json
+```
+
+```json
+{
+  "text": "...",
+  "sglext": {
+    "n_best": [
+      {"text": "...", "cum_logprob": -0.14, "score": -0.005, "finish_reason": "stop"}
+    ]
+  }
+}
+```
+
+`cum_logprob` is the hypothesis's raw cumulative log-probability and `score` is `cum_logprob` divided by the number of generated tokens, which is the order of the list. Selection and stopping follow Hugging Face `generate` with `num_beams`, `length_penalty=1.0` and `early_stopping=False`, and every beam gets Whisper's suppress, begin-suppress and timestamp rules before selection. `beam_search_diversity_rate` adds `rate * (rank_within_parent % beam_width)` to each candidate's ranking, as TensorRT-LLM does; the returned log-probabilities stay raw.
+
+Greedy and beam requests share one server and one decode step. While a beam request is decoding, its decode steps run without the async-decode lookahead, as timestamped requests do.
+
+Beam search returns final transcripts only. These requests return HTTP 400 with `beam_width` above 1: `stream=true`, `temperature` above 0, audio long enough to be split into chunks, `/v1/audio/translations`, and servers running speculative decoding. A `beam_width` above 16 also returns 400. `json` and `verbose_json` carry `sglext.n_best`; `srt`, `vtt` and `text` are plain text and return the best hypothesis only.
 
 ## Ascend NPU
 

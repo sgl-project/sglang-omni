@@ -27,6 +27,7 @@ func (a *app) pillOverlaySync(main overlayMode) {
 		a.pill.mode, a.pill.shown = mode, false
 		a.pill.live.id, a.pill.live.w = "", 0
 		a.pill.dragged.x, a.pill.dragged.y = 0, 0
+		a.pill.dragging = false
 		if was {
 			log.Printf("pill: hide display=%v", a.pill.area)
 			a.pillFadeOut()
@@ -38,6 +39,7 @@ func (a *app) pillOverlaySync(main overlayMode) {
 		a.pill.area = area
 		log.Printf("pill: show %s", display)
 	}
+	a.pillDragged()
 	width, height := a.pillFace(mode)
 	frame := a.pillFrame(width, height)
 	moved := frame != a.pill.frame
@@ -164,7 +166,10 @@ func (a *app) currentPillOverlayLayout() sessionOverlayLayout {
 }
 
 func (a *app) pillFace(mode overlayMode) (int, int) {
-	width, height, _ := a.pillOverlaySize(mode)
+	width, height, exact := a.pillOverlaySize(mode)
+	if a.pill.dragging && !exact && mode == a.pill.mode && a.pill.w > 0 {
+		return a.pill.w, a.pill.h // as overlayFace
+	}
 	return width, height
 }
 
@@ -223,6 +228,10 @@ func (a *app) pillCard() (frame, area mygo.Rectangle, ok bool) {
 
 func (a *app) pillFrame(width, height int) mygo.Rectangle {
 	frame, area := a.pillAnchor(width, height), a.pill.area
+	if a.pill.dragging {
+		frame.X, frame.Y = frame.X+a.pill.dragged.x, frame.Y+a.pill.dragged.y
+		return frame // the user's place, as overlayFrame
+	}
 	frame.X = min(max(frame.X+a.pill.dragged.x, area.X-layout.Pad), area.X+area.Width-frame.Width+layout.Pad)
 	frame.Y = a.pillFrameY(frame, frame.Y+a.pill.dragged.y)
 	return frame
@@ -265,13 +274,18 @@ func (a *app) pillCoversCard(x, y, w, h int) bool {
 	return x < c.X+c.Width && c.X < x+w && y < c.Y+c.Height && c.Y < y+h
 }
 
-// pillDragged keeps the offset the pill window was dragged by.
+// pillDragged keeps the offset the pill window was dragged by; pillOverlaySync
+// calls it first, as overlaySync does overlayDragged.
 func (a *app) pillDragged() {
-	bounds := a.pill.win.ContentBounds()
-	if !a.pill.shown || bounds.X == a.pill.frame.X && bounds.Y == a.pill.frame.Y {
+	if a.pill.win == nil || !a.pill.shown {
 		return
 	}
-	anchor := a.pillAnchor(a.pill.w, a.pill.h)
+	bounds, moved, dragging := draggedBounds(a.pill.win, a.pill.frame, a.pill.dragging)
+	a.pill.dragging = dragging
+	if !moved {
+		return
+	}
+	anchor := a.pillAnchor(bounds.Width-2*layout.Pad, bounds.Height-2*layout.Pad) // the window's own size, as overlayDraggedTo
 	a.pill.dragged.x, a.pill.dragged.y = bounds.X-anchor.X, bounds.Y-anchor.Y
 	a.pill.frame.X, a.pill.frame.Y = bounds.X, bounds.Y
 }
