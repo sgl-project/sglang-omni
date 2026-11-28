@@ -4,7 +4,9 @@
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
+#include <cstdlib>
 #include <exception>
+#include <execinfo.h>
 #include <functional>
 #include <future>
 #include <iostream>
@@ -1006,6 +1008,12 @@ void TestPauseRefreshRequiresSessionOptIn() {
 } // namespace qwen3_asr::tests
 
 int main() {
+  std::set_terminate([] {
+    void *frames[64];
+    const int frame_count = backtrace(frames, 64);
+    backtrace_symbols_fd(frames, frame_count, 2);
+    std::abort();
+  });
   try {
     std::cerr << "TestAdmissionPolicy\n";
     qwen3_asr::tests::TestAdmissionPolicy();
