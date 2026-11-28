@@ -23,33 +23,36 @@ class DecoderRuntimeHandle:
     def is_leader(self) -> bool:
         return self.sp_rank == 0
 
-    def sync_rank_status(self, error: BaseException | None) -> None:
-        if self.sp_size <= 1:
+    def sync_rank_status(
+        self, error: BaseException | None, stage: str = "before feature broadcast"
+    ) -> None:
+        try:
+            if self.sp_size <= 1:
+                if error is not None:
+                    raise error
+                else:
+                    return
+            else:
+                pass
+            group = self.parallel_state.get_sp_group().cpu_group
+            local_status = (
+                f"rank {self.sp_rank}: {type(error).__name__}: {error}"
+                if error is not None
+                else None
+            )
+            statuses: list[str | None] = [None] * self.sp_size
+            dist.all_gather_object(statuses, local_status, group=group)
             if error is not None:
                 raise error
             else:
-                return
-        else:
-            pass
-        group = self.parallel_state.get_sp_group().cpu_group
-        local_status = (
-            f"rank {self.sp_rank}: {type(error).__name__}: {error}"
-            if error is not None
-            else None
-        )
-        statuses: list[str | None] = [None] * self.sp_size
-        dist.all_gather_object(statuses, local_status, group=group)
-        if error is not None:
-            raise error
-        else:
-            pass
-        failed = [status for status in statuses if status is not None]
-        if failed:
-            raise RuntimeError(
-                f"SP rank failed before feature broadcast: {', '.join(failed)}"
-            )
-        else:
-            pass
+                pass
+            failed = [status for status in statuses if status is not None]
+            if failed:
+                raise RuntimeError(f"SP rank failed {stage}: {', '.join(failed)}")
+            else:
+                pass
+        finally:
+            error = None
 
     def broadcast_features(self, features: torch.Tensor) -> torch.Tensor:
         if self.sp_size > 1:

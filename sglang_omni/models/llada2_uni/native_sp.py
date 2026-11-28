@@ -79,12 +79,7 @@ class SemanticDecode(PipelineStage):
             )
 
     def forward(self, batch: Req, server_args: ServerArgs) -> OutputBatch:
-        llada_vq = batch.extra["llada_vq"]
-        if len(llada_vq) == 6:
-            tokens, height, width, seed, mode, steps = llada_vq
-            multiplier = None
-        else:
-            tokens, height, width, seed, mode, steps, multiplier = llada_vq
+        tokens, height, width, seed, mode, steps, multiplier = batch.extra["llada_vq"]
         with self.runtime.compute_context():
             image = self.decoder.decode(
                 tokens,
@@ -95,13 +90,27 @@ class SemanticDecode(PipelineStage):
                 num_steps=steps,
                 resolution_multiplier=multiplier,
             )
-        if image is None:
-            return OutputBatch()
+        png_bytes: bytes | None = None
+        save_error: Exception | None = None
+        if image is not None:
+            try:
+                stream = io.BytesIO()
+                image.save(stream, format="PNG")
+                png_bytes = stream.getvalue()
+            except Exception as exc:
+                save_error = exc
         else:
             pass
-        stream = io.BytesIO()
-        image.save(stream, format="PNG")
-        return OutputBatch(output_image_bytes=[stream.getvalue()])
+        try:
+            self.runtime.sync_rank_status(
+                save_error, stage="during output finalization"
+            )
+        finally:
+            save_error = None
+        if png_bytes is None:
+            return OutputBatch(metrics=batch.metrics)
+        else:
+            return OutputBatch(output_image_bytes=[png_bytes], metrics=batch.metrics)
 
 
 class SemanticDecoderPipeline(ComposedPipelineBase):

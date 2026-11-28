@@ -24,6 +24,7 @@ from sglang_omni.models.llada2_uni.components.image_decoder import (
     DecoderMode,
     LLaDA2ImageDecoder,
     validate_checkpoint_sp_config,
+    validate_sp_sequence_divisibility,
 )
 from sglang_omni.models.weight_loader import resolve_dtype
 from sglang_omni.native_generation.stage import (
@@ -59,6 +60,7 @@ class NativeSPDecoder:
             raise ValueError(f"Unsupported native SP decoder dtype: {dtype}")
         else:
             pass
+        self.sp_size = len(devices)
         self.decode_mode: DecoderMode = decode_mode
         self.num_steps = num_steps
         self.resolution_multiplier = resolution_multiplier
@@ -116,6 +118,16 @@ class NativeSPDecoder:
             else resolution_multiplier
         )
         LLaDA2ImageDecoder.validate_settings(mode, steps, multiplier)
+        if (
+            not isinstance(height, int)
+            or not isinstance(width, int)
+            or height < 1
+            or width < 1
+        ):
+            raise ValueError("Image decoder grid dimensions must be positive integers")
+        else:
+            pass
+        validate_sp_sequence_divisibility(height, width, multiplier, self.sp_size)
         resolved_seed = secrets.randbits(63) if seed is None else int(seed)
         transport_seed = resolved_seed if resolved_seed >= 0 else 0
         params = ZImageSamplingParams(
@@ -159,7 +171,7 @@ class NativeSPDecoderScheduler(NativeGenerationScheduler):
     """Run LLaDA2-Uni semantic decoding on an SGL-Diffusion worker group."""
 
     def __init__(self, decoder: NativeSPDecoder) -> None:
-        from sglang_omni.models.llada2_uni.stages import build_image_decode_step
+        from sglang_omni.models.llada2_uni.merge import build_image_decode_step
 
         self.decoder = decoder
         self.decode_step = build_image_decode_step(self.decode_png)

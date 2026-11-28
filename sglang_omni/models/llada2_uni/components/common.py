@@ -32,6 +32,9 @@ def resolve_local_model_dir(model_path: str) -> str:
 
 def load_llada2_tokenizer(model_path: str):
     """Load LLaDA2 tokenizer from model checkpoint."""
-    from sglang.srt.utils.hf_transformers_utils import get_tokenizer
+    try:
+        from sglang.srt.hf_transformers.tokenizer import get_tokenizer
+    except ImportError:
+        from sglang.srt.utils.hf_transformers_utils import get_tokenizer
 
     return get_tokenizer(model_path, trust_remote_code=True)

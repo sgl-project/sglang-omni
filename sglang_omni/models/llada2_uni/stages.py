@@ -3,11 +3,9 @@
 
 from __future__ import annotations
 
-import base64
-import hashlib
 import io
 import logging
-from collections.abc import Callable, Mapping
+from collections.abc import Mapping
 from contextlib import nullcontext
 
 import torch
@@ -31,7 +29,12 @@ from sglang_omni.models.llada2_uni.components.image_decoder import (
 from sglang_omni.models.llada2_uni.components.image_encoder import LLaDA2ImageEncoder
 from sglang_omni.models.llada2_uni.components.preprocessor import LLaDA2Preprocessor
 from sglang_omni.models.llada2_uni.config import IMAGE_STAGE, THINKER_STAGE
-from sglang_omni.models.llada2_uni.merge import decode_events, extract_image_vq_tokens
+from sglang_omni.models.llada2_uni.merge import (
+    LLaDA2UniEventDict,
+    build_image_decode_step,
+    decode_events,
+    event_to_dict,
+)
 from sglang_omni.models.llada2_uni.payload_types import (
     LLaDA2UniEvent,
     LLaDA2UniPipelineState,
@@ -56,13 +59,6 @@ from sglang_omni.vendor.sglang.server_args import override_server_args
 logger = logging.getLogger(__name__)
 
 
-class LLaDA2UniEventDict(TypedDict):
-    type: str
-    modality: str
-    payload: dict[str, str | list[str]]
-    is_final: bool
-
-
 LLaDA2UniDecodeResult = TypedDict(
     "LLaDA2UniDecodeResult",
     {
@@ -73,15 +69,6 @@ LLaDA2UniDecodeResult = TypedDict(
         "finish_reason": NotRequired[str],
     },
 )
-
-
-def event_to_dict(event: LLaDA2UniEvent) -> LLaDA2UniEventDict:
-    return {
-        "type": event.type,
-        "modality": event.modality,
-        "payload": dict(event.payload),
-        "is_final": event.is_final,
-    }
 
 
 def create_preprocessing_executor(
@@ -409,76 +396,3 @@ def create_image_decode_executor(
                 runtime.close()
 
     return ImageDecoderScheduler(decode_step)
-
-
-def build_image_decode_step(
-    decode_png: Callable[[list[int], int, int, dict[str, int | DecoderMode]], bytes],
-    *,
-    enable_serial_offload: bool = False,
-) -> Callable[[StagePayload], StagePayload]:
-    def decode_image(payload: StagePayload) -> StagePayload:
-        state = LLaDA2UniPipelineState.from_dict(payload.data)
-        if enable_serial_offload and state.task_kind == "interleaved":
-            raise ValueError(
-                "LLaDA2-Uni serial offload does not support interleaved generation"
-            )
-        else:
-            pass
-        result = extract_image_vq_tokens(state)
-        if result is None:
-            if state.task_kind in ("t2i", "edit"):
-                raise ValueError(
-                    f"{state.task_kind} request did not produce image VQ tokens"
-                )
-            else:
-                pass
-            payload.data = {"events": [], "modality": "image", "skipped": True}
-            return payload
-        else:
-            pass
-
-        vq_tokens, grid_height, grid_width, generation_params = result
-        call_kwargs = {
-            target: generation_params[source]
-            for source, target in (
-                ("decode_mode", "decode_mode"),
-                ("decoder_steps", "num_steps"),
-                ("seed", "seed"),
-            )
-            if generation_params.get(source) is not None
-        }
-        if (
-            call_kwargs.get("decode_mode") == "decoder-turbo"
-            and "num_steps" not in call_kwargs
-        ):
-            call_kwargs["num_steps"] = 8
-        else:
-            pass
-        png = decode_png(vq_tokens, grid_height, grid_width, call_kwargs)
-        image_b64 = base64.b64encode(png).decode("ascii")
-        if state.task_kind == "interleaved":
-            # One inline image segment for the UMM controller.
-            payload.data = {
-                "kind": "image",
-                "mime_type": "image/png",
-                "size_bytes": len(png),
-                "sha256": hashlib.sha256(png).hexdigest(),
-                "url": f"data:image/png;base64,{image_b64}",
-            }
-            return payload
-        else:
-            pass
-        event = LLaDA2UniEvent(
-            type="image_final",
-            modality="image",
-            payload={"image": image_b64, "format": "png"},
-            is_final=True,
-        )
-        payload.data = {
-            "events": [event_to_dict(event)],
-            "modality": "image",
-            **event.payload,
-        }
-        return payload
-
-    return decode_image
