@@ -100,6 +100,8 @@ This table lists every `VOXTNEW_*` variable that the Go code, the Swift helper o
 | `VOXTNEW_LATENCY` | `1` runs `TestMacE2EFirstLatency` on a Mac. | Unset: the test skips |
 | `VOXTNEW_LATENCY_ATTEMPT` | Attempt number written to each latency JSON object; also overrides the round number for A/B runs. | `0`: use the round counter |
 | `VOXTNEW_LATENCY_ARM` | Arm label written to each latency JSON object for A/B comparisons. | Unset: empty arm |
+| `VOXTNEW_LATENCY_LANG` | Language hint used by the latency session. | Unset: `zh` |
+| `VOXTNEW_LATENCY_ALLOW_NO_PARTIAL` | `1` lets a session with no live partial finish and records its outcome instead of failing before Stop. | Unset: the latency test fails when no live partial arrives |
 | `VOXTNEW_LATENCY_OUT` | File where each latency session appends one JSON object with stage times, text and its hash. | Unset: no JSONL output |
 | `VOXTNEW_LATENCY_PCM` | Recording that the latency test plays. | Unset: the bundled speech sample |
 | `VOXTNEW_LATENCY_ROUNDS` | Number of rounds of the latency test. | `3` |
@@ -124,6 +126,9 @@ This table lists every `VOXTNEW_*` variable that the Go code, the Swift helper o
 | `VOXTNEW_MTD_DRAFT_DIR` | DFlash draft model snapshot that `TestEvalMTD` uses with the MTD model. | Unset: no draft |
 | `VOXTNEW_OMNI_MODELS` | Speech models for the latency test, as `id=folder;…`. | Set by `scripts/mac-latency.sh` |
 | `VOXTNEW_OMNI_RUNTIME` | Directory of the Omni runtime (`scripts/build-omni.sh --out DIR`). | Unset: the runtime in the app bundle |
+| `VOXTNEW_INTERACTIVE_CONFIG` | JSON config for the interactive-priority profiling experiment, run explicitly on a Mac. | Unset: `TestMeetingInteractive` skips |
+| `VOXTNEW_OVERLAP_CONFIG` | JSON config for the real-ASR overlap profiling experiment, run explicitly on a Mac. | Unset: `TestMeetingOverlap` skips |
+| `VOXTNEW_PROFILE_CONFIG` | JSON config for long-recording profiling, run explicitly on a Mac. | Unset: `TestMeetingProfile` skips |
 | `VOXTNEW_OVERLAY_SHOTS` | Directory where the overlay snapshot tests write PNGs. | Unset: the tests skip |
 | `VOXTNEW_REAL_CUSTOM` | Custom language model for `TestRealServices`, as `<address>\|<model>`. | Unset: the custom case skips |
 | `VOXTNEW_REAL_SERVICES` | `1` runs `TestRealServices` against the remote services whose keys are in the login Keychain (macOS). | Unset: the test skips |

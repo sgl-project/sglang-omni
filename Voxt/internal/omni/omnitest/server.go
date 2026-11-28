@@ -185,6 +185,11 @@ func final(o Opts, w http.ResponseWriter, r *http.Request) {
 		finish = "length"
 	}
 	metadata := map[string]any{"generated_token_count": 10, "language": language, "finish_reason": finish}
+	if o.DraftCounters {
+		metadata["verify_round_count"] = 3
+		metadata["proposed_draft_token_count"] = 12
+		metadata["accepted_draft_token_count"] = 8
+	}
 	if o.WindowTexts != nil {
 		metadata["window_texts"] = o.WindowTexts
 	}

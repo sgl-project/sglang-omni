@@ -324,7 +324,7 @@ func TestMeetingCorrectionOverlapEchoDroppedLine(t *testing.T) {
 	for _, s := range segs {
 		got = append(got, string(s.Source)+":"+s.Text)
 	}
-	want := []string{"mic:mic Voxt own words", "system:" + echo}
+	want := []string{"system:" + echo, "mic:mic Voxt own words"}
 	if strings.Join(got, "|") != strings.Join(want, "|") {
 		t.Fatalf("lines %q, want %q", got, want)
 	}

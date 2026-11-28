@@ -24,6 +24,7 @@ func readSystemMemory() (SystemMemory, error) {
 	}
 	if available, err := syscall.SysctlUint32("kern.memorystatus_level"); err == nil {
 		m.AvailablePercent = int(available)
+		m.AvailablePercentValid = true
 	}
 	// struct xsw_usage: xsu_total, xsu_avail, xsu_used (uint64s), then
 	// xsu_pagesize and xsu_encrypted. Sysctl drops a trailing NUL byte.
@@ -31,19 +32,19 @@ func readSystemMemory() (SystemMemory, error) {
 		le := binary.LittleEndian // arm64 and amd64
 		m.SwapTotalBytes = int64(le.Uint64([]byte(raw[0:8])))
 		m.SwapUsedBytes = int64(le.Uint64([]byte(raw[16:24])))
+		m.SwapValid = true
 	}
-	m.Swapins = sysctlInt64("vm.compressor.swapper.swapins_total")
-	m.Swapouts = sysctlInt64("vm.compressor.swapper.swapouts_total")
+	m.Swapins, m.SwapinsValid = sysctlInt64("vm.compressor.swapper.swapins_total")
+	m.Swapouts, m.SwapoutsValid = sysctlInt64("vm.compressor.swapper.swapouts_total")
 	return m, nil
 }
 
-// sysctlInt64 is a 64-bit counter, 0 when there is none.
-func sysctlInt64(name string) int64 {
+func sysctlInt64(name string) (int64, bool) {
 	raw, err := syscall.Sysctl(name)
 	if err != nil {
-		return 0
+		return 0, false
 	}
 	var buf [8]byte
 	copy(buf[:], raw)
-	return int64(binary.LittleEndian.Uint64(buf[:]))
+	return int64(binary.LittleEndian.Uint64(buf[:])), true
 }
