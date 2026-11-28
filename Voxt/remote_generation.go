@@ -70,12 +70,23 @@ func remoteGenerationFields(c *ui.Context, state *remoteGenerationViewState, for
 
 	collapsible(c, i18n.T("Advanced"), &form.advanced, nil, func() {
 		if len(state.APIOptions) > 0 {
-			fieldInfo(c, i18n.T("API format"), i18n.T("Chat Completions works with nearly every service. Responses is OpenAI's newer API, and a custom service must support POST /responses."), func() {
+			help := i18n.T("Chat Completions works with nearly every service. Responses is OpenAI's newer API, and a custom service must support POST /responses.")
+			for _, option := range state.APIOptions {
+				if option.Value == "messages" {
+					help = i18n.T("Chat Completions is Anthropic's OpenAI-compatible API. Messages is its own API, which can cache the prompt.")
+				}
+			}
+			fieldInfo(c, i18n.T("API format"), help, func() {
 				ui.Select(c.Key("gen-api"), &form.api, remoteOptionTitles(state.APIOptions)).Label(i18n.T("API format")).Width(px(t, 240))
 			})
 		}
 		api, _ := remoteOptionValue(state.APIOptions, form.api)
 		responses := api == "responses"
+		if api == "messages" {
+			fieldInfo(c, i18n.T("Prompt caching"), i18n.T("Anthropic keeps Voxt's instructions for a few minutes, so the requests after the first cost less. What you dictate is not cached."), func() {
+				ui.Switch(c.Key("gen-cache"), &form.promptCache).Label(i18n.T("Prompt caching"))
+			})
+		}
 		pair(func() {
 			if state.ShowTemperature {
 				half("gen-temp", i18n.T("Temperature"), state.ServiceDefault, &form.temperature)

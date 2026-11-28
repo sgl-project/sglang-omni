@@ -34,6 +34,7 @@ from sglang_omni.modules.ming_audio.thinker import (
     Ming3AudioMTP,
     Ming3AudioThinker,
 )
+from sglang_omni.platforms import current_platform
 from sglang_omni.proto.request import StagePayload
 from sglang_omni.scheduling.bootstrap import create_sglang_infrastructure
 from sglang_omni.scheduling.omni_scheduler import OmniScheduler
@@ -369,6 +370,15 @@ def create_thinker_executor(
         return payload
 
     processor = SGLangOutputProcessor()
+    model_runner = Ming3AudioModelRunner(worker, processor)
+    if (
+        speculative_algorithm == SpeculativeAlgorithm.EAGLE
+        and current_platform.is_cuda()
+    ):
+        # note (wilsonzheng0327): MTP verifies one topk-1 chain per request, a linear block the shared verify penalty applies exactly.
+        model_runner.speculative_repetition_penalty_owner = "verify_logits"
+    else:
+        pass
     return OmniScheduler(
         tp_worker=worker,
         tree_cache=tree_cache,
@@ -376,7 +386,7 @@ def create_thinker_executor(
         token_to_kv_pool_allocator=token_pool,
         server_args=server_args,
         model_config=model_config,
-        model_runner=Ming3AudioModelRunner(worker, processor),
+        model_runner=model_runner,
         request_builder=build_request,
         result_adapter=build_result,
         enable_async_decode=enable_async_decode,
