@@ -558,6 +558,12 @@ def validate_reference_audio(samples: np.ndarray, sample_rate: int) -> None:
         raise bad_request("audio_sample must contain mono audio", param="audio_sample")
     else:
         pass
+    if not np.isfinite(samples).all():
+        raise bad_request(
+            "audio_sample must contain only finite samples", param="audio_sample"
+        )
+    else:
+        pass
     duration = samples.shape[0] / float(sample_rate)
     if duration < MIN_REFERENCE_AUDIO_SECONDS:
         raise bad_request(
