@@ -360,30 +360,87 @@ jobs:
 
       - uses: astral-sh/setup-uv@v6
 
+      # MLX picks kernels from the GPU architecture name, and the VM reports air64_v27: each setting runs once as reported and once as a bare-metal M4 Pro and M5 Pro.
       - name: MLX on this GPU
         continue-on-error: true
         run: |
+          set +e
           uv venv -q -p 3.12 "${RUNNER_TEMP}/probe-venv"
           VIRTUAL_ENV="${RUNNER_TEMP}/probe-venv" uv pip install -q mlx==0.32.5
-          "${RUNNER_TEMP}/probe-venv/bin/python" - <<'EOF'
+          cat > "${RUNNER_TEMP}/mlx_probe.py" <<'EOF'
           import time
 
           import mlx.core as mx
 
-          MATRIX_SIZE = 4096
           REPEATS = 20
-          print(f"MLX {mx.__version__}, default device {mx.default_device()}")
-          print(mx.device_info())
+          MATRIX_SIZE = 4096
+          QUANTIZED_SIZE = 4096
+          QUANTIZED_GROUP_SIZE = 64
+          QUANTIZED_BITS = 4
+          ATTENTION_HEADS = 16
+          ATTENTION_HEAD_DIMENSION = 128
+          ATTENTION_KEY_LENGTH = 2048
+
+          print(f"MLX {mx.__version__}, architecture {mx.device_info()['architecture']}, NAX {mx.metal.is_nax_available()}")
+          mx.random.seed(0)
+          cases = []
           for dtype in (mx.float16, mx.bfloat16):
               left = mx.random.normal((MATRIX_SIZE, MATRIX_SIZE)).astype(dtype)
               right = mx.random.normal((MATRIX_SIZE, MATRIX_SIZE)).astype(dtype)
-              mx.eval(left @ right)
-              start_seconds = time.perf_counter()
-              for _ in range(REPEATS):
-                  mx.eval(left @ right)
-              elapsed_seconds = time.perf_counter() - start_seconds
-              teraflops = 2 * MATRIX_SIZE**3 * REPEATS / elapsed_seconds / 1e12
-              print(f"{dtype} {MATRIX_SIZE} matmul: {teraflops:.2f} TFLOPS")
+              cases.append(
+                  (
+                      f"{dtype} {MATRIX_SIZE} matmul",
+                      lambda left=left, right=right: left @ right,
+                      lambda left=left, right=right: left.astype(mx.float32) @ right.astype(mx.float32),
+                      2 * MATRIX_SIZE**3,
+                  )
+              )
+          weight = mx.random.normal((QUANTIZED_SIZE, QUANTIZED_SIZE)).astype(mx.float16)
+          quantized_weight, scales, biases = mx.quantize(weight, group_size=QUANTIZED_GROUP_SIZE, bits=QUANTIZED_BITS)
+          dequantized_weight = mx.dequantize(quantized_weight, scales, biases, group_size=QUANTIZED_GROUP_SIZE, bits=QUANTIZED_BITS)
+          for rows in (1, 512):
+              activations = mx.random.normal((rows, QUANTIZED_SIZE)).astype(mx.float16)
+              cases.append(
+                  (
+                      f"4-bit affine quantized matmul, {rows} rows",
+                      lambda activations=activations: mx.quantized_matmul(
+                          activations, quantized_weight, scales, biases, transpose=True, group_size=QUANTIZED_GROUP_SIZE, bits=QUANTIZED_BITS
+                      ),
+                      lambda activations=activations: activations.astype(mx.float32) @ dequantized_weight.astype(mx.float32).T,
+                      2 * rows * QUANTIZED_SIZE**2,
+                  )
+              )
+          scale = ATTENTION_HEAD_DIMENSION**-0.5
+          keys = mx.random.normal((1, ATTENTION_HEADS, ATTENTION_KEY_LENGTH, ATTENTION_HEAD_DIMENSION)).astype(mx.float16)
+          values = mx.random.normal((1, ATTENTION_HEADS, ATTENTION_KEY_LENGTH, ATTENTION_HEAD_DIMENSION)).astype(mx.float16)
+          for query_length in (1, 512):
+              queries = mx.random.normal((1, ATTENTION_HEADS, query_length, ATTENTION_HEAD_DIMENSION)).astype(mx.float16)
+              cases.append(
+                  (
+                      f"attention, {query_length} queries over {ATTENTION_KEY_LENGTH} keys",
+                      lambda queries=queries: mx.fast.scaled_dot_product_attention(queries, keys, values, scale=scale),
+                      lambda queries=queries: mx.softmax(
+                          (queries.astype(mx.float32) * scale) @ keys.astype(mx.float32).swapaxes(-1, -2), axis=-1
+                      )
+                      @ values.astype(mx.float32),
+                      4 * ATTENTION_HEADS * query_length * ATTENTION_KEY_LENGTH * ATTENTION_HEAD_DIMENSION,
+                  )
+              )
+          for label, compute, compute_reference, flop_count in cases:
+              try:
+                  output = compute()
+                  mx.eval(output)
+                  start_seconds = time.perf_counter()
+                  for _ in range(REPEATS):
+                      mx.eval(compute())
+                  milliseconds = (time.perf_counter() - start_seconds) / REPEATS * 1e3
+                  with mx.stream(mx.cpu):
+                      reference = compute_reference()
+                      relative_error = mx.max(mx.abs(output.astype(mx.float32) - reference)) / mx.max(mx.abs(reference))
+                      mx.eval(relative_error)
+                  print(f"{label}: {milliseconds:.3f} ms, {flop_count / milliseconds / 1e9:.2f} TFLOPS, relative error {relative_error.item():.2e}")
+              except RuntimeError as error:
+                  print(f"{label}: failed: {error}")
           kernel = mx.fast.metal_kernel(
               name="probe_add_one",
               input_names=["values"],
@@ -399,6 +456,12 @@ jobs:
           )[0]
           print(f"metal_kernel: {result.tolist()}")
           EOF
+          # The empty name keeps the architecture the VM reports; a run that hangs the GPU is stopped after 300 s so the next one still runs.
+          for gpu_architecture in "" applegpu_g16s applegpu_g17s; do
+            echo "=== MLX_METAL_GPU_ARCH=${gpu_architecture:-<reported>}"
+            MLX_METAL_GPU_ARCH="${gpu_architecture}" perl -e 'alarm shift; exec @ARGV' 300 "${RUNNER_TEMP}/probe-venv/bin/python" "${RUNNER_TEMP}/mlx_probe.py"
+            echo "exit status $?"
+          done
 
       - name: Download speed from Hugging Face
         run: |
