@@ -13,10 +13,12 @@ import (
 	"time"
 
 	"github.com/egoist/mygo/ui"
+	"github.com/hehehai/actnowkit/hfhub"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/asr"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/asr/openai"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/dictation"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/hotkey"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/llm"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/local"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/models"
@@ -208,6 +210,116 @@ func TestGuidePackDraftLeft(t *testing.T) {
 		if s := a.models.Status(m.ID); s.Err != nil || s.Downloading {
 			t.Errorf("%s downloaded too: %+v", m.ID, s)
 		}
+	}
+}
+
+// TestModelsDraftLeftOfflineError: when the pack's speech model needs no
+// download but its catalogue draft does and that download failed (no
+// endpoint answered), the models step shows the draft's error and keeps
+// the retry, both while the pack is another app's and once it is Voxt's.
+func TestModelsDraftLeftOfflineError(t *testing.T) {
+	for _, installed := range []bool{false, true} {
+		input := onboardingFixtureInput()
+		input.Step = obModels
+		input.Models.Status[models.ASRAccurateDraft] = models.Status{Err: hfhub.ErrOffline}
+		if installed {
+			input.Models.InstalledASR = []local.Model{onboardingFixtureModel(models.ASRAccurate)}
+			input.Models.Status[models.ASRAccurate] = models.Status{Installed: true, OnDisk: true, Mine: true}
+		} else {
+			input.Models.Found = []models.Found{{ID: models.ASRAccurate, Bytes: onboardingFixtureModelSize(models.ASRAccurate)}}
+			input.Models.Status[models.ASRAccurate] = models.Status{OnDisk: true}
+		}
+		translator := i18n.NewTranslator("en")
+		localizeOnboardingViewStateInput(translator, &input)
+		state := buildOnboardingViewState(translator, input)
+		if state.Models.Speech.Error == nil {
+			t.Errorf("installed %v: the draft's error is not shown", installed)
+		}
+		if !state.Models.Speech.ShowDownload || state.Models.Speech.DownloadLabel == "" {
+			t.Errorf("installed %v: no retry is offered", installed)
+		}
+	}
+}
+
+// TestModelsDraftErrorSelection: the draft-only state shows the draft's
+// own error even when the speech model has an older one, and a state with
+// nothing left to download shows no error at all.
+func TestModelsDraftErrorSelection(t *testing.T) {
+	const offline = "The download failed. Check the internet connection, then try again."
+	onThisMac := func(input *onboardingViewStateInput, ids ...string) {
+		for _, id := range ids {
+			input.Models.Found = append(input.Models.Found, models.Found{ID: id, Bytes: onboardingFixtureModelSize(id)})
+			input.Models.Status[id] = models.Status{OnDisk: true}
+		}
+	}
+	installed := func(input *onboardingViewStateInput) {
+		input.Models.InstalledASR = []local.Model{onboardingFixtureModel(models.ASRAccurate)}
+		input.Models.Status[models.ASRAccurate] = models.Status{Installed: true, OnDisk: true, Mine: true}
+	}
+	view := func(input onboardingViewStateInput) onboardingSpeechViewState {
+		translator := i18n.NewTranslator("en")
+		localizeOnboardingViewStateInput(translator, &input)
+		return buildOnboardingViewState(translator, input).Models.Speech
+	}
+	for _, installedByVoxt := range []bool{false, true} {
+		// The speech model and its draft are both here: no download, and no
+		// error left over from an earlier attempt.
+		input := onboardingFixtureInput()
+		input.Step = obModels
+		if installedByVoxt {
+			installed(&input)
+			input.Models.Status[models.ASRAccurateDraft] = models.Status{Installed: true, Err: hfhub.ErrOffline}
+		} else {
+			onThisMac(&input, models.ASRAccurate, models.ASRAccurateDraft)
+			input.Models.Status[models.ASRAccurateDraft] = models.Status{OnDisk: true, Err: hfhub.ErrOffline}
+		}
+		if state := view(input); state.ShowDownload || state.Error != nil {
+			t.Errorf("installed by Voxt %v: nothing to download, got %+v", installedByVoxt, state)
+		}
+
+		// The draft is the only download left: its error wins over the
+		// speech model's older error.
+		input = onboardingFixtureInput()
+		input.Step = obModels
+		if installedByVoxt {
+			installed(&input)
+			input.Models.Status[models.ASRAccurate] = models.Status{Installed: true, OnDisk: true, Mine: true, Err: hfhub.ErrDiskSpace}
+		} else {
+			onThisMac(&input, models.ASRAccurate)
+			input.Models.Status[models.ASRAccurate] = models.Status{OnDisk: true, Err: hfhub.ErrDiskSpace}
+		}
+		input.Models.Status[models.ASRAccurateDraft] = models.Status{Err: hfhub.ErrOffline}
+		state := view(input)
+		if !state.ShowDownload {
+			t.Errorf("installed by Voxt %v: no draft download offered", installedByVoxt)
+		}
+		if state.Error == nil || state.Error.Text != offline {
+			t.Errorf("installed by Voxt %v: want the draft's offline error, got %+v", installedByVoxt, state.Error)
+		}
+	}
+}
+
+// TestGuidePackDraftLeftError: the draft-only download failing shows the
+// error under the speech row and keeps the download, so the user can
+// retry instead of being offered the same button with no explanation.
+func TestGuidePackDraftLeftError(t *testing.T) {
+	countingHub(t)
+	a, tt := obTester(t)
+	drain := queuePosts(a)
+	reopenModels(a)
+	seedModels(t, a, models.ASRAccurate, models.VADSilero)
+	a.obGo(obModels)
+	drain()
+	frames(tt)
+	click(t, tt, "Use them")
+	drain()
+	frames(tt)
+	click(t, tt, findPrefix(t, tt, "Download ("))
+	downloadAsked(t, a, drain, models.ASRAccurateDraft)
+	drain()
+	frames(tt)
+	if !has(tt, "The download server does not have this model.") || !hasPrefix(tt, "Download (") {
+		t.Fatalf("the failed draft download says nothing and offers no retry: %q", tt.Texts())
 	}
 }
 

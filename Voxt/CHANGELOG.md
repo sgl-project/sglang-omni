@@ -13,6 +13,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 ### Fixed
 - **The transcription preview stays where you drag it** (#4701): dragged while new words came in, the preview jumped back toward where the drag started, and the screen's edge pulled it back before you let go. It now grows where you have it; dragged past the screen's edge, it returns to the screen once you let go.
+- **A failed DFlash draft download in the setup guide said nothing**: when the recommended speech model was already on this Mac and only its draft was left to download, a failed download left the same Download button with no reason. The guide now shows the error and keeps the button for another try.
 
 ### 中文
 
@@ -25,6 +26,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 #### 修复
 - **拖动转录预览时不再跳回去**（#4701）：边说边拖时，每来一批新字，预览会朝拖动开始的位置跳一下；拖到屏幕边缘，还没松手就被拉回来。现在它在拖到的位置上变大；拖出屏幕边缘的，松手后才回到屏幕内。
+- **设置引导里下载 DFlash 草稿失败时没有任何提示**：推荐的语音识别模型已经在这台 Mac 上、只剩草稿要下载时，下载失败后只留下同一个下载按钮，没有说明原因。现在会显示错误原因，并保留下载按钮方便重试。
 
 ## [2.1.4] - 2026-11-26
 
