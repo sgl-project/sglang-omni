@@ -36,14 +36,15 @@ func newPublisher(onChange func(Snapshot)) *publisher {
 	return p
 }
 
-func (p *publisher) enqueue(publication publication) {
+func (p *publisher) enqueue(publication publication) bool {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if p.closed {
-		return
+		return false
 	}
 	p.queue = append(p.queue, publication)
 	p.wake.Signal()
+	return true
 }
 
 func (p *publisher) close() {
@@ -419,40 +420,36 @@ func (m *Manager) updateIf(r *run, snapshotUpdate func(*Snapshot) bool) bool {
 // entry exists by the time the UI sees the end.
 func (m *Manager) end(r *run, st State, fn func(*Snapshot), kept func(Snapshot)) bool {
 	m.mu.Lock()
-	if m.cur != r || r.ended {
-		if m.bg != r || r.ended {
-			m.mu.Unlock()
-			return false
-		}
-		if fn != nil {
-			fn(&r.own)
-		}
-		r.own.State = st
-		r.ended = true
-		if st == Done && r.own.Result != "" && !r.own.Try && !r.own.Note {
-			m.last = r.own.Result
-		}
-		m.rev++
-		r.own.Rev = m.rev
-		s := r.own.clone()
-		m.bg = nil
-		m.backgroundPub.enqueue(publication{snapshot: s, kept: kept})
+	if (m.cur != r && m.bg != r) || r.ended {
 		m.mu.Unlock()
-		return true
+		return false
 	}
+	snap, pub := &m.snap, m.foregroundPub
+	if m.bg == r {
+		snap, pub = &r.own, m.backgroundPub
+		m.bg = nil
+	}
+	r.pcm.close()
 	if fn != nil {
-		fn(&m.snap)
+		fn(snap)
 	}
-	m.snap.State = st
+	snap.State = st
 	r.ended = true
-	if st == Done && m.snap.Result != "" && !m.snap.Try && !m.snap.Note {
-		m.last = m.snap.Result
+	if st == Done && snap.Result != "" && !r.req.Try && !r.req.Note {
+		m.last = snap.Result
 	}
 	m.rev++
-	m.snap.Rev = m.rev
-	s := m.snap.clone()
-	m.foregroundPub.enqueue(publication{snapshot: s, kept: kept})
+	snap.Rev = m.rev
+	queued := pub.enqueue(publication{snapshot: snap.clone(), kept: func(s Snapshot) {
+		defer r.discardPCM()
+		if kept != nil {
+			kept(s)
+		}
+	}})
 	m.mu.Unlock()
+	if !queued {
+		r.discardPCM()
+	}
 	return true
 }
 

@@ -5,8 +5,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -227,7 +225,15 @@ func (r *run) canSelect() bool {
 // main is the session's goroutine: the selection, recording,
 // recognition, composition, delivery, history.
 func (r *run) main() {
-	defer r.cancel()
+	defer func() {
+		r.cancel()
+		r.m.mu.Lock()
+		ended := r.ended
+		r.m.mu.Unlock()
+		if !ended {
+			r.discardPCM()
+		}
+	}()
 	kind := r.req.Kind
 	switch kind {
 	case store.KindTranscribe, store.KindTranslate, store.KindRewrite:
@@ -436,7 +442,7 @@ func (r *run) endFailed(p *Problem, stream asr.Stream, more ...func(*Snapshot)) 
 	r.cancel()
 	r.logf("warning", "failed: %s: %v", p.Code, p.Err)
 	total := r.now().Sub(r.m.snapshot(r).StartedAt)
-	audio := asr.Duration(r.pcm.bytes(), asr.SampleRate)
+	audio := pcmDuration(r.pcm.size())
 	r.m.end(r, Failed, func(s *Snapshot) {
 		s.Problem = p
 		s.Timings.Total = total
@@ -460,7 +466,7 @@ func (r *run) endCancelled(stream asr.Stream) {
 	}
 	r.logf("info", "cancelled")
 	total := r.now().Sub(r.m.snapshot(r).StartedAt)
-	audio := asr.Duration(r.pcm.bytes(), asr.SampleRate)
+	audio := pcmDuration(r.pcm.size())
 	r.m.end(r, Cancelled, func(s *Snapshot) {
 		s.Timings.Total = total
 		s.Timings.Audio = audio
@@ -482,7 +488,7 @@ func (r *run) asrProblem(err error) *Problem {
 
 func (r *run) ctxErr(ctx context.Context) error {
 	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-		return &asr.Error{Kind: asr.KindTimeout, Detail: fmt.Sprintf("no result within %v (%v of audio)", r.asrLimit, asr.Duration(r.pcm.bytes(), asr.SampleRate).Round(time.Second)), Retryable: true}
+		return &asr.Error{Kind: asr.KindTimeout, Detail: fmt.Sprintf("no result within %v (%v of audio)", r.asrLimit, pcmDuration(r.pcm.size()).Round(time.Second)), Retryable: true}
 	}
 	return &asr.Error{Kind: asr.KindCancelled, Detail: "cancelled"}
 }
@@ -545,16 +551,13 @@ func (r *run) keep(s Snapshot, status store.Status) {
 	}
 	if s.Recording {
 		name := r.id + ".wav"
-		dir := cfg.History.AudioDir()
-		if err := os.MkdirAll(dir, 0o755); err == nil {
-			if err := os.WriteFile(filepath.Join(dir, name), asr.WAV(r.pcm.bytes(), asr.SampleRate), 0o644); err == nil {
-				e.Audio = name
-				if !r.settings.Privacy.KeepAudio {
-					e.AudioUntil = r.now().Add(cfg.AudioRetention)
-					r.logf("info", "the recording is kept until %s, for Retry", e.AudioUntil.Format(time.DateTime))
-				}
-			} else {
-				r.logf("warning", "keeping the recording: %v", err)
+		if err := r.pcm.saveWAV(cfg.History.AudioDir(), name); err != nil {
+			r.logf("warning", "keeping the recording: %v", err)
+		} else {
+			e.Audio = name
+			if !r.settings.Privacy.KeepAudio {
+				e.AudioUntil = r.now().Add(cfg.AudioRetention)
+				r.logf("info", "the recording is kept until %s, for Retry", e.AudioUntil.Format(time.DateTime))
 			}
 		}
 	}
@@ -581,7 +584,7 @@ func (r *run) inHistory(status store.Status) bool {
 // user cancelled (for a while: Config.AudioRetention), so Retry can
 // recover it.
 func (r *run) keepsRecording(status store.Status) bool {
-	if !r.inHistory(status) || r.req.Text != nil || len(r.pcm.bytes()) == 0 {
+	if !r.inHistory(status) || r.req.Text != nil || r.pcm.size() == 0 {
 		return false
 	}
 	return r.settings.Privacy.KeepAudio || r.recognitionFailed || r.cancelled.Load()

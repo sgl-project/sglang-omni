@@ -132,7 +132,7 @@ func (r *run) hearPiece(stable string) {
 		return
 	}
 	r.head.hearFinal(stable)
-	if r.head.enabled.Load() && asr.Duration(r.pcm.bytes(), asr.SampleRate) < earlyCleanAfter {
+	if r.head.enabled.Load() && pcmDuration(r.pcm.size()) < earlyCleanAfter {
 		return // not yet long: the whole text goes in one request, which knows what is said later
 	}
 	r.earlyCleanup().add(stable)
