@@ -10,6 +10,7 @@ from sglang.multimodal_gen import envs
 from sglang.multimodal_gen.runtime.pipelines_core.composed_pipeline_base import (
     ComposedPipelineBase,
 )
+from sglang.multimodal_gen.runtime.platforms import current_platform
 from sglang.multimodal_gen.runtime.server_args import ServerArgs
 from transformers import PreTrainedTokenizerBase
 
@@ -32,11 +33,25 @@ class SenseNovaU1Pipeline(ComposedPipelineBase):
             dict[str, torch.nn.Module | PreTrainedTokenizerBase] | None
         ) = None,
     ) -> dict[str, torch.nn.Module | PreTrainedTokenizerBase]:
-        if not {"PYTORCH_CUDA_ALLOC_CONF", "PYTORCH_ALLOC_CONF"} & os.environ.keys():
+        allocator_env_keys = (
+            {"PYTORCH_NPU_ALLOC_CONF", "PYTORCH_ALLOC_CONF"}
+            if current_platform.is_npu()
+            else {"PYTORCH_CUDA_ALLOC_CONF", "PYTORCH_ALLOC_CONF"}
+        )
+        if not allocator_env_keys & os.environ.keys():
             # note (Richard Wang): Edit prefix attention buffers change size per query and fragment fixed segments.
-            torch._C._accelerator_setAllocatorSettings(  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
-                "expandable_segments:True"
-            )
+            try:
+                torch._C._accelerator_setAllocatorSettings(  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+                    "expandable_segments:True"
+                )
+            except (RuntimeError, NotImplementedError) as allocator_error:
+                if current_platform.is_npu():
+                    logger.warning(
+                        f"Could not configure expandable_segments on NPU; "
+                        f"set PYTORCH_NPU_ALLOC_CONF=expandable_segments:True before launch: {allocator_error}"
+                    )
+                else:
+                    raise
         else:
             pass
         if loaded_modules is not None and {"model", "tokenizer"} <= set(loaded_modules):

@@ -33,9 +33,11 @@ from sglang_omni.models.sensenova_u1.native.pipeline_config import (
 )
 from sglang_omni.models.sensenova_u1.native.sampling import SenseNovaU1SamplingParams
 from tests.unit_test.fixtures.sensenova import (
+    mock_cpu_device_memory,
     tiny_sensenova_config,
     tiny_sensenova_model,
     tiny_sensenova_tokenizer,
+    torch_fused_op_backend,
 )
 
 DECODER_LAYERS = 2
@@ -83,7 +85,7 @@ class Unpatchify(Protocol):
 
 
 @pytest.fixture(autouse=True)
-def cpu_generation(monkeypatch: pytest.MonkeyPatch) -> None:
+def cpu_generation(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     for variable in CACHE_DIT_VARIABLES:
         monkeypatch.delenv(variable, raising=False)
     monkeypatch.setattr(
@@ -91,9 +93,9 @@ def cpu_generation(monkeypatch: pytest.MonkeyPatch) -> None:
         "get_global_server_args",
         lambda: SimpleNamespace(comfyui_mode=False),
     )
-    monkeypatch.setattr(torch.cuda, "mem_get_info", lambda device: (4 * 1024**3, 0))
-    monkeypatch.setattr(torch.cuda, "memory_reserved", lambda device: 0)
-    monkeypatch.setattr(torch.cuda, "memory_allocated", lambda device: 0)
+    mock_cpu_device_memory(monkeypatch)
+    with torch_fused_op_backend():
+        yield
 
 
 @pytest.fixture

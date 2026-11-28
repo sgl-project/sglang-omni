@@ -22,7 +22,7 @@ The external package replaces the in-tree SenseNova pipeline registration while 
 
 ## Image editing
 
-Single-GPU CUDA editing accepts one or more reference images. Editing requests run individually; multiple outputs use the native runtime's sequential expansion. This path does not enable mask editing, think mode or TP.
+Single-device (CUDA or Ascend NPU) editing accepts one or more reference images. Editing requests run individually; multiple outputs use the native runtime's sequential expansion. This path does not enable mask editing, think mode or TP.
 
 HTTP editing uses `img_cfg_scale=1.0` and the reference preprocessing described below. Custom image guidance is not exposed through this HTTP endpoint.
 
@@ -72,7 +72,7 @@ The following model-side settings are available through SenseNovaU1SamplingParam
 
 Transparent references are composited onto white. An explicit `size` determines the output dimensions. Without it, the sampling defaults remain 2048×2048. Reference preprocessing follows the historical native model's pixel budget: a minimum of 512² and a maximum of min(2048², 4096² / reference count), with dimensions aligned to 32 pixels. Editing uses the default timestep shift and CFG controls; CFG normalization and think mode are not supported on this path.
 
-Editing accepts at most 64 references and rejects an edit whose estimated prefix memory exceeds the GPU's free memory plus the memory PyTorch has reserved but not allocated, before encoding its references. The SenseNova worker enables PyTorch expandable segments as it loads the model unless `PYTORCH_CUDA_ALLOC_CONF` or `PYTORCH_ALLOC_CONF` is set. On devices that share host memory, startup sets `PYTORCH_CUDA_ALLOC_CONF` to expandable segments when that variable is unset, and it takes precedence over `PYTORCH_ALLOC_CONF`, so opt out there through `PYTORCH_CUDA_ALLOC_CONF`.
+Editing accepts at most 64 references and rejects an edit whose estimated prefix memory exceeds the device's free memory plus the memory PyTorch has reserved but not allocated, before encoding its references. The SenseNova worker enables PyTorch expandable segments as it loads the model unless the platform's allocator variable (`PYTORCH_CUDA_ALLOC_CONF` on CUDA or `PYTORCH_NPU_ALLOC_CONF` on NPU) or `PYTORCH_ALLOC_CONF` is set. On Ascend NPU launches through `sgl-omni`, `SenseNovaU1PipelineConfig` defaults `PYTORCH_NPU_ALLOC_CONF=expandable_segments:True` when `PYTORCH_NPU_ALLOC_CONF` and `PYTORCH_ALLOC_CONF` are unset. On devices that share host memory, startup sets `PYTORCH_CUDA_ALLOC_CONF` to expandable segments when that variable is unset, and it takes precedence over `PYTORCH_ALLOC_CONF`, so opt out there through `PYTORCH_CUDA_ALLOC_CONF`.
 
 ## Cache-DiT
 

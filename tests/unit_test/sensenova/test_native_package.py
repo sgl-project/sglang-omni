@@ -17,13 +17,21 @@ import torch
 from sglang.multimodal_gen.registry import get_model_info
 from sglang.multimodal_gen.runtime.pipelines_core.schedule_batch import Req
 from sglang.multimodal_gen.runtime.pipelines_core.stages import base as stage_base
-from sglang.multimodal_gen.runtime.platforms import current_platform
+from sglang.multimodal_gen.runtime.platforms import current_platform as native_platform
 
+from sglang_omni.models.sensenova_u1 import config as sensenova_config
 from sglang_omni.models.sensenova_u1.config import SenseNovaU1PipelineConfig
+from sglang_omni.models.sensenova_u1.native import pipeline as sensenova_pipeline
 from sglang_omni.models.sensenova_u1.native.generation import SenseNovaU1GenerationStage
 from sglang_omni.models.sensenova_u1.native.pipeline import SenseNovaU1Pipeline
 from sglang_omni.models.sensenova_u1.native.sampling import SenseNovaU1SamplingParams
 from sglang_omni.vendor.sensenova_u1 import modeling_neo_chat
+
+ALLOCATOR_CONF_ENV_KEYS = (
+    "PYTORCH_CUDA_ALLOC_CONF",
+    "PYTORCH_NPU_ALLOC_CONF",
+    "PYTORCH_ALLOC_CONF",
+)
 
 
 def test_external_package_in_fresh_process(tmp_path: Path) -> None:
@@ -178,13 +186,75 @@ def test_think_mode_attention_keeps_the_reasoning(
     assert prepared.value.args == ([cache_length],)
 
 
-def test_npu_startup_is_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
-    config = get_model_info(
+def test_npu_startup_is_accepted(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(native_platform, "is_npu", lambda: True)
+    monkeypatch.setattr(
+        sensenova_config,
+        "current_platform",
+        SimpleNamespace(is_npu=lambda: True),
+    )
+    native_config = get_model_info(
         "sensenova/SenseNova-U1.5-8B-MoT", backend="sglang"
     ).pipeline_config_cls()
-    monkeypatch.setattr(current_platform, "is_npu", lambda: True)
-    with pytest.raises(ValueError, match="does not support NPU devices"):
-        config.validate_server_args(SimpleNamespace(num_gpus=1))
+    server_args = SimpleNamespace(
+        num_gpus=1,
+        enable_torch_compile=False,
+        lora_path=None,
+        is_arg_explicitly_set=lambda option: False,
+    )
+    native_config.validate_server_args(server_args)
+    environment = {
+        name: value
+        for name, value in os.environ.items()
+        if name not in ALLOCATOR_CONF_ENV_KEYS
+    }
+    monkeypatch.setattr(os, "environ", environment)
+    omni_config = SenseNovaU1PipelineConfig(model_path="/models/sensenova")
+    stage_env = omni_config.resolved_stage_env_defaults("generation")
+    assert (
+        stage_env["SGLANG_EXTERNAL_MODEL_PACKAGE"]
+        == "sglang_omni.models.sensenova_u1.native"
+    )
+    assert stage_env["PYTORCH_NPU_ALLOC_CONF"] == "expandable_segments:True"
+
+    overridden_config = SenseNovaU1PipelineConfig(
+        model_path="/models/sensenova",
+        env_defaults={"PYTORCH_NPU_ALLOC_CONF": "expandable_segments:False"},
+    )
+    assert (
+        overridden_config.resolved_stage_env_defaults("generation")[
+            "PYTORCH_NPU_ALLOC_CONF"
+        ]
+        == "expandable_segments:False"
+    )
+
+    stage_overridden_config = SenseNovaU1PipelineConfig(model_path="/models/sensenova")
+    stage_overridden_config.stage_named("generation").env[
+        "PYTORCH_ALLOC_CONF"
+    ] = "expandable_segments:False"
+    stage_overridden_env = stage_overridden_config.resolved_stage_env_defaults(
+        "generation"
+    )
+    assert "PYTORCH_NPU_ALLOC_CONF" not in stage_overridden_env
+    assert stage_overridden_env["PYTORCH_ALLOC_CONF"] == "expandable_segments:False"
+
+    monkeypatch.setattr(
+        os,
+        "environ",
+        environment | {"PYTORCH_ALLOC_CONF": "expandable_segments:False"},
+    )
+    assert "PYTORCH_NPU_ALLOC_CONF" not in omni_config.resolved_stage_env_defaults(
+        "generation"
+    )
+
+    monkeypatch.setattr(
+        os,
+        "environ",
+        environment | {"PYTORCH_NPU_ALLOC_CONF": "expandable_segments:False"},
+    )
+    assert "PYTORCH_NPU_ALLOC_CONF" not in omni_config.resolved_stage_env_defaults(
+        "generation"
+    )
 
 
 def test_parallel_request_fails_before_loading_weights() -> None:
@@ -219,22 +289,38 @@ def test_offload_default_is_reset_but_explicit_request_is_rejected(
 
 
 @pytest.mark.parametrize(
-    ("configured", "expected"),
+    ("is_npu", "configured", "expected"),
     [
-        ({}, ["expandable_segments:True"]),
-        ({"PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:False"}, []),
-        ({"PYTORCH_ALLOC_CONF": "expandable_segments:False"}, []),
+        (False, {}, ["expandable_segments:True"]),
+        (False, {"PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:False"}, []),
+        (False, {"PYTORCH_ALLOC_CONF": "expandable_segments:False"}, []),
+        (True, {}, ["expandable_segments:True"]),
+        (True, {"PYTORCH_NPU_ALLOC_CONF": "expandable_segments:False"}, []),
+        (True, {"PYTORCH_ALLOC_CONF": "expandable_segments:False"}, []),
+        (
+            True,
+            {"PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:False"},
+            ["expandable_segments:True"],
+        ),
     ],
 )
 def test_worker_enables_expandable_segments_unless_configured(
-    monkeypatch: pytest.MonkeyPatch, configured: dict[str, str], expected: list[str]
+    monkeypatch: pytest.MonkeyPatch,
+    is_npu: bool,
+    configured: dict[str, str],
+    expected: list[str],
 ) -> None:
     environment = {
         name: value
         for name, value in os.environ.items()
-        if name not in ("PYTORCH_CUDA_ALLOC_CONF", "PYTORCH_ALLOC_CONF")
+        if name not in ALLOCATOR_CONF_ENV_KEYS
     } | configured
     monkeypatch.setattr(os, "environ", environment)
+    monkeypatch.setattr(
+        sensenova_pipeline,
+        "current_platform",
+        SimpleNamespace(is_npu=lambda: is_npu),
+    )
     set_allocator_settings = Mock()
     monkeypatch.setattr(
         torch._C,  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
@@ -257,6 +343,29 @@ def test_worker_enables_expandable_segments_unless_configured(
     modules = {"model": Mock(), "tokenizer": Mock()}
     assert SenseNovaU1Pipeline.load_modules(Mock(), Mock(), modules) is modules
     assert [call.args[0] for call in set_allocator_settings.call_args_list] == expected
+
+
+def test_worker_tolerates_unsupported_npu_allocator_settings(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    environment = {
+        name: value
+        for name, value in os.environ.items()
+        if name not in ALLOCATOR_CONF_ENV_KEYS
+    }
+    monkeypatch.setattr(os, "environ", environment)
+    monkeypatch.setattr(
+        sensenova_pipeline,
+        "current_platform",
+        SimpleNamespace(is_npu=lambda: True),
+    )
+    monkeypatch.setattr(
+        torch._C,  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+        "_accelerator_setAllocatorSettings",
+        Mock(side_effect=RuntimeError("npu allocator unsupported")),
+    )
+    modules = {"model": Mock(), "tokenizer": Mock()}
+    assert SenseNovaU1Pipeline.load_modules(Mock(), Mock(), modules) is modules
 
 
 @pytest.mark.parametrize(

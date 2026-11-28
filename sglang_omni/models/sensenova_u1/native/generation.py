@@ -139,10 +139,12 @@ class SenseNovaU1GenerationStage(PipelineStage):
             cfg_interval=generation_options.cfg_interval,
         )
         if edit_options is not None:
-            free_memory_bytes, _ = torch.cuda.mem_get_info(self.model.device)
-            reusable_memory_bytes = torch.cuda.memory_reserved(
-                self.model.device
-            ) - torch.cuda.memory_allocated(self.model.device)
+            model_device = self.model.device
+            device_module = torch.get_device_module(model_device)
+            free_memory_bytes, _ = device_module.mem_get_info(model_device)
+            reusable_memory_bytes = device_module.memory_reserved(
+                model_device
+            ) - device_module.memory_allocated(model_device)
             with self.progress_bar(
                 range(int(batch.num_inference_steps)), batch=batch
             ) as steps:

@@ -3,7 +3,13 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+from contextlib import contextmanager
+
+import pytest
 import torch
+from sglang.kernels.fused_op import get_fused_op_backend, set_fused_op_backend
+from sglang.kernels.spec import KernelBackend
 from tokenizers import Tokenizer
 from tokenizers.models import WordLevel
 from tokenizers.pre_tokenizers import WhitespaceSplit
@@ -61,3 +67,25 @@ def tiny_sensenova_tokenizer() -> PreTrainedTokenizerFast:
         pad_token="[PAD]",
         additional_special_tokens=["<img>", "</img>", "<IMG_CONTEXT>"],
     )
+
+
+@contextmanager
+def torch_fused_op_backend() -> Iterator[None]:
+    """Force native PyTorch ops for CPU tests when running on an accelerator host."""
+    previous_backend = get_fused_op_backend()
+    set_fused_op_backend(KernelBackend.TORCH)
+    try:
+        yield
+    finally:
+        set_fused_op_backend(previous_backend)
+
+
+def mock_cpu_device_memory(
+    monkeypatch: pytest.MonkeyPatch, free_memory_bytes: int = 4 * 1024**3
+) -> None:
+    """Supply memory budget queries when SenseNova editing tests run on CPU."""
+    monkeypatch.setattr(
+        torch.cpu, "mem_get_info", lambda device: (free_memory_bytes, 0), raising=False
+    )
+    monkeypatch.setattr(torch.cpu, "memory_reserved", lambda device: 0, raising=False)
+    monkeypatch.setattr(torch.cpu, "memory_allocated", lambda device: 0, raising=False)

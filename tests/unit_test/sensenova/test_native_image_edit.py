@@ -274,7 +274,7 @@ def test_edit_parameters_reach_each_sequential_output(
         torch.cuda, "memory_reserved", Mock(return_value=reserved_memory_bytes)
     )
     monkeypatch.setattr(torch.cuda, "memory_allocated", Mock(return_value=1024))
-    model = Mock()
+    model = Mock(device=torch.device("cuda", 0))
     server_args = SimpleNamespace(pipeline_config=SenseNovaU1PipelineConfig())
     generation_stage = SenseNovaU1GenerationStage(model, Mock())
     expanded_requests = list(
@@ -294,6 +294,53 @@ def test_edit_parameters_reach_each_sequential_output(
         assert torch.equal(output.output[0], torch.full((3, 32, 64), 0.5))
     assert edit.call_count == output_count
     model.t2i_generate.assert_not_called()
+
+
+def test_edit_memory_budget_uses_npu_device_module(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        stage_base,
+        "get_global_server_args",
+        lambda: SimpleNamespace(comfyui_mode=False),
+    )
+    sampling = SenseNovaU1SamplingParams(
+        prompt="edit",
+        image_path="reference.png",
+        width=64,
+        height=32,
+        seed=7,
+        generator_device="cpu",
+    )
+    request = Req(sampling_params=sampling)
+    sampling.apply_request_extra(request)
+    request.condition_image = [Image.new("RGB", (64, 32))]
+    edit = Mock(return_value=torch.zeros(1, 3, 32, 64))
+    monkeypatch.setattr(generation, "it2i_generate", edit)
+    npu_device = SimpleNamespace(type="npu", index=1)
+    npu_module = SimpleNamespace(
+        mem_get_info=Mock(return_value=(4096, 8192)),
+        memory_reserved=Mock(return_value=3072),
+        memory_allocated=Mock(return_value=1024),
+    )
+    get_device_module = Mock(return_value=npu_module)
+    monkeypatch.setattr(torch, "get_device_module", get_device_module)
+    monkeypatch.setattr(
+        torch.cuda,
+        "mem_get_info",
+        Mock(side_effect=AssertionError("NPU editing must not query torch.cuda")),
+    )
+    model = SimpleNamespace(
+        device=npu_device, language_model=SimpleNamespace(model=Mock())
+    )
+    server_args = SimpleNamespace(pipeline_config=SenseNovaU1PipelineConfig())
+    output = SenseNovaU1GenerationStage(model, Mock()).forward(request, server_args)
+    get_device_module.assert_called_once_with(npu_device)
+    npu_module.mem_get_info.assert_called_once_with(npu_device)
+    npu_module.memory_reserved.assert_called_once_with(npu_device)
+    npu_module.memory_allocated.assert_called_once_with(npu_device)
+    assert edit.call_args.kwargs["memory_budget_bytes"] == 6144
+    assert output.output[0].shape == (3, 32, 64)
 
 
 def test_pipeline_overrides_preserve_edit_task_routing() -> None:
