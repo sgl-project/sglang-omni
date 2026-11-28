@@ -15,9 +15,11 @@ from sglang_omni.pipeline.mp_runner import (
     apply_cpu_thread_plan,
     build_stage_groups,
     resolve_same_process_targets,
+    resolve_torch_profiler_ownership,
 )
 from sglang_omni.pipeline.runtime_config import prepare_pipeline_runtime
 from sglang_omni.pipeline.stage_workers import (
+    StageGroup,
     StageLaunchConfig,
     StageWorkerProcessSpec,
     patched_spawn_env,
@@ -666,3 +668,91 @@ def test_stage_processes_inherit_the_launcher_root_log_level(tmp_path) -> None:
 
     levels = {spec.log_level for group in groups for spec in group.process_specs}
     assert levels == {logging.DEBUG}
+
+
+SCHEDULER_THREAD_PROFILER_ENV = "SGLANG_TORCH_PROFILER_SCHEDULER_THREAD"
+
+
+def profiler_process_spec(
+    process_name: str, owner_by_stage: dict[str, bool]
+) -> StageWorkerProcessSpec:
+    return StageWorkerProcessSpec(
+        process_name=process_name,
+        stage_specs=[
+            StageLaunchConfig(stage_name=stage_name, torch_profiler_owner=is_owner)
+            for stage_name, is_owner in owner_by_stage.items()
+        ],
+    )
+
+
+def test_torch_profiler_owner_is_unique_per_process() -> None:
+    process = profiler_process_spec("shared", {"a": True, "b": True})
+
+    with pytest.raises(ValueError, match="multiple Torch profiler owners"):
+        resolve_torch_profiler_ownership([StageGroup("test", [process])])
+
+
+def test_torch_profiler_ownership_is_stamped_per_process() -> None:
+    """Colocated siblings learn that their process has an owner, while an ownerless process keeps the direct path."""
+    pipeline = profiler_process_spec(
+        "pipeline", {"preprocessing": False, "tts_engine": True}
+    )
+    vocoder = profiler_process_spec("vocoder", {"vocoder": False})
+
+    resolve_torch_profiler_ownership(
+        [StageGroup("pipeline", [pipeline]), StageGroup("vocoder", [vocoder])]
+    )
+
+    stamped = {
+        spec.stage_name: (
+            spec.torch_profiler_owner,
+            spec.torch_profiler_process_has_owner,
+        )
+        for spec in (*pipeline.stage_specs, *vocoder.stage_specs)
+    }
+    assert stamped == {
+        "preprocessing": (False, True),
+        "tts_engine": (True, True),
+        "vocoder": (False, False),
+    }
+
+
+@pytest.mark.parametrize(
+    ("launcher_value", "stage_value", "is_rejected"),
+    [
+        ("1", None, True),
+        (None, "1", True),
+        ("0", "1", False),
+    ],
+)
+def test_scheduler_thread_flag_without_an_owner(
+    monkeypatch: pytest.MonkeyPatch,
+    launcher_value: str | None,
+    stage_value: str | None,
+    is_rejected: bool,
+) -> None:
+    """The flag also comes from stage env config, injected only at spawn; an explicit launcher off wins over it."""
+    if launcher_value is None:
+        monkeypatch.delenv(SCHEDULER_THREAD_PROFILER_ENV, raising=False)
+    else:
+        monkeypatch.setenv(SCHEDULER_THREAD_PROFILER_ENV, launcher_value)
+    env_defaults = (
+        {} if stage_value is None else {SCHEDULER_THREAD_PROFILER_ENV: stage_value}
+    )
+    group = StageGroup(
+        "test",
+        [
+            StageWorkerProcessSpec(
+                process_name="pipeline",
+                stage_specs=[
+                    StageLaunchConfig(stage_name="decode", env_defaults=env_defaults)
+                ],
+            )
+        ],
+    )
+
+    if is_rejected:
+        with pytest.raises(ValueError, match="requires at least one stage"):
+            resolve_torch_profiler_ownership([group])
+    else:
+        resolve_torch_profiler_ownership([group])

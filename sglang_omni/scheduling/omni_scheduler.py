@@ -159,6 +159,8 @@ class AdminActionResult(RequiredAdminActionResult, total=False):
     error: str | None
 
 
+TorchProfiler = current_platform.get_torch_profiler()
+
 _FAILED_BATCH_RESULT = object()
 
 _ABORTED_REQUEST_ID_LIMIT = 10000
@@ -168,6 +170,11 @@ _PENDING_STREAM_REQUEST_LIMIT = 10000
 _PENDING_STREAM_REQUEST_RETAINED = 5000
 _IDLE_WAIT_S = 0.02
 MAX_STREAM_ALLOCATION_ATTEMPTS = 65
+ADMIN_TORCH_PROFILER_START = "torch_profiler_start"
+ADMIN_TORCH_PROFILER_STOP = "torch_profiler_stop"
+# note (Estella Liu): the admin queue drains every loop step, so far below the 300s generic admin timeout that would pin the stage control thread.
+PROFILER_ADMIN_TIMEOUT_S = 30.0
+SCHEDULER_THREAD_READY_POLL_S = 0.01
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -4072,6 +4079,74 @@ class OmniScheduler(Generic[RequestDataT]):
             pass
         return self.run_admin_action(action, payload)
 
+    def wait_until_scheduler_thread_ready(self, timeout_s: float) -> bool:
+        """Wait until admin actions would reach the scheduler thread instead of running inline on the caller."""
+
+        deadline = time.monotonic() + timeout_s
+        while time.monotonic() < deadline:
+            if self.running and self.scheduler_thread_id is not None:
+                return True
+            else:
+                time.sleep(SCHEDULER_THREAD_READY_POLL_S)
+        return self.running and self.scheduler_thread_id is not None
+
+    def run_profiler_admin(
+        self, action: str, payload: dict[str, str | None]
+    ) -> AdminActionResult:
+        """Run a profiler action on the scheduler thread, or fail; never inline on the caller's thread."""
+
+        scheduler_thread_id = self.scheduler_thread_id
+        if not self.running or scheduler_thread_id is None:
+            return {
+                "success": False,
+                "error": "scheduler thread is not running",
+                "message": "scheduler thread is not running",
+            }
+        elif threading.get_ident() == scheduler_thread_id:
+            return self.run_admin_action(action, payload)
+        else:
+            # note (Estella Liu): the deadline travels with the request, so a scheduler that drains it after the caller timed out drops it instead of leaving an orphan profiler running.
+            return self.enqueue_admin(
+                action,
+                {
+                    **payload,
+                    "_admin_timeout_s": PROFILER_ADMIN_TIMEOUT_S,
+                    "_deadline": time.monotonic() + PROFILER_ADMIN_TIMEOUT_S,
+                },
+            )
+
+    def start_torch_profiler(
+        self, trace_path_template: str, run_id: str | None
+    ) -> AdminActionResult:
+        return self.run_profiler_admin(
+            ADMIN_TORCH_PROFILER_START,
+            {"trace_path_template": trace_path_template, "run_id": run_id},
+        )
+
+    def stop_torch_profiler(self, run_id: str | None) -> AdminActionResult:
+        return self.run_profiler_admin(ADMIN_TORCH_PROFILER_STOP, {"run_id": run_id})
+
+    def run_torch_profiler_admin(
+        self, action: str, payload: Mapping[str, object]
+    ) -> AdminActionResult:
+        deadline = payload.get("_deadline")
+        run_id = payload.get("run_id")
+        assert run_id is None or isinstance(run_id, str)
+        if isinstance(deadline, float) and time.monotonic() > deadline:
+            logger.warning(
+                f"Skipping expired profiler admin action {action} (run_id={run_id}): the caller timed out before the scheduler thread reached it"
+            )
+            message = "profiler request expired before the scheduler thread ran it"
+            return {"success": False, "error": message, "message": message}
+        elif action == ADMIN_TORCH_PROFILER_START:
+            trace_path_template = payload["trace_path_template"]
+            assert isinstance(trace_path_template, str)
+            trace = TorchProfiler.start(trace_path_template, run_id=run_id)
+            return {"success": True, "message": trace, "data": {"trace": trace}}
+        else:
+            TorchProfiler.stop(run_id=run_id)
+            return {"success": True, "message": "", "data": {}}
+
     def should_enqueue_admin(self) -> bool:
         scheduler_thread_id = self.scheduler_thread_id
         return (
@@ -4154,7 +4229,9 @@ class OmniScheduler(Generic[RequestDataT]):
         self, action: str, payload: dict[str, object] | None = None
     ) -> AdminActionResult:
         payload = dict(payload or {})
-        if action == ADMIN_MODEL_INFO:
+        if action in (ADMIN_TORCH_PROFILER_START, ADMIN_TORCH_PROFILER_STOP):
+            return self.run_torch_profiler_admin(action, payload)
+        elif action == ADMIN_MODEL_INFO:
             return self.admin_model_info()
         else:
             pass

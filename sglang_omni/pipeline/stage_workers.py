@@ -142,6 +142,8 @@ class StageLaunchConfig:
     is_stream_receiver: bool = False
     can_accept_stream_before_payload: bool = False
     disable_direct_cuda_ipc_payload: bool = False
+    torch_profiler_owner: bool = False
+    torch_profiler_process_has_owner: bool = False
 
     # Same-process full payload wiring
     same_process_targets: set[str] = field(default_factory=set)
@@ -1240,6 +1242,8 @@ def construct_stage(
         local_dispatcher=local_dispatcher,
         can_accept_stream_before_payload=spec.can_accept_stream_before_payload,
         disable_direct_cuda_ipc_payload=spec.disable_direct_cuda_ipc_payload,
+        torch_profiler_owner=spec.torch_profiler_owner,
+        torch_profiler_process_has_owner=spec.torch_profiler_process_has_owner,
         tp_fanout=tp_fanout,
         is_terminal=spec.is_terminal,
         replica_topology=spec.replica_topology or None,
