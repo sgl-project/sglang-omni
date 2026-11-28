@@ -241,6 +241,8 @@ def test_realtime_session_stages_hold_max_sessions_calls_and_run_codecs_serially
     monkeypatch.setattr(stages, "load_codec", load_codec)
     decode_slots = Mock()
     monkeypatch.setattr(stages, "MimiDecodeSlots", decode_slots)
+    encode_slots = Mock()
+    monkeypatch.setattr(stages, "MimiEncodeSlots", encode_slots)
     prompt = stages.create_session_preprocessing_executor(
         str(tmp_path), max_open_sessions=3
     )
@@ -252,6 +254,8 @@ def test_realtime_session_stages_hold_max_sessions_calls_and_run_codecs_serially
         assert scheduler.max_open_sessions == 3
     assert all(scheduler.max_concurrency == 1 for scheduler in codecs)
     assert decode_slots.call_args.kwargs["num_slots"] == 3
+    assert encode_slots.call_args.kwargs["num_slots"] == 3
+    assert codecs[0].max_batch_size == 3
     assert loaded_modes == ["encode", "decode"]
 
 
@@ -307,6 +311,8 @@ def resolve_session_config(
 
 def test_session_stage_settings_reach_their_factories(monkeypatch, tmp_path):
     monkeypatch.setattr(stages, "load_codec", lambda *a, **k: (Mock(), "cpu"))
+    encode_slots = Mock()
+    monkeypatch.setattr(stages, "MimiEncodeSlots", encode_slots)
     decode_slots = Mock()
     monkeypatch.setattr(stages, "MimiDecodeSlots", decode_slots)
     cache = Mock()
@@ -315,7 +321,7 @@ def test_session_stage_settings_reach_their_factories(monkeypatch, tmp_path):
     config = resolve_session_config(
         str(tmp_path),
         preprocessing={"factory": {"voice_prompt_cache_bytes": 1024}},
-        mimi_encode={"factory": {"max_concurrency": 2}},
+        mimi_encode={"factory": {"max_concurrency": 2, "enable_cuda_graph": False}},
         code2wav={"factory": {"max_graph_frames": 0}},
         lm={"engine": {"max_running_requests": 8}},
     )
@@ -323,7 +329,9 @@ def test_session_stage_settings_reach_their_factories(monkeypatch, tmp_path):
     encode = stages.create_session_mimi_encode_executor(
         **resolve_stage_factory_args(stage, config)
     )
-    assert encode.max_concurrency == 2
+    assert encode.max_concurrency == 1
+    assert encode.max_batch_size == 3
+    assert encode_slots.call_args.kwargs["enable_graphs"] is False
     stage = config.stage_named("preprocessing")
     stages.create_session_preprocessing_executor(
         **resolve_stage_factory_args(stage, config)
