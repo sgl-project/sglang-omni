@@ -191,7 +191,7 @@ func (o *OpenAI) readResponseStream(ctx context.Context, body io.Reader, onDelta
 		e.Retryable = true
 		return Response{}, e
 	}
-	if text.Len() > 0 {
+	if out.Text == "" {
 		out.Text = text.String()
 	}
 	return out, nil

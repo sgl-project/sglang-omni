@@ -12,15 +12,31 @@ func TestResponsesStreamTextPartFallback(t *testing.T) {
 		outputIndex, contentIndex int
 		text                      string
 		deltas                    []string
+		terminalOnly              bool
 	}
 	for _, tc := range []struct {
-		name  string
-		parts []part
+		name                string
+		parts               []part
+		terminalOmitsOutput bool
 	}{
-		{"done content parts", []part{{0, 0, "Hello ", nil}, {0, 1, "world.", nil}}},
-		{"done output items", []part{{0, 0, "Hello ", nil}, {1, 0, "world.", nil}}},
-		{"delta then done part", []part{{0, 0, "Hello ", []string{"Hel", "lo "}}, {0, 1, "world.", nil}}},
-		{"done then delta part", []part{{0, 0, "Hello ", nil}, {0, 1, "world.", []string{"wor", "ld."}}}},
+		{"done content parts", []part{
+			{text: "Hello "}, {contentIndex: 1, text: "world."},
+		}, false},
+		{"done output items", []part{
+			{text: "Hello "}, {outputIndex: 1, text: "world."},
+		}, false},
+		{"delta then done part", []part{
+			{text: "Hello ", deltas: []string{"Hel", "lo "}}, {contentIndex: 1, text: "world."},
+		}, false},
+		{"done then delta part", []part{
+			{text: "Hello "}, {contentIndex: 1, text: "world.", deltas: []string{"wor", "ld."}},
+		}, false},
+		{"terminal response contains another part", []part{
+			{text: "Hello ", deltas: []string{"Hel", "lo "}}, {contentIndex: 1, text: "world.", terminalOnly: true},
+		}, false},
+		{"terminal response omits output", []part{
+			{text: "Hello ", deltas: []string{"Hel", "lo "}}, {contentIndex: 1, text: "world."},
+		}, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			stream := &rsStream{}
@@ -36,11 +52,13 @@ func TestResponsesStreamTextPartFallback(t *testing.T) {
 					stream.emit("response.output_text.delta", fields)
 					wantDeltas = append(wantDeltas, delta)
 				}
-				fields := maps.Clone(loc)
-				fields["text"] = p.text
-				stream.emit("response.output_text.done", fields)
-				if len(p.deltas) == 0 {
-					wantDeltas = append(wantDeltas, p.text)
+				if !p.terminalOnly {
+					fields := maps.Clone(loc)
+					fields["text"] = p.text
+					stream.emit("response.output_text.done", fields)
+					if len(p.deltas) == 0 {
+						wantDeltas = append(wantDeltas, p.text)
+					}
 				}
 				if p.outputIndex == len(output) {
 					item := rsMessage(rsTextPart(p.text))
@@ -50,6 +68,9 @@ func TestResponsesStreamTextPartFallback(t *testing.T) {
 					item := output[p.outputIndex].(map[string]any)
 					item["content"] = append(item["content"].([]any), rsTextPart(p.text))
 				}
+			}
+			if tc.terminalOmitsOutput {
+				output = nil
 			}
 			rsCompleted(stream, output)
 			f := newFakeServer(t, sse(stream.out...))
