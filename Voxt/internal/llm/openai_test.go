@@ -174,6 +174,25 @@ func TestOpenAIStreaming(t *testing.T) {
 	}
 }
 
+// A streaming response must select the first choice, as a non-streamed
+// response does, even when chunks for other alternatives arrive first.
+func TestOpenAIStreamingChoice(t *testing.T) {
+	f := newFakeServer(t, sse(
+		`data: {"choices":[{"index":1,"delta":{"content":"Alternative"},"finish_reason":"length"}]}`+"\n\n",
+		`data: {"choices":[{"index":0,"delta":{"content":"Hel"}},{"index":1,"delta":{"content":" tail"}}]}`+"\n\n",
+		`data: {"choices":[{"index":0,"delta":{"content":"lo"},"finish_reason":"stop"},{"index":1,"delta":{},"finish_reason":"length"}]}`+"\n\n",
+		"data: [DONE]\n\n",
+	))
+	var deltas []string
+	p := presetAt(t, "openai", f.srv.URL)
+	p.ExtraBody = map[string]any{"n": 2}
+	c := &Client{Backend: NewOpenAI(p, "sk-test", f.srv.Client())}
+	resp, err := c.Chat(context.Background(), Request{Messages: msgs("hi"), OnDelta: func(s string) { deltas = append(deltas, s) }})
+	if err != nil || resp.Text != "Hello" || resp.FinishReason != FinishStop || strings.Join(deltas, "|") != "Hel|lo" {
+		t.Fatalf("resp %+v, deltas %q, err %v", resp, deltas, err)
+	}
+}
+
 // TestOpenAIRelaxed: parameters a server rejects are dropped, one at a
 // time: stream_options, temperature, then the preset's thinking switch.
 func TestOpenAIRelaxed(t *testing.T) {

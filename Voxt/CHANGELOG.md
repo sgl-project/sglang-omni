@@ -12,6 +12,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **Long dictations answer sooner too** (#4747): the stretches recognised while you speak (from 20 seconds on) now reuse what the live preview has worked out, with a dictionary of any size (before, more than 30 terms turned them off), and a stretch still being recognised at Stop no longer holds the result up. On 18 dictations of 20 to 50 seconds, the result came in 0.33 s on average instead of 0.47 s, and with a dictionary of 463 terms in 0.42 s instead of 0.53 s without the stretches.
 
 ### Fixed
+- **Streaming answers keep one alternative**: a language-model setup that requests several alternatives now shows the first answer, as a non-streaming request does, instead of mixing their words and stop reasons.
 - **The transcription preview stays where you drag it** (#4701): dragged while new words came in, the preview jumped back toward where the drag started, and the screen's edge pulled it back before you let go. It now grows where you have it; dragged past the screen's edge, it returns to the screen once you let go.
 
 ### 中文
@@ -24,6 +25,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **长口述也更快出结果**（#4747）：说话时就识别好的分段（20 秒起）现在会复用实时预览算好的部分，词典多大都行（原来超过 30 个词条就不分段），松键时还在识别的那一段也不再拖住结果。18 段 20 到 50 秒的口述平均 0.33 秒出结果，原来 0.47 秒；词典有 463 个词条时 0.42 秒，不分段要 0.53 秒。
 
 #### 修复
+- **流式回答只显示一个候选结果**：语言模型配置要求返回多个候选时，现在和非流式请求一样显示第一个回答，不再把几份回答的文字和结束原因混在一起。
 - **拖动转录预览时不再跳回去**（#4701）：边说边拖时，每来一批新字，预览会朝拖动开始的位置跳一下；拖到屏幕边缘，还没松手就被拉回来。现在它在拖到的位置上变大；拖出屏幕边缘的，松手后才回到屏幕内。
 
 ## [2.1.4] - 2026-11-26
