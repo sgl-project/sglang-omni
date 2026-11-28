@@ -12,6 +12,7 @@ from threading import Lock
 import torch
 from sglang.srt.configs.draft_parallel import DraftParallelLayout
 from sglang.srt.configs.model_config import ModelConfig
+from sglang.srt.distributed.parallel_state import get_tp_group
 from sglang.srt.layers.radix_attention import RadixAttention
 from sglang.srt.layers.sampler import (
     Sampler,
@@ -23,6 +24,11 @@ from sglang.srt.layers.sampler import (
 from sglang.srt.mem_cache.kv_cache_configurator import KVCacheConfigurator
 from sglang.srt.mem_cache.memory_pool import KVCache, MHATokenToKVPool
 from sglang.srt.model_executor.cuda_graph_config import Backend as CudaGraphBackend
+from sglang.srt.model_executor.cuda_graph_config import (
+    Phase,
+    check_cuda_graph_backend,
+    with_phase,
+)
 from sglang.srt.model_executor.forward_batch_info import ForwardBatch, PPProxyTensors
 from sglang.srt.model_executor.forward_context import ForwardContext, forward_context
 from sglang.srt.model_executor.graph_memory_usage import (
@@ -44,7 +50,7 @@ from sglang.srt.model_executor.runner.prefill_cuda_graph_runner import (
     PrefillCudaGraphRunner,
 )
 from sglang.srt.platforms.interface import KVPoolKind
-from sglang.srt.runtime_context import get_exec, get_parallel, get_schedule
+from sglang.srt.runtime_context import get_context, get_exec, get_parallel, get_schedule
 from sglang.srt.sampling.sampling_batch_info import SamplingBatchInfo
 from sglang.srt.server_args import ServerArgs
 from sglang.srt.speculative.spec_info import SpeculativeAlgorithm
@@ -727,6 +733,39 @@ class SGLModelRunner(ModelRunner):
 
         from sglang_omni.platforms import current_platform
 
+        # The probe captures a graph and allocates on the platform device, so it is skipped for a
+        # deployment that turned the decode graph off (this hook runs even for a fully eager
+        # runner) and for a stage placed off the accelerator, whose process group is host-only.
+        if (
+            capture_decode_cuda_graph
+            and not check_cuda_graph_backend(Phase.DECODE, CudaGraphBackend.DISABLED)
+            and self.device == current_platform.device_type
+            and get_parallel().tp_size > 1
+            and not current_platform.graph_capture_records_collectives(get_tp_group())
+        ):
+            logger.warning(
+                "Collectives captured in a device graph do not replay on this install "
+                "(on XPU: oneCCL older than 2022.1.2); serving decode eagerly"
+            )
+            capture_decode_cuda_graph = False
+            # The install records no collective at all, so take the decode graph off the
+            # resolved config as well. A speculative draft worker captures through its own
+            # runner, which never reaches this hook, and would otherwise record the draft's
+            # collectives and replay stale drafts behind this warning.
+            cuda_graph_config = get_exec().graph.cuda_graph_config
+            if cuda_graph_config is not None:
+                get_context().override(
+                    "omni-collective-capture-probe",
+                    cuda_graph_config=with_phase(
+                        cuda_graph_config,
+                        Phase.DECODE,
+                        backend=CudaGraphBackend.DISABLED,
+                    ),
+                )
+            else:
+                pass
+        else:
+            pass
         with contextlib.ExitStack() as pins:
             if current_platform.is_xpu():
                 pins.enter_context(current_platform.graph_capture_attention())
