@@ -33,6 +33,7 @@ from sglang_omni.client.types import (
     GenerateChunk,
     GenerateRequest,
     SpeechResult,
+    TranscriptHypothesis,
     UMMCompletionResult,
     UMMCompletionStreamChunk,
     UMMGenerateChunk,
@@ -340,6 +341,7 @@ class Client:
             language=language,
             diarization=last_chunk.diarization,
             image=image_base64,
+            n_best=last_chunk.n_best,
         )
         if isinstance(last_chunk, UMMGenerateChunk):
             return UMMCompletionResult(
@@ -879,6 +881,12 @@ class Client:
                 None
                 if diarization is None
                 else msgspec.convert(diarization, type=DiarizationResult)
+            )
+            n_best = result.get("n_best")
+            chunk.n_best = (
+                None
+                if n_best is None
+                else msgspec.convert(n_best, type=list[TranscriptHypothesis])
             )
             return chunk
         else:

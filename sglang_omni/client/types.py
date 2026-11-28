@@ -45,6 +45,16 @@ class DiarizationResult:
     segments: list[DiarizationSegment]
 
 
+@dataclass(frozen=True, kw_only=True)
+class TranscriptHypothesis:
+    """One beam search hypothesis, with its raw cumulative log-prob and length-normalized score."""
+
+    text: str
+    cum_logprob: float
+    score: float
+    finish_reason: str
+
+
 DiarizationOperation = Literal["open", "append", "finish", "close", "reset"]
 
 
@@ -212,6 +222,7 @@ class GenerateChunk:
     sample_rate: int | None = None
     diarization: DiarizationResult | None = None
     image: str | None = None  # base64-encoded PNG from the terminal result
+    n_best: list[TranscriptHypothesis] | None = None
 
     @property
     def reported_finish_reason(self) -> str:
@@ -366,6 +377,7 @@ class CompletionResult:
     language: str | None = None
     diarization: DiarizationResult | None = None
     image: str | None = None  # base64-encoded PNG
+    n_best: list[TranscriptHypothesis] | None = None
 
 
 @dataclass

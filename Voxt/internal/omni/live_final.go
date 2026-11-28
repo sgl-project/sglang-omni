@@ -40,12 +40,12 @@ func (s *live) finalPass(pcm []byte) {
 	}
 	text := ""
 	var err error
-	if tail := pcm[done:]; len(tail) > 0 {
+	if tail := pcm[done:]; len(tail) > 0 && (done == 0 || !s.silentTail(tail)) {
 		hint := language
 		var known prior
 		if s.a.spec.Kind == kindQwen3ASR {
 			// The server has prefilled the Final's audio, from the last piece
-			// on, and its dictionary (startFinalAt).
+			// on, and its dictionary (recognisePieces).
 			known.session = s.session
 			if done == 0 {
 				if hint != "" {
@@ -91,6 +91,21 @@ func (s *live) finalPass(pcm []byte) {
 	text = joinParts(append(texts, text))
 	res := asr.Result{Text: text, Lang: language, Duration: asr.Duration(pcm, sampleRate), Model: s.a.spec.ID, Latency: took}
 	s.end(asr.Event{Kind: asr.EventFinal, Text: text, Result: res})
+}
+
+// maxSilentTail is the longest tail after the pieces that is left out when it
+// holds no speech.
+const maxSilentTail = time.Second
+
+// silentTail says whether the tail the pieces left is short and without speech
+// (Silero's): the pieces hold the text, and a model with a dictionary in its
+// context reads the dictionary out of the silence.
+func (s *live) silentTail(tail []byte) bool {
+	if s.a.vad == nil || asr.Duration(tail, sampleRate) > maxSilentTail {
+		return false
+	}
+	segments, err := s.a.vad.Speech(s.ctx, tail, sampleRate)
+	return err == nil && len(segments) == 0
 }
 
 // slowFinal: a Final after Stop this long gets the Mac's memory in its
