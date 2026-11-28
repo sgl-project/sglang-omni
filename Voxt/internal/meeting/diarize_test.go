@@ -199,4 +199,27 @@ func TestFinalPassCollapsesRepeatedText(t *testing.T) {
 	if len(segments) != 1 || segments[0].Text != "Mm." || segments[0].Speaker != "s1" {
 		t.Fatalf("diarized final pass kept the loop or changed its speaker: %+v", segments)
 	}
+
+	for _, tc := range []struct{ name, text, want string }{
+		{"unlabeled loop", repeated, "Mm."},
+		{"unlabeled ordinary text", "Mm. Thanks.", "Mm. Thanks."},
+		{"unlabeled blank text", " \n", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			d := &seqDiarizer{results: []asr.Result{{Text: tc.text}}}
+			segments, err := diarizeTrack(context.Background(), SourceSystem, d, asr.FileRequest{}, rate, make([]byte, rate*2), []vad.Segment{{Start: 0, End: rate}}, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tc.want == "" {
+				if len(segments) != 0 {
+					t.Fatalf("blank unlabeled text produced segments: %+v", segments)
+				}
+				return
+			}
+			if len(segments) != 1 || segments[0].Text != tc.want || segments[0].Speaker != "" {
+				t.Fatalf("unlabeled final pass returned %+v, want one %q segment without a speaker", segments, tc.want)
+			}
+		})
+	}
 }

@@ -13,6 +13,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 ### Fixed
 - **The transcription preview stays where you drag it** (#4701): dragged while new words came in, the preview jumped back toward where the drag started, and the screen's edge pulled it back before you let go. It now grows where you have it; dragged past the screen's edge, it returns to the screen once you let go.
+- **Unlabeled diarized meeting transcripts no longer repeat a hallucinated phrase**: the final pass now collapses repetition loops when the speech model returns plain text without speaker segments, as it already does for plain and speaker-labeled results.
 
 ### 中文
 
@@ -25,6 +26,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 #### 修复
 - **拖动转录预览时不再跳回去**（#4701）：边说边拖时，每来一批新字，预览会朝拖动开始的位置跳一下；拖到屏幕边缘，还没松手就被拉回来。现在它在拖到的位置上变大；拖出屏幕边缘的，松手后才回到屏幕内。
+- **没有说话人标记的会议转写不再重复幻觉短语**：语音识别模型只返回纯文本、没有说话人片段时，最终转写现在也会折叠重复循环，与普通转写和带说话人标记的结果一致。
 
 ## [2.1.4] - 2026-11-26
 

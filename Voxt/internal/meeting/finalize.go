@@ -263,6 +263,7 @@ func diarizeTrack(ctx context.Context, src Source, d asr.Diarizer, req asr.FileR
 		}
 		if marked == 0 && strings.TrimSpace(res.Text) != "" {
 			text := sanitizeSegmentText(res.Text, req, false)
+			text = collapseLoops(text)
 			if text != "" {
 				out = append(out, Segment{ID: core.NewID(time.Now()), Source: src, Start: offset, End: offset + asr.Duration(sub.Audio, rate), Text: text, Final: true})
 			}
