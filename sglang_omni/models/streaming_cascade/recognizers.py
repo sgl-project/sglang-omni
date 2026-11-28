@@ -91,13 +91,57 @@ class UtteranceRecognizer(StreamComponent):
         self, inputs: AsyncIterator[TimedChunk], emit: ChunkEmitter
     ) -> None:
         current: OpenUtterance | None = None
+        processing_task = asyncio.current_task()
+        assert processing_task is not None
+        utterance_failure: BaseException | None = None
+        is_finishing = False
+
+        def utterance_finished(utterance_task: asyncio.Task[None]) -> None:
+            nonlocal utterance_failure
+            if utterance_task.cancelled():
+                pass
+            else:
+                error = utterance_task.exception()
+                if (
+                    not is_finishing
+                    and current is not None
+                    and current.task is utterance_task
+                    and not processing_task.done()
+                ):
+                    utterance_failure = (
+                        error
+                        if error is not None
+                        else RuntimeError("the recognizer ended before its utterance")
+                    )
+                    # note (Ruilin Gao): A backend can fail while the reader waits for microphone input; cancellation wakes it to raise the original error.
+                    processing_task.cancel()
+                else:
+                    pass
+
+        async def apply_utterance_action(action: TimedChunk | str) -> None:
+            nonlocal current, is_finishing
+            previous_utterance = current
+            is_finishing = action == FINISH_UTTERANCE
+            current = await self.act(action, current, emit)
+            is_finishing = False
+            if current is not None and current is not previous_utterance:
+                current.task.add_done_callback(utterance_finished)
+            else:
+                pass
+
         try:
             async for chunk in inputs:
                 for action in self.segmenter.step(chunk):
-                    current = await self.act(action, current, emit)
+                    await apply_utterance_action(action)
             for action in self.segmenter.finish():
-                current = await self.act(action, current, emit)
+                await apply_utterance_action(action)
+        except asyncio.CancelledError:
+            if utterance_failure is not None:
+                raise utterance_failure from None
+            else:
+                raise
         finally:
+            is_finishing = True
             if current is not None:
                 await current.cancel()
             else:

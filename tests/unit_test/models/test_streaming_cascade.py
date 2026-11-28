@@ -12,11 +12,14 @@ import wave
 from collections.abc import AsyncIterator
 from dataclasses import replace
 from pathlib import Path
+from typing import Literal
 
 import httpx
 import numpy as np
 import pytest
 import yaml
+from websockets.asyncio.server import ServerConnection
+from websockets.asyncio.server import serve as serve_websocket
 
 from sglang_omni.admission import QueueFullError
 from sglang_omni.audio.segmentation import UtteranceSegmenter
@@ -48,7 +51,10 @@ from sglang_omni.models.streaming_cascade.dialog import (
 )
 from sglang_omni.models.streaming_cascade.generators import ChatChoice, ChatDelta
 from sglang_omni.models.streaming_cascade.numerals import spoken_text
-from sglang_omni.models.streaming_cascade.recognizers import probe_realtime_service
+from sglang_omni.models.streaming_cascade.recognizers import (
+    UtteranceRecognizer,
+    probe_realtime_service,
+)
 from sglang_omni.models.streaming_cascade.running_transcript import (
     RunningTranscript,
     RunningTranscriptConfig,
@@ -1437,6 +1443,149 @@ async def test_realtime_transcription_streams_partials_then_final_per_utterance(
         "sglang.input_audio.end",
         "session.close",
     ]
+
+
+@pytest.mark.asyncio
+async def test_reader_failure_survives_the_recognizer_completion_callback() -> None:
+    """An ASR failure beside the next frame was reported as cancellation instead of the backend error."""
+    next_frame = asyncio.Event()
+    failure = RuntimeError("backend failed beside the next microphone frame")
+
+    class FailingTranscriptionRecognizer(UtteranceRecognizer):
+        async def utterance(
+            self, audio: AsyncIterator[TimedChunk]
+        ) -> AsyncIterator[TimedChunk]:
+            async for frame in audio:
+                assert frame.format == PCM16
+                next_frame.set()
+                yield transcript_chunk("partial", False)
+                raise failure
+
+    async def inputs() -> AsyncIterator[TimedChunk]:
+        yield TimedChunk(AUDIO, 0, 20, 0, bytes(640), format=PCM16)
+        await next_frame.wait()
+        yield TimedChunk(AUDIO, 20, 20, 1, bytes(640), format=PCM16)
+
+    outputs: list[TimedChunk] = []
+    recognizer = FailingTranscriptionRecognizer()
+    processing_task = asyncio.create_task(recognizer.process(inputs(), outputs.append))
+    with pytest.raises(RuntimeError) as error:
+        await asyncio.wait_for(processing_task, 1)
+    assert error.value is failure
+    assert [output.payload for output in outputs] == [
+        {"text": "partial", "is_final": False}
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind", ["realtime_transcription", "streaming_transcription"])
+@pytest.mark.parametrize(
+    "outcome", ["error", "closed", "completed", "cancelled", "error_at_commit"]
+)
+async def test_a_transcription_task_finishing_without_another_append_reaches_the_session(
+    kind: Literal["realtime_transcription", "streaming_transcription"],
+    outcome: Literal["error", "closed", "completed", "cancelled", "error_at_commit"],
+) -> None:
+    """A failed ASR task left the session waiting for another microphone append."""
+    received_audio = asyncio.Event()
+    release_backend = asyncio.Event()
+
+    async def transcribe(websocket: ServerConnection) -> None:
+        await websocket.send(json.dumps({"type": "session.created"}))
+        session_update_event = json.loads(await websocket.recv())
+        assert session_update_event["type"] == "session.update"
+        await websocket.send(json.dumps({"type": "session.updated"}))
+        audio_append_event = json.loads(await websocket.recv())
+        assert audio_append_event["type"] == "input_audio_buffer.append"
+        received_audio.set()
+        await release_backend.wait()
+        if outcome == "error_at_commit":
+            utterance_end_event = json.loads(await websocket.recv())
+            assert utterance_end_event["type"] == (
+                "sglang.input_audio.end"
+                if kind == "realtime_transcription"
+                else "transcription.done"
+            )
+        else:
+            pass
+        if outcome in ("error", "error_at_commit"):
+            await websocket.send(
+                json.dumps({"type": "error", "error": {"message": "backend failed"}})
+            )
+        elif outcome == "completed" and kind == "realtime_transcription":
+            await websocket.send(
+                json.dumps({"type": "response.output_text.done", "text": "heard"})
+            )
+            await websocket.send(json.dumps({"type": "session.closed"}))
+        elif outcome == "completed":
+            await websocket.send(
+                json.dumps(
+                    {
+                        "type": "transcription.completed",
+                        "text": "heard",
+                        "language": "English",
+                    }
+                )
+            )
+        elif outcome == "cancelled":
+            await websocket.wait_closed()
+        else:
+            pass
+
+    async with serve_websocket(transcribe, "127.0.0.1", 0) as server:
+        assert server.sockets is not None
+        port = server.sockets[0].getsockname()[1]
+        settings = declared(
+            nodes={
+                "asr": {
+                    "kind": kind,
+                    "inputs": ["input", "vad:session"],
+                    "base_url": f"ws://127.0.0.1:{port}",
+                    "model": "test-asr",
+                }
+            }
+        ).component_graph()
+        session = ComponentSession("asr", settings)
+        outputs: list[TimedChunk] = []
+        failure: asyncio.Future[BaseException] = (
+            asyncio.get_running_loop().create_future()
+        )
+        session.emit = outputs.append
+        session.fail = failure.set_result
+        session.start()
+        try:
+            await session.append(TimedChunk(AUDIO, 0, 20, 0, bytes(640), format=PCM16))
+            await asyncio.wait_for(received_audio.wait(), 1)
+            release_backend.set()
+            if outcome == "cancelled":
+                await session.close()
+                assert not failure.done()
+                assert session.task is not None and session.task.cancelled()
+            else:
+                if outcome == "error_at_commit":
+                    with pytest.raises(
+                        RuntimeError, match="backend failed"
+                    ) as commit_error:
+                        await session.append(control_chunk(COMMIT))
+                else:
+                    pass
+                error = await asyncio.wait_for(failure, 1)
+                assert isinstance(error, RuntimeError)
+                if outcome == "error_at_commit":
+                    assert error is commit_error.value
+                else:
+                    pass
+                if outcome in ("error", "error_at_commit"):
+                    assert str(error) == "transcription failed: backend failed"
+                elif outcome == "completed":
+                    assert str(error) == "the recognizer ended before its utterance"
+                else:
+                    assert str(error) == "closed before the final transcript"
+                assert session.failure is error
+                assert session.task is not None and session.task.done()
+        finally:
+            release_backend.set()
+            await session.close()
 
 
 @pytest.mark.asyncio
