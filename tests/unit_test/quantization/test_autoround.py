@@ -6,6 +6,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import pytest
+from sglang.srt.layers.quantization.compressed_tensors.utils import should_ignore_layer
 
 from sglang_omni.quantization import (
     needs_quant_config_normalization,
@@ -240,3 +241,81 @@ class TestObjectShapedConfig:
         assert model_config.hf_config.quantization_config["extra_config"] == {
             r"model\.layers\.0": {"bits": 8}
         }
+
+
+class TestNormalizeCompressedTensorsIgnoreList:
+    """Tests for stripping the stage prefix from a compressed-tensors ignore list."""
+
+    @pytest.mark.parametrize(
+        "architecture, ignore, expected",
+        [
+            (
+                "Qwen3OmniThinkerForCausalLM",
+                ["thinker.model.layers.0.mlp.gate", "thinker.lm_head", "lm_head"],
+                ["model.layers.0.mlp.gate", "lm_head", "lm_head"],
+            ),
+            (
+                "Qwen3OmniTalker",
+                [
+                    "talker.model.layers.0.self_attn.q_proj",
+                    "talker.model.layers.0.mlp.experts.0.gate_proj",
+                ],
+                [
+                    "model.layers.0.self_attn.q_proj",
+                    "model.layers.0.mlp.experts.0.gate_proj",
+                ],
+            ),
+        ],
+        ids=["thinker", "talker"],
+    )
+    def test_strips_the_stage_prefix_from_plain_names(
+        self, architecture: str, ignore: list[str], expected: list[str]
+    ) -> None:
+        quant_config = {"quant_method": "compressed-tensors", "ignore": list(ignore)}
+
+        normalize_quant_config(make_model_config(architecture, quant_config))
+
+        assert quant_config["ignore"] == expected
+
+    def test_sglang_then_ignores_the_stage_local_module(self) -> None:
+        """The talker loads model.layers.0.self_attn.q_proj; only the stripped entry names it."""
+        raw = ["talker.model.layers.0.self_attn.q_proj"]
+        quant_config = {"quant_method": "compressed-tensors", "ignore": list(raw)}
+        layer = "model.layers.0.self_attn.q_proj"
+        assert not should_ignore_layer(layer, ignore=raw)
+
+        normalize_quant_config(make_model_config("Qwen3OmniTalker", quant_config))
+
+        assert should_ignore_layer(layer, ignore=quant_config["ignore"])
+
+    def test_another_stage_and_regex_entries_are_left_as_written(self) -> None:
+        ignore = [
+            "talker.model.layers.0.mlp.gate",
+            "code2wav.decoder.0.conv",
+            r"re:thinker\.audio_tower\..*",
+            r"re:.*mlp\.gate$",
+        ]
+        quant_config = {"quant_method": "compressed-tensors", "ignore": list(ignore)}
+
+        normalize_quant_config(
+            make_model_config("Qwen3OmniThinkerForCausalLM", quant_config)
+        )
+
+        assert quant_config["ignore"] == ignore
+
+    def test_compressed_tensors_needs_normalization(self) -> None:
+        assert needs_quant_config_normalization({"quant_method": "compressed_tensors"})
+
+    def test_object_ignore_list_is_written_back(self) -> None:
+        """An object-valued config is copied before mutation, so only the write-back reaches SGLang."""
+        quant_config = SimpleNamespace(
+            quant_method="compressed-tensors",
+            ignore=["thinker.model.layers.0.mlp.gate"],
+        )
+        model_config = make_model_config("Qwen3OmniThinkerForCausalLM", quant_config)
+
+        normalize_quant_config(model_config)
+
+        assert model_config.hf_config.quantization_config["ignore"] == [
+            "model.layers.0.mlp.gate"
+        ]
