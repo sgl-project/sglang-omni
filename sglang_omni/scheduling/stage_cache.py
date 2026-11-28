@@ -8,6 +8,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Generic
 
+import numpy as np
 import torch
 from typing_extensions import TypeVar
 
@@ -61,6 +62,10 @@ def detach_value(
             return value
     else:
         pass
+    if isinstance(value, np.ndarray):
+        return value if value.flags.owndata else value.copy()
+    else:
+        pass
     if isinstance(value, dict):
         return {
             key: detach_value(item, device=device, pin_memory=pin_memory)
@@ -80,6 +85,10 @@ def detach_value(
 def value_size_bytes(value: object) -> int:
     if isinstance(value, torch.Tensor):
         return int(value.numel() * value.element_size())
+    else:
+        pass
+    if isinstance(value, np.ndarray):
+        return int(value.nbytes)
     else:
         pass
     if isinstance(value, (bytes, bytearray)):

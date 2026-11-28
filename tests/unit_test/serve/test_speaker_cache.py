@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import gc
+import weakref
+
 import numpy as np
 
 from sglang_omni.scheduling.speaker_cache import SpeakerArtifactCache, SpeakerCacheKey
@@ -44,3 +47,21 @@ def test_speaker_cache_evicts_oldest_entry_under_memory_pressure() -> None:
     assert cache.get(first) is None
     assert cache.get(second) is not None
     assert cache.stats()["eviction_count"] == 1
+
+
+def test_speaker_cache_does_not_retain_numpy_view_backing_buffer() -> None:
+    """Caching a small speaker slice must release the larger source buffer."""
+    cache = SpeakerArtifactCache(max_bytes=1024)
+    cache_key = SpeakerCacheKey("higgs", "speaker", 1, "embedding")
+    source_samples = np.arange(1 << 20, dtype=np.float32)
+    source_reference = weakref.ref(source_samples)
+    sample_slice = source_samples[8:11]
+    cache.put(cache_key, {"embedding": [sample_slice]})
+    del sample_slice, source_samples
+    gc.collect()
+
+    assert source_reference() is None
+    np.testing.assert_array_equal(
+        cache.get(cache_key)["embedding"][0], np.array([8, 9, 10], dtype=np.float32)
+    )
+    assert cache.stats()["memory_bytes"] <= 1024
