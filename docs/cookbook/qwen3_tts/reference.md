@@ -18,7 +18,7 @@ These defaults describe the SGLang-Omni Python server. The [native Apple Silicon
 | `references` | `null` | Reference clip for cloning. Each item has `audio_path` and `text`, or only `speaker_embedding`: the checkpoint's speaker-encoder x-vector of the clip, 1024 values for 0.6B Base and 2048 for 1.7B Base. See [Precomputed Speaker Embedding](#precomputed-speaker-embedding) |
 | `ref_audio` / `ref_text` | `null` | Shorthand for `references[0].audio_path` / `references[0].text` |
 | `language` | `auto` | Target-language hint. Supported languages: Chinese, English, Japanese, Korean, German, French, Russian, Portuguese, Spanish, and Italian |
-| `temperature` | `0.9` | Sampling temperature |
+| `temperature` | `0.9` | Sampling temperature for Talker and Subtalker; `0` makes both greedy unless Subtalker settings are explicitly overridden |
 | `top_p` | `1.0` | Top-p sampling |
 | `top_k` | `50` | Top-k sampling |
 | `repetition_penalty` | `1.05` | Repetition penalty |
