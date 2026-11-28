@@ -14,6 +14,13 @@ import torch
 from torch import nn
 from torch.nn.utils import remove_weight_norm, weight_norm
 
+try:
+    from sglang_omni.kernels.anti_aliased_snake_beta import anti_aliased_snake_beta
+    from sglang_omni.kernels.bias_snake_beta import SnakeBetaCoefficients
+except ImportError:
+    anti_aliased_snake_beta = None
+    SnakeBetaCoefficients = None
+
 LRELU_SLOPE = 0.1
 
 
@@ -175,9 +182,38 @@ class Activation1d(nn.Module):
         self.act = activation
         self.upsample = UpSample1d(up_ratio, up_kernel_size)
         self.downsample = DownSample1d(down_ratio, down_kernel_size, causal=causal)
+        self.register_buffer("alpha_scale", None, persistent=False)
+        self.register_buffer("inverse_beta", None, persistent=False)
+
+    def enable_fused_kernel(self) -> None:
+        lowpass = self.downsample.lowpass
+        assert anti_aliased_snake_beta is not None and SnakeBetaCoefficients is not None
+        assert isinstance(self.act, SnakeBeta) and self.act.alpha_logscale
+        assert not self.upsample.causal
+        assert lowpass.padding and lowpass.padding_mode == "replicate"
+        coefficients = SnakeBetaCoefficients.from_activation(self.act)
+        self.alpha_scale = coefficients.alpha_scale
+        self.inverse_beta = coefficients.inverse_beta
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.downsample(self.act(self.upsample(x)))
+        if self.inverse_beta is not None and x.dtype == torch.float32:
+            lowpass = self.downsample.lowpass
+            return anti_aliased_snake_beta(
+                x,
+                self.alpha_scale,
+                self.inverse_beta,
+                upsample_filter=self.upsample.filter,
+                upsample_ratio=self.upsample.ratio,
+                upsample_pad=self.upsample.pad,
+                upsample_crop_start=self.upsample.pad_left,
+                upsample_crop_end=self.upsample.pad_right,
+                lowpass_filter=lowpass.filter,
+                lowpass_stride=lowpass.stride,
+                lowpass_pad_left=lowpass.pad_left,
+                lowpass_pad_right=lowpass.pad_right,
+            )
+        else:
+            return self.downsample(self.act(self.upsample(x)))
 
 
 class SnakeBeta(nn.Module):

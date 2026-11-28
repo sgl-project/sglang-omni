@@ -54,8 +54,13 @@ def test_auk_cli_enables_all_stages_and_preserves_default_config() -> None:
     )
     assert all(stage.factory.enable_serial_offload for stage in result.stages[1:])
     assert all(stage.factory.max_batch_size == 1 for stage in result.stages[1:])
-    assert result.stage_named("auk_engine").factory.enable_dit_cuda_graph
-    assert result.stage_named("auk_engine").factory.enable_dit_torch_compile
+    result_engine = result.stage_named("auk_engine").factory
+    default_engine = config.stage_named("auk_engine").factory
+    assert result_engine.enable_dit_cuda_graph == default_engine.enable_dit_cuda_graph
+    assert (
+        result_engine.enable_dit_torch_compile
+        == default_engine.enable_dit_torch_compile
+    )
     assert AuKPipelineConfig(**result.model_dump()).model_dump() == result.model_dump()
     assert not any(stage.factory.enable_serial_offload for stage in config.stages[1:])
     assert config.stage_named("auk_engine").factory.max_batch_size == 16

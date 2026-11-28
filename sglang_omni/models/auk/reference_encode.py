@@ -45,6 +45,7 @@ class AuKConditionEncoder:
         *,
         device: str | torch.device = "cpu",
         dtype: torch.dtype = torch.bfloat16,
+        linear_weight_dtype: torch.dtype = torch.float32,
     ):
         from transformers import (
             Qwen2_5OmniProcessor,
@@ -76,6 +77,11 @@ class AuKConditionEncoder:
         model.requires_grad_(False)
         model.eval()
         self.model = model.to(device=self.device, dtype=torch.float32)
+        for module in self.model.modules():
+            if isinstance(module, torch.nn.Linear):
+                module.to(dtype=linear_weight_dtype)
+            else:
+                pass
 
     @property
     def num_hidden_layers(self) -> int:

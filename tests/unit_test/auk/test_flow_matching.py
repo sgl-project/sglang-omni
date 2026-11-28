@@ -7,6 +7,7 @@ import torch
 import torch.nn.functional as F
 
 from sglang_omni.models.auk.flow_matching import fuse_hidden_states, integrate
+from sglang_omni.platforms import current_platform
 
 
 def test_cancel_stops_sampling_before_the_next_euler_step() -> None:
@@ -247,3 +248,188 @@ def test_a_batch_the_runner_declines_is_not_padded(monkeypatch):
     declining.batch = 2
     flow.sample_batch(items, steps=2, cfg_strength=2.0, step_graph=declining)
     assert set(widths) == {19}
+
+
+def native_qk_fusion(query, key, query_norm, key_norm, rope):
+    from sglang_omni.models.auk.dit import Attention
+
+    return Attention.apply_rope(query_norm(query), key_norm(key), rope)
+
+
+@pytest.mark.parametrize(
+    ("cfg_strength", "weight_dtype", "fuse_qk_norm_rope", "builds_table"),
+    [
+        (2.0, torch.bfloat16, True, True),
+        (0.0, torch.bfloat16, True, False),
+        (2.0, torch.float32, True, False),
+        (2.0, torch.bfloat16, False, False),
+    ],
+    ids=["guided_bf16_fused", "unguided", "fp32_weights", "native_qk"],
+)
+def test_precomputed_modulation_runs_only_where_it_matches_the_per_step_path(
+    monkeypatch, cfg_strength, weight_dtype, fuse_qk_norm_rope, builds_table
+):
+    from sglang_omni.models.auk import flow_matching
+    from sglang_omni.models.auk.dit import AuKDit
+    from sglang_omni.models.auk.flow_matching import AuKFlowMatching, AuKSampleItem
+
+    torch.manual_seed(11)
+    flow = AuKFlowMatching(
+        AuKDit(
+            dim=32,
+            heads=2,
+            dim_head=16,
+            latent_dim=8,
+            text_hidden_dim=16,
+            num_layers=2,
+            num_single_layers=2,
+        ),
+        num_llm_layers=2,
+    ).eval()
+    for parameter in flow.parameters():
+        torch.nn.init.uniform_(parameter, -0.2, 0.2)
+    flow.transformer.to(dtype=weight_dtype)
+    if fuse_qk_norm_rope:
+        flow.transformer.enable_fused_qk_norm_rope(native_qk_fusion)
+    else:
+        pass
+    items = [
+        AuKSampleItem(
+            torch.randn(text, 16),
+            torch.ones(text, dtype=torch.bool),
+            frames,
+            torch.randn(ref, 8) if ref else None,
+            seed=seed,
+            ref_length=ref,
+        )
+        for text, frames, ref, seed in [(5, 19, 4, 1), (3, 15, 0, 3)]
+    ]
+    sampling = dict(steps=4, cfg_strength=cfg_strength)
+    tables = []
+    build_table = flow.transformer.modulation_table
+    monkeypatch.setattr(flow_matching.current_platform, "device_type", "cpu")
+    monkeypatch.setattr(
+        flow.transformer,
+        "modulation_table",
+        lambda times: tables.append(times) or build_table(times),
+    )
+    monkeypatch.setattr(
+        flow_matching.current_platform,
+        "enable_auk_precomputed_modulation",
+        lambda: False,
+    )
+    expected = flow.sample_batch(items, **sampling)
+    assert tables == []
+    monkeypatch.setattr(
+        flow_matching.current_platform,
+        "enable_auk_precomputed_modulation",
+        lambda: True,
+    )
+    actual = flow.sample_batch(items, **sampling)
+
+    assert [times.numel() for times in tables] == ([4] if builds_table else [])
+    for output, reference in zip(actual, expected, strict=True):
+        assert torch.equal(output, reference)
+
+
+def test_precomputed_modulation_step_hands_each_step_its_own_row():
+    from sglang_omni.models.auk.flow_matching import PrecomputedModulationStep
+
+    seen = []
+
+    def step(time, x, *, modulation=None):
+        seen.append((float(time), modulation))
+        return torch.ones_like(x)
+
+    table = ["row0", "row1", "row2"]
+    integrate(
+        PrecomputedModulationStep(step, table), torch.zeros(1), torch.linspace(0, 1, 4)
+    )
+    assert [row for _, row in seen] == table
+
+
+@pytest.mark.parametrize(
+    ("compile_blocks", "fuse_qk_norm_rope"),
+    [(False, True), (True, True)],
+    ids=["eager", "served"],
+)
+def test_precomputed_modulation_is_bitwise_on_xpu_guided_bf16_sampling(
+    monkeypatch, compile_blocks, fuse_qk_norm_rope
+):
+    if current_platform.device_type != "xpu":
+        pytest.skip("checks the XPU path the modulation precomputation is enabled on")
+    else:
+        pass
+    from sglang_omni.models.auk import constants as C
+    from sglang_omni.models.auk import flow_matching
+    from sglang_omni.models.auk.dit import AuKDit
+    from sglang_omni.models.auk.flow_matching import AuKFlowMatching, AuKSampleItem
+    from sglang_omni.models.auk.fused_qk_norm_rope import fused_qk_norm_rope
+
+    device = current_platform.get_device(0)
+    torch.manual_seed(5)
+    flow = AuKFlowMatching(
+        AuKDit(
+            dim=1536,
+            heads=24,
+            dim_head=64,
+            ff_mult=2,
+            latent_dim=64,
+            text_hidden_dim=2048,
+            num_layers=1,
+            num_single_layers=1,
+        ),
+        num_llm_layers=2,
+    ).eval()
+    for parameter in flow.parameters():
+        torch.nn.init.uniform_(parameter, -0.05, 0.05)
+    flow = flow.to(device=device, dtype=torch.float32)
+    flow.transformer.to(dtype=torch.bfloat16)
+    if fuse_qk_norm_rope:
+        flow.transformer.enable_fused_qk_norm_rope(fused_qk_norm_rope)
+    else:
+        pass
+    if compile_blocks:
+        flow.transformer.enable_compiled_blocks()
+    else:
+        pass
+    items = [
+        AuKSampleItem(
+            torch.randn(24, 2048, device=device),
+            torch.ones(24, dtype=torch.bool, device=device),
+            200,
+            None,
+            seed=0,
+            ref_length=0,
+        )
+    ]
+    sampling = dict(
+        steps=C.DEFAULT_NFE,
+        cfg_strength=C.DEFAULT_CFG_STRENGTH,
+        sway_sampling_coef=C.DEFAULT_SWAY_SAMPLING_COEF,
+    )
+    tables = []
+    build_table = flow.transformer.modulation_table
+    monkeypatch.setattr(
+        flow.transformer,
+        "modulation_table",
+        lambda times: tables.append(times.numel()) or build_table(times),
+    )
+    with torch.inference_mode():
+        monkeypatch.setattr(
+            flow_matching.current_platform,
+            "enable_auk_precomputed_modulation",
+            lambda: False,
+        )
+        expected = flow.sample_batch(items, **sampling)
+        assert tables == []
+        monkeypatch.setattr(
+            flow_matching.current_platform,
+            "enable_auk_precomputed_modulation",
+            lambda: True,
+        )
+        actual = flow.sample_batch(items, **sampling)
+    assert tables == [C.DEFAULT_NFE]
+    for output, reference in zip(actual, expected, strict=True):
+        assert output.dtype == reference.dtype
+        assert torch.equal(output, reference)

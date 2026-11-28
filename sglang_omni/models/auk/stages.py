@@ -41,6 +41,7 @@ from sglang_omni.models.auk.step_cuda_graph import (
     build_step_graph_runner,
 )
 from sglang_omni.models.auk.weight_loader import resolve_vae_file, resolve_weight_file
+from sglang_omni.platforms import current_platform
 from sglang_omni.proto.request import StagePayload
 from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
 from sglang_omni.scheduling.stage_residency import torch_memory_saver
@@ -138,7 +139,7 @@ def create_conditioning_executor(
         )
         offload.switch(None)
         with torch_memory_saver.region(tag="auk_vae", enable_cpu_backup=False):
-            vae = load_vae(checkpoint, str(device), fold_weight_norm=True)
+            vae = load_vae(checkpoint, str(device))
         vae_path = resolve_vae_file(checkpoint)
         assert vae_path is not None
         offload.register(
@@ -149,7 +150,10 @@ def create_conditioning_executor(
         )
     else:
         encoder = AuKConditionEncoder(
-            text_encoder_path, device=device, dtype=torch.bfloat16
+            text_encoder_path,
+            device=device,
+            dtype=torch.bfloat16,
+            linear_weight_dtype=compute_dtype,
         )
         vae = load_vae(checkpoint, str(device))
         fusion = load_fusion(checkpoint, str(device))
@@ -223,7 +227,11 @@ def create_auk_engine_executor(
     )
     # note(Dayuxiaoshui): installed before the blocks compile and before the
     # step graph captures them, so both carry the fused kernel.
-    if enable_dit_fused_qk_norm_rope and device.type == "cuda" and not config.is_flash:
+    fuse_qk_norm_rope = device.type == "cuda" or (
+        device.type == current_platform.device_type
+        and current_platform.enable_auk_fused_qk_norm_rope()
+    )
+    if enable_dit_fused_qk_norm_rope and fuse_qk_norm_rope and not config.is_flash:
         from sglang_omni.models.auk.fused_qk_norm_rope import fused_qk_norm_rope
 
         flow.transformer.enable_fused_qk_norm_rope(fused_qk_norm_rope)

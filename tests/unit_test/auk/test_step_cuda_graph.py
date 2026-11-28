@@ -6,12 +6,17 @@ from unittest.mock import Mock
 import pytest
 import torch
 
+from sglang_omni.models.auk import step_cuda_graph
 from sglang_omni.models.auk.step_cuda_graph import (
     DEFAULT_CAPTURE_SHAPES,
     AuKGraphShape,
     AuKStepCudaGraphRunner,
+    build_step_graph_runner,
     verify_capture_shapes,
 )
+from sglang_omni.platforms.cuda import CUDAOmniPlatform
+from sglang_omni.platforms.interface import OmniPlatform
+from sglang_omni.platforms.xpu import XPUOmniPlatform
 
 
 def runner(*shapes: tuple[int, int, int, int]) -> AuKStepCudaGraphRunner:
@@ -133,3 +138,14 @@ def test_a_shape_that_fails_to_capture_is_left_out_rather_than_raising(caplog):
 
     assert declared.ready == set()
     assert "will run eager" in caplog.text
+
+
+@pytest.mark.parametrize("platform", [CUDAOmniPlatform(), XPUOmniPlatform()])
+def test_an_explicit_step_graph_request_builds_a_runner_wherever_graphs_record(
+    monkeypatch: pytest.MonkeyPatch, platform: OmniPlatform
+) -> None:
+    monkeypatch.setattr(step_cuda_graph, "current_platform", platform)
+
+    built = build_step_graph_runner(torch.device(platform.device_type, 0))
+
+    assert built is not None

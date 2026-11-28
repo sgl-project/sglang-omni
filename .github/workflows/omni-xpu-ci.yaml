@@ -82,6 +82,7 @@ jobs:
             xpu:
               - 'sglang_omni/**'
               - 'tests/unit_test/xpu/**'
+              - 'tests/unit_test/auk/**'
               - 'tests/unit_test/ming3_tts/**'
               - 'tests/unit_test/dots_tts/**'
               - 'tests/unit_test/ming3_audio/**'
@@ -278,6 +279,10 @@ jobs:
             pip install --no-cache-dir pytest pytest-asyncio
           docker exec -w /workspace/sglang-omni-pr "${CONTAINER_NAME}" \
             pytest tests/unit_test/xpu/test_device_layer.py \
+              tests/unit_test/auk/test_vae.py \
+              tests/unit_test/auk/test_qk_fusion.py \
+              tests/unit_test/auk/test_flow_matching.py \
+              tests/unit_test/auk/test_config.py \
               tests/unit_test/ming3_tts/test_ming3_tts_runtime.py \
               tests/unit_test/dots_tts/test_flow_head.py \
               tests/unit_test/dots_tts/test_tail.py \

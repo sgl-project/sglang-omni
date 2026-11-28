@@ -16,6 +16,17 @@ from torch import nn
 from x_transformers.x_transformers import RotaryEmbedding, apply_rotary_pos_emb
 
 
+class MMDiTBlockModulation(NamedTuple):
+    text: torch.Tensor
+    audio: torch.Tensor
+
+
+class AuKModulation(NamedTuple):
+    transformer_blocks: tuple[MMDiTBlockModulation, ...]
+    single_transformer_blocks: tuple[torch.Tensor, ...]
+    norm_out: torch.Tensor
+
+
 class Rope(NamedTuple):
     """Rotary tables for one axis of the sequence.
 
@@ -117,10 +128,18 @@ class AdaLayerNorm(nn.Module):
         self.linear = nn.Linear(dim, dim * 6)
         self.norm = nn.LayerNorm(dim, elementwise_affine=False, eps=1e-6)
 
-    def forward(self, x: torch.Tensor, emb: torch.Tensor | None = None):
-        emb = self.linear(self.silu(emb))
+    def forward(
+        self,
+        x: torch.Tensor,
+        emb: torch.Tensor | None = None,
+        modulation: torch.Tensor | None = None,
+    ):
+        if modulation is None:
+            modulation = self.linear(self.silu(emb))
+        else:
+            pass
         shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = torch.chunk(
-            emb, 6, dim=1
+            modulation, 6, dim=1
         )
 
         x = self.norm(x) * (1 + scale_msa[:, None]) + shift_msa[:, None]
@@ -136,9 +155,17 @@ class AdaLayerNormFinal(nn.Module):
         self.linear = nn.Linear(dim, dim * 2)
         self.norm = nn.LayerNorm(dim, elementwise_affine=False, eps=1e-6)
 
-    def forward(self, x: torch.Tensor, emb: torch.Tensor) -> torch.Tensor:
-        emb = self.linear(self.silu(emb))
-        scale, shift = torch.chunk(emb, 2, dim=1)
+    def forward(
+        self,
+        x: torch.Tensor,
+        emb: torch.Tensor | None,
+        modulation: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        if modulation is None:
+            modulation = self.linear(self.silu(emb))
+        else:
+            pass
+        scale, shift = torch.chunk(modulation, 2, dim=1)
         return self.norm(x) * (1 + scale)[:, None, :] + shift[:, None, :]
 
 
@@ -333,12 +360,15 @@ class DiTBlock(nn.Module):
     def forward(
         self,
         x: torch.Tensor,
-        t: torch.Tensor,
+        t: torch.Tensor | None,
         mask: torch.Tensor | None = None,
         rope=None,
         bias: torch.Tensor | None = None,
+        modulation: torch.Tensor | None = None,
     ) -> torch.Tensor:
-        norm, gate_msa, shift_mlp, scale_mlp, gate_mlp = self.attn_norm(x, emb=t)
+        norm, gate_msa, shift_mlp, scale_mlp, gate_mlp = self.attn_norm(
+            x, emb=t, modulation=modulation
+        )
         x = x + gate_msa.unsqueeze(1) * self.attn(
             x=norm, mask=mask, rope=rope, bias=bias
         )
@@ -383,18 +413,19 @@ class MMDiTBlock(nn.Module):
         self,
         x: torch.Tensor,
         c: torch.Tensor,
-        t: torch.Tensor,
+        t: torch.Tensor | None,
         mask: torch.Tensor | None = None,
         rope=None,
         c_rope=None,
         c_mask: torch.Tensor | None = None,
         bias: torch.Tensor | None = None,
+        modulation: MMDiTBlockModulation | None = None,
     ):
         norm_c, c_gate_msa, c_shift_mlp, c_scale_mlp, c_gate_mlp = self.attn_norm_c(
-            c, emb=t
+            c, emb=t, modulation=None if modulation is None else modulation.text
         )
         norm_x, x_gate_msa, x_shift_mlp, x_scale_mlp, x_gate_mlp = self.attn_norm_x(
-            x, emb=t
+            x, emb=t, modulation=None if modulation is None else modulation.audio
         )
         x_attn, c_attn = self.attn(
             x=norm_x,
@@ -547,6 +578,37 @@ class AuKDit(nn.Module):
     def clear_cache(self) -> None:
         self.text_cond, self.text_uncond = None, None
 
+    def modulation_table(self, times: torch.Tensor) -> list[AuKModulation]:
+        timestep_embedding = F.silu(self.time_embed(times))
+        transformer_blocks = [
+            MMDiTBlockModulation(
+                text=block.attn_norm_c.linear(timestep_embedding),
+                audio=block.attn_norm_x.linear(timestep_embedding),
+            )
+            for block in self.transformer_blocks
+        ]
+        single_transformer_blocks = [
+            block.attn_norm.linear(timestep_embedding)
+            for block in self.single_transformer_blocks
+        ]
+        norm_out = self.norm_out.linear(timestep_embedding)
+        return [
+            AuKModulation(
+                transformer_blocks=tuple(
+                    MMDiTBlockModulation(
+                        text=rows.text[step : step + 1],
+                        audio=rows.audio[step : step + 1],
+                    )
+                    for rows in transformer_blocks
+                ),
+                single_transformer_blocks=tuple(
+                    rows[step : step + 1] for rows in single_transformer_blocks
+                ),
+                norm_out=norm_out[step : step + 1],
+            )
+            for step in range(times.shape[0])
+        ]
+
     def enable_fused_qk_norm_rope(self, fusion) -> None:
         """Route every block's Q/K norm and rope through the fused kernel.
 
@@ -653,13 +715,14 @@ class AuKDit(nn.Module):
         ref_mask: torch.Tensor | None = None,
         audio_positions: torch.Tensor | None = None,
         joint_positions: torch.Tensor | None = None,
+        modulation: AuKModulation | None = None,
     ) -> torch.Tensor:
         batch = x.shape[0]
         if time.ndim == 0:
             time = time.repeat(batch)
         else:
             pass
-        t = self.time_embed(time)
+        t = self.time_embed(time) if modulation is None else None
 
         if c_mask is None:
             c_mask = text.abs().sum(-1) > 0
@@ -693,7 +756,7 @@ class AuKDit(nn.Module):
 
             x = torch.cat((x_cond, x_uncond), dim=0)
             c = torch.cat((c_cond, c_uncond), dim=0)
-            t = torch.cat((t, t), dim=0)
+            t = None if t is None else torch.cat((t, t), dim=0)
             audio_mask = (
                 torch.cat((a_mask_cond, a_mask_uncond), dim=0)
                 if a_mask_cond is not None and a_mask_uncond is not None
@@ -729,7 +792,7 @@ class AuKDit(nn.Module):
         else:
             pass
 
-        for block in self.transformer_blocks:
+        for index, block in enumerate(self.transformer_blocks):
             c, x = block(
                 x,
                 c,
@@ -739,12 +802,30 @@ class AuKDit(nn.Module):
                 c_rope=rope_text,
                 c_mask=c_mask,
                 bias=joint_bias,
+                modulation=(
+                    None if modulation is None else modulation.transformer_blocks[index]
+                ),
             )
 
         x = torch.cat([c, x], dim=1)
         rope = self.build_rope(text_len + seq_len, joint_positions)
-        for block in self.single_transformer_blocks:
-            x = block(x, t, mask=single_mask, rope=rope, bias=single_bias)
+        for index, block in enumerate(self.single_transformer_blocks):
+            x = block(
+                x,
+                t,
+                mask=single_mask,
+                rope=rope,
+                bias=single_bias,
+                modulation=(
+                    None
+                    if modulation is None
+                    else modulation.single_transformer_blocks[index]
+                ),
+            )
 
         x = x[:, text_len + prompt_len :]
-        return self.proj_out(self.norm_out(x, t))
+        return self.proj_out(
+            self.norm_out(
+                x, t, modulation=None if modulation is None else modulation.norm_out
+            )
+        )
