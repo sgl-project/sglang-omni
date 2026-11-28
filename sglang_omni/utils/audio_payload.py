@@ -27,19 +27,26 @@ def audio_waveform_payload(
     modality: str | None = None,
     source_hint: str = "audio",
     keep_channels: bool = False,
+    keep_float16: bool = False,
 ) -> dict[str, bytes | list[int] | str | int]:
     """Serialize a waveform into the relay payload format.
 
-    With ``keep_channels`` a rank-2 ``[channels, samples]`` waveform keeps its
-    shape (for natively multi-channel codecs); otherwise it is flattened to
-    mono-style rank-1, preserving the historical behavior.
+    With keep_channels a rank-2 [channels, samples] waveform keeps its shape (for natively multi-channel codecs); otherwise it is flattened to mono-style rank-1, preserving the historical behavior.
+
+    With keep_float16 a float16 tensor is sent as float16: half the bytes, and the client widens it to the same float32 values.
     """
+    dtype = np.float32
     if isinstance(audio, torch.Tensor):
-        audio = audio.detach().float().cpu().numpy()
+        audio = audio.detach()
+        if keep_float16 and audio.dtype == torch.float16:
+            dtype = np.float16
+        else:
+            audio = audio.float()
+        audio = audio.cpu().numpy()
     else:
         pass
     try:
-        array = np.asarray(audio, dtype=np.float32)
+        array = np.asarray(audio, dtype=dtype)
         if not (keep_channels and array.ndim == 2):
             array = array.reshape(-1)
         else:
@@ -52,7 +59,7 @@ def audio_waveform_payload(
     payload: dict[str, bytes | list[int] | str | int] = {
         "audio_waveform": array.tobytes(),
         "audio_waveform_shape": list(array.shape),
-        "audio_waveform_dtype": "float32",
+        "audio_waveform_dtype": array.dtype.name,
     }
     if sample_rate is not None:
         payload["sample_rate"] = int(sample_rate)

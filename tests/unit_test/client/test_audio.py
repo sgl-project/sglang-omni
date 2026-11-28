@@ -1,12 +1,14 @@
 import asyncio
 import io
 import shutil
+import struct
 import sys
 from typing import Literal
 from unittest.mock import Mock
 
 import numpy as np
 import pytest
+import torch
 
 import sglang_omni.client.audio as client_audio
 from sglang_omni.client.audio import (
@@ -16,7 +18,9 @@ from sglang_omni.client.audio import (
     resample_linear,
     to_numpy,
 )
-from sglang_omni.client.types import GenerateRequest
+from sglang_omni.client.client import Client
+from sglang_omni.client.types import GenerateChunk, GenerateRequest
+from sglang_omni.utils.audio_payload import audio_waveform_payload
 from tests.unit_test.fixtures.speech_fakes import FixedSpeechClient
 
 
@@ -97,6 +101,86 @@ def test_encode_pcm():
     expected = np.array([0, 16383, -32767, 32767], dtype=np.int16)
     actual = np.frombuffer(pcm_bytes, dtype=np.int16)
     assert np.array_equal(expected, actual)
+
+
+def straightforward_wav(audio: np.ndarray, sample_rate: int) -> bytes:
+    """Clip, scale, cast, interleave and prepend the header, one copy per step."""
+    pcm = (np.clip(audio, -1.0, 1.0) * 32767.0).astype(np.int16)
+    channels = int(pcm.shape[0]) if pcm.ndim == 2 else 1
+    data = np.ascontiguousarray(pcm.T).tobytes() if pcm.ndim == 2 else pcm.tobytes()
+    return (
+        b"RIFF"
+        + struct.pack("<I", 36 + len(data))
+        + b"WAVEfmt "
+        + struct.pack("<I", 16)
+        + struct.pack(
+            "<HHIIHH",
+            1,
+            channels,
+            sample_rate,
+            sample_rate * channels * 2,
+            channels * 2,
+            16,
+        )
+        + b"data"
+        + struct.pack("<I", len(data))
+        + data
+    )
+
+
+def wav_test_input(dtype: type[np.floating], shape: tuple[int, ...]) -> np.ndarray:
+    audio = np.random.default_rng(0).uniform(-1.3, 1.3, shape).astype(dtype)
+    # note (ruilin): no NaN, whose cast to int16 is undefined and may differ between CPUs.
+    edges = [-1.0, 1.0, 0.0, -0.0, 1e-5, -1e-5, 1.5, -1.5, np.inf, -np.inf]
+    audio.reshape(-1)[: len(edges)] = np.array(edges).astype(dtype)
+    return audio
+
+
+@pytest.mark.parametrize(
+    "audio",
+    [
+        wav_test_input(np.float32, (2, 4000)),
+        wav_test_input(np.float32, (4000,)),
+        wav_test_input(np.float64, (2, 4000)),
+        np.zeros((2, 0), dtype=np.float32),
+        np.array(0.25, dtype=np.float32),
+    ],
+    ids=["stereo", "mono", "float64", "empty", "scalar"],
+)
+def test_encode_wav_writes_the_same_bytes_as_the_step_by_step_encoding(
+    audio: np.ndarray,
+) -> None:
+    before = audio.copy()
+    assert client_audio.encode_wav(audio, 44100) == straightforward_wav(audio, 44100)
+    assert np.array_equal(audio, before)
+
+
+def test_encode_wav_scales_float16_like_its_float32_values() -> None:
+    """A full-scale float16 sample stays full scale; scaled in float16 it would round to 32768 and wrap to -32768."""
+    audio = wav_test_input(np.float16, (2, 4000))
+    assert client_audio.encode_wav(audio, 44100) == straightforward_wav(
+        audio.astype(np.float32), 44100
+    )
+
+
+def test_float16_waveform_reaches_the_client_as_the_same_audio() -> None:
+    """A float16 waveform sent with keep_float16 reaches the client as the same float32 values and WAV."""
+    generator = torch.Generator().manual_seed(0)
+    waveform = (
+        (torch.rand(2, 4410, generator=generator) * 2.4 - 1.2).half().clamp(-1, 1)
+    )
+    payload = audio_waveform_payload(
+        waveform, sample_rate=44100, keep_channels=True, keep_float16=True
+    )
+    chunk = GenerateChunk(request_id="float16")
+    Client.set_audio_data(chunk, payload)
+    widened = waveform.float().numpy()
+    assert payload["audio_waveform_dtype"] == "float16"
+    assert np.array_equal(to_numpy(chunk.audio_data), widened)
+    assert (
+        encode_audio(chunk.audio_data, sample_rate=44100).audio_bytes
+        == encode_audio(widened, sample_rate=44100).audio_bytes
+    )
 
 
 def test_resample_linear_preserves_stereo_channels():

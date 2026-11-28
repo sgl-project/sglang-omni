@@ -36,6 +36,7 @@ DEFAULT_SAMPLE_RATE = 24000
 # note (ratish): The speech rate floor preserves the lowest supported AAC rate.
 MIN_AUDIO_OUTPUT_SAMPLE_RATE = 7350
 MAX_AUDIO_OUTPUT_SAMPLE_RATE = 192000
+WAV_HEADER_BYTES = 44
 OPUS_PLAYBACK_SAMPLE_RATE = 48000
 # note (ratish): FLAC's streamable subset uses 10 Hz units above the 16-bit Hz field's limit.
 FLAC_MAX_UNSCALED_SAMPLE_RATE_HZ = 65535
@@ -237,47 +238,48 @@ def apply_speed(
 
 
 def encode_wav(audio: np.ndarray, sample_rate: int) -> bytes:
-    """Encode audio as a WAV file (16-bit PCM)."""
-    # Clamp to [-1, 1]
-    audio = np.clip(audio, -1.0, 1.0)
-    pcm = (audio * 32767.0).astype(np.int16)
-    if pcm.ndim == 2:
-        num_channels = int(pcm.shape[0])
-        pcm_bytes = np.ascontiguousarray(pcm.T).tobytes()
+    """Encode audio as a 16-bit PCM WAV, interleaving the samples straight into the output buffer, since every copy of a long clip shows in the latency."""
+    samples_in = np.atleast_1d(audio)
+    # note (ruilin): float16 rounds 32767 up to 32768, which wraps to -32768 in int16, so a half-precision waveform scales in float32.
+    if samples_in.dtype == np.float16:
+        samples_in = samples_in.astype(np.float32)
     else:
-        num_channels = 1
-        pcm_bytes = pcm.tobytes()
+        pass
+    scaled = np.clip(samples_in, -1.0, 1.0)
+    np.multiply(scaled, 32767.0, out=scaled)
+    num_channels = int(scaled.shape[0]) if scaled.ndim == 2 else 1
 
     bits_per_sample = 16
     byte_rate = sample_rate * num_channels * bits_per_sample // 8
     block_align = num_channels * bits_per_sample // 8
-    data_size = len(pcm_bytes)
+    data_size = scaled.size * bits_per_sample // 8
 
-    buf = io.BytesIO()
-    # RIFF header
-    buf.write(b"RIFF")
-    buf.write(struct.pack("<I", 36 + data_size))
-    buf.write(b"WAVE")
-    # fmt chunk
-    buf.write(b"fmt ")
-    buf.write(struct.pack("<I", 16))  # chunk size
-    buf.write(
-        struct.pack(
-            "<HHIIHH",
-            1,
-            num_channels,
-            sample_rate,
-            byte_rate,
-            block_align,
-            bits_per_sample,
-        )
+    wav = bytearray(WAV_HEADER_BYTES + data_size)
+    struct.pack_into(
+        "<4sI4s4sIHHIIHH4sI",
+        wav,
+        0,
+        b"RIFF",
+        36 + data_size,
+        b"WAVE",
+        b"fmt ",
+        16,  # fmt chunk size
+        1,  # PCM
+        num_channels,
+        sample_rate,
+        byte_rate,
+        block_align,
+        bits_per_sample,
+        b"data",
+        data_size,
     )
-    # data chunk
-    buf.write(b"data")
-    buf.write(struct.pack("<I", data_size))
-    buf.write(pcm_bytes)
-
-    return buf.getvalue()
+    samples = np.frombuffer(wav, dtype=np.int16, offset=WAV_HEADER_BYTES)
+    if scaled.ndim == 2:
+        samples = samples.reshape(scaled.shape[1], num_channels)
+        np.copyto(samples, scaled.T, casting="unsafe")
+    else:
+        np.copyto(samples, scaled.reshape(-1), casting="unsafe")
+    return bytes(wav)
 
 
 def resample_linear(audio: np.ndarray, orig_sr: int, target_sr: int) -> np.ndarray:
