@@ -63,7 +63,7 @@ async def wait_for_profile_flush(
         pass
     expected_stage_counts = Counter(expected_stages or ())
     deadline = time.monotonic() + timeout_seconds
-    while time.monotonic() < deadline:
+    while True:
         event_pids: set[str] = set()
         for event_path in directory.glob("events_*.jsonl"):
             match = EVENT_FILENAME_RE.match(event_path.name)
@@ -81,23 +81,23 @@ async def wait_for_profile_flush(
                     status_payload = json.loads(status_path.read_text(encoding="utf-8"))
                 except (OSError, json.JSONDecodeError):
                     continue
-                if isinstance(status_payload, dict):
-                    stages = status_payload.get("stages")
-                    if isinstance(stages, list):
-                        for stage_name in stages:
-                            if isinstance(stage_name, str):
-                                published_stage_counts[stage_name] += 1
-                            else:
-                                pass
-                    else:
-                        pass
+                stages = (
+                    status_payload.get("stages")
+                    if isinstance(status_payload, dict)
+                    else None
+                )
+                if isinstance(stages, list):
+                    published_stage_counts.update(
+                        stage_name
+                        for stage_name in stages
+                        if isinstance(stage_name, str)
+                    )
                 else:
                     pass
-            stages_ready = all(
-                published_stage_counts[stage_name] >= expected_count
-                for stage_name, expected_count in expected_stage_counts.items()
-            )
-            if stages_ready and all_event_sidecars_present:
+            if (
+                expected_stage_counts <= published_stage_counts
+                and all_event_sidecars_present
+            ):
                 return True
             else:
                 pass
@@ -105,8 +105,11 @@ async def wait_for_profile_flush(
             return True
         else:
             pass
+        if time.monotonic() >= deadline:
+            return False
+        else:
+            pass
         await asyncio.sleep(FLUSH_POLL_INTERVAL_S)
-    return False
 
 
 def start_request_profile(
@@ -180,14 +183,15 @@ async def run_profiled_pass(
                 url, run_id, event_dir, event_buffer_capacity=event_buffer_capacity
             )
             started.append(url)
-            if isinstance(start_response, dict):
-                response_stages = start_response.get("stages")
-                if isinstance(response_stages, list):
-                    expected_stages.extend(
-                        stage for stage in response_stages if isinstance(stage, str)
-                    )
-                else:
-                    pass
+            response_stages = (
+                start_response.get("stages")
+                if isinstance(start_response, dict)
+                else None
+            )
+            if isinstance(response_stages, list):
+                expected_stages.extend(
+                    stage for stage in response_stages if isinstance(stage, str)
+                )
             else:
                 pass
     except requests.RequestException as exc:
