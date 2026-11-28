@@ -6,6 +6,7 @@ import sys
 import threading
 from types import FrameType
 
+import numpy as np
 import pytest
 import torch
 
@@ -29,6 +30,23 @@ def test_stage_output_cache_evicts_on_byte_buffer_size() -> None:
     cache.put("b", {"payload": b"y" * 800})
     assert cache.get("a") is None
     assert cache.get("b") is not None
+
+
+def test_stage_output_cache_enforces_numpy_byte_budget() -> None:
+    """Nested NumPy arrays must not bypass the cache's byte limit."""
+    cache = StageOutputCache(max_bytes=64)
+    cache.put("first", {"embedding": [np.arange(12, dtype=np.float32)]})
+    cache.put("second", {"embedding": [np.arange(12, dtype=np.float32)]})
+
+    assert cache.get("first") is None
+    np.testing.assert_array_equal(
+        cache.get("second")["embedding"][0], np.arange(12, dtype=np.float32)
+    )
+    assert cache.current_bytes == 48
+
+    cache.put("oversized", np.zeros(17, dtype=np.float32))
+    assert cache.get("oversized") is None
+    assert cache.get("second") is not None
 
 
 @pytest.mark.parametrize("capacity", ["max_size", "max_bytes"])
