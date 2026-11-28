@@ -461,6 +461,7 @@ def test_qwen_preprocessor_two_videos_and_audio_with_real_processor(
     pre.default_video_total_pixels = total_pixels
     pre.video_decode_threads = 16
     pre.processor = processor
+    pre.thread_processors = preprocessor_mod.ThreadProcessors(pre.processor, copies=0)
     payload = StagePayload(
         request_id="two-videos-and-audio",
         request=OmniRequest(
@@ -557,6 +558,7 @@ def test_qwen_preprocessor_passes_embedded_video_audio_to_processor(
     pre.default_video_total_pixels = None
     pre.video_decode_threads = 16
     pre.processor = FakeProcessor()
+    pre.thread_processors = preprocessor_mod.ThreadProcessors(pre.processor, copies=0)
     payload = StagePayload(
         request_id="embedded-audio",
         request=OmniRequest(
@@ -790,6 +792,7 @@ def test_qwen_preprocessor_rejects_text_too_long_to_fit_before_tokenizing(
         setattr(pre, "default_video_" + name, None)
     pre.video_decode_threads = 16
     pre.processor = FakeProcessor()
+    pre.thread_processors = preprocessor_mod.ThreadProcessors(pre.processor, copies=0)
     payload = StagePayload(
         request_id="long-text",
         request=OmniRequest(
@@ -836,6 +839,7 @@ def test_qwen_preprocessor_rejects_text_too_long_to_fit_before_loading_media(
     for name in ("fps", "max_frames", "min_pixels", "max_pixels", "total_pixels"):
         setattr(pre, "default_video_" + name, None)
     pre.processor = FakeProcessor()
+    pre.thread_processors = preprocessor_mod.ThreadProcessors(pre.processor, copies=0)
     payload = StagePayload(
         request_id="long-text-with-media",
         request=OmniRequest(
@@ -2321,6 +2325,7 @@ def decoded_audio_preprocessor(monkeypatch):
     pre = object.__new__(mod.Qwen3OmniPreprocessor)
     pre.max_seq_len = None
     pre.processor = Processor()
+    pre.thread_processors = mod.ThreadProcessors(pre.processor, copies=0)
     for name in ("fps", "max_frames", "min_pixels", "max_pixels", "total_pixels"):
         setattr(pre, "default_video_" + name, None)
     pre.video_decode_threads = 16
@@ -3096,6 +3101,61 @@ def test_preprocessing_request_threads_keep_results_errors_and_running_abort(
     assert not worker.is_alive()
 
 
+def test_thread_processors_give_each_calling_thread_its_own_copy_then_the_shared_one() -> (
+    None
+):
+    """Every preprocessing thread ran the one shared HF processor at once, so a processor that writes its own state while it runs would mix requests."""
+    shared = {"chat_template": "template"}
+    thread_processors = preprocessor_mod.ThreadProcessors(shared, copies=2)
+    taken: list[tuple[dict[str, str], dict[str, str]]] = []
+    all_hold_one = threading.Barrier(3)
+
+    def take() -> None:
+        first = thread_processors.get()
+        all_hold_one.wait(timeout=5)
+        taken.append((first, thread_processors.get()))
+
+    threads = [threading.Thread(target=take) for _ in range(3)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=5)
+
+    processors = [first for first, _ in taken]
+    assert all(first is again for first, again in taken)
+    assert len({id(processor) for processor in processors}) == 3
+    assert sum(processor is shared for processor in processors) == 1
+    assert all(processor == shared for processor in processors)
+
+
+@pytest.mark.parametrize(
+    ("max_running_video_requests", "max_concurrency", "processor_copies"),
+    [(0, 1, 0), (0, 3, 2), (2, 1, 2), (2, 3, 4)],
+)
+def test_preprocessing_executor_copies_the_processor_for_every_calling_thread_but_one(
+    monkeypatch: pytest.MonkeyPatch,
+    max_running_video_requests: int,
+    max_concurrency: int,
+    processor_copies: int,
+) -> None:
+    built: dict[str, object] = {}
+
+    def build_preprocessor(**kwargs: object) -> object:
+        built.update(kwargs)
+        return object()
+
+    monkeypatch.setattr(qwen_stages, "Qwen3OmniPreprocessor", build_preprocessor)
+    scheduler = qwen_stages.create_preprocessing_executor(
+        "model",
+        max_running_video_requests=max_running_video_requests,
+        max_concurrency=max_concurrency,
+    )
+    try:
+        assert built["processor_copies"] == processor_copies
+    finally:
+        scheduler.stop()
+
+
 def test_image_encoder_batches_images_together_and_each_video_alone() -> None:
     """Videos preprocessed at once shared image encoder batches up to its fixed cost budget, so their activations together outgrew the memory a colocated card leaves the encoder."""
     model = SimpleNamespace(
@@ -3855,6 +3915,7 @@ def test_threaded_preprocessing_loads_repeated_remote_images(monkeypatch):
     pre = object.__new__(mod.Qwen3OmniPreprocessor)
     pre.max_seq_len = None
     pre.processor = Processor()
+    pre.thread_processors = mod.ThreadProcessors(pre.processor, copies=0)
     for name in ("fps", "max_frames", "min_pixels", "max_pixels", "total_pixels"):
         setattr(pre, "default_video_" + name, None)
     pre.video_decode_threads = 16
@@ -4006,6 +4067,7 @@ class ProcessorCalled(Exception):
 def bare_preprocessor(processor: Mock) -> preprocessor_mod.Qwen3OmniPreprocessor:
     pre = object.__new__(preprocessor_mod.Qwen3OmniPreprocessor)
     pre.processor = processor
+    pre.thread_processors = preprocessor_mod.ThreadProcessors(pre.processor, copies=0)
     pre.max_seq_len = None
     for name in (
         "default_video_fps",

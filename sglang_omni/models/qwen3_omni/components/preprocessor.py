@@ -5,13 +5,15 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import copy
 import json
 import logging
 import math
+import queue
+import threading
 from collections.abc import Mapping, Sequence
 from concurrent.futures import Executor, ThreadPoolExecutor, wait
 from dataclasses import dataclass
-from functools import partial
 from pathlib import Path
 from typing import TypedDict, TypeGuard
 
@@ -401,6 +403,29 @@ def read_request_inputs(
     )
 
 
+class ThreadProcessors:
+    """One HF processor for each thread that calls it: a copy made before serving while copies remain, then the shared one."""
+
+    def __init__(self, processor: Qwen3OmniMoeProcessor, *, copies: int) -> None:
+        self.shared = processor
+        self.copies: queue.SimpleQueue[Qwen3OmniMoeProcessor] = queue.SimpleQueue()
+        for _ in range(copies):
+            self.copies.put(copy.deepcopy(processor))
+        self.thread_state = threading.local()
+
+    def get(self) -> Qwen3OmniMoeProcessor:
+        processor = getattr(self.thread_state, "processor", None)
+        if processor is None:
+            try:
+                processor = self.copies.get_nowait()
+            except queue.Empty:
+                processor = self.shared
+            self.thread_state.processor = processor
+        else:
+            pass
+        return processor
+
+
 class Qwen3OmniPreprocessor:
     """CPU-side preprocessing and tokenization using the HF processor."""
 
@@ -415,6 +440,7 @@ class Qwen3OmniPreprocessor:
         video_max_pixels: int | None = None,
         video_total_pixels: int | None = None,
         video_decode_threads: int,
+        processor_copies: int = 0,
     ) -> None:
         self.model_path = model_path
         self.video_decode_threads = video_decode_threads
@@ -499,6 +525,10 @@ class Qwen3OmniPreprocessor:
             self.processor.chat_template = self.tokenizer.chat_template
         else:
             pass
+        # note (ratish): a copy takes about 360 ms, so threads get theirs before serving rather than on their first request.
+        self.thread_processors = ThreadProcessors(
+            self.processor, copies=processor_copies
+        )
 
     def validate_prompt_text_len(
         self,
@@ -1036,16 +1066,18 @@ class Qwen3OmniPreprocessor:
         else:
             pass
 
-        run_processor = partial(
-            self.processor,
-            text=prompt_text,
-            images=images or None,
-            videos=videos or None,
-            audio=audios or None,
-            add_special_tokens=False,
-            return_tensors="pt",
-            **processor_kwargs,
-        )
+        # note (ratish): rendering the chat template above only reads the shared processor, while this call runs the tokenizer and feature extractors, so it takes the running thread's own copy.
+        def run_processor() -> BatchFeature:
+            return self.thread_processors.get()(
+                text=prompt_text,
+                images=images or None,
+                videos=videos or None,
+                audio=audios or None,
+                add_special_tokens=False,
+                return_tensors="pt",
+                **processor_kwargs,
+            )
+
         # note (ratish): the video key only tags the encoder inputs, and the HF processor reads float32 frames without writing them, so the request's own thread hashes them while the processor runs; leaving the block waits for the hash on every exit.
         if video_lane is None:
             with ThreadPoolExecutor(

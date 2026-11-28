@@ -1083,7 +1083,6 @@ class PreprocessingScheduler(SimpleScheduler[StagePayload, StagePayload]):
                 initializer=name_native_thread,
             )
         )
-        # note (ratish): the threads share one preprocessor, since the Transformers 5.19 HF processor writes none of its own state while it runs and its tokenizer keeps one padding and truncation setting.
         self.preprocessor = preprocessor
         # note (ratish): a running video decodes on at least one of the stage's CPUs, so videos past them would only hold their frames while they wait for one.
         video_worker_count = min(video_request_worker_count, stage_cpu_count)
@@ -1266,6 +1265,8 @@ def create_preprocessing_executor(
             if video_decode_threads is None
             else video_decode_threads
         ),
+        # note (ratish): each video's frame thread and each thread running requests without video calls the HF processor, so all but one of them get a copy.
+        processor_copies=max_running_video_requests + max(max_concurrency, 1) - 1,
     )
 
     if max_running_video_requests == 0 and max_concurrency <= 1:
