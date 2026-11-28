@@ -46,6 +46,7 @@ _WHISPER_ENCODER_STRIDE = 2
 DEFAULT_TEMPERATURE = 0.0
 DEFAULT_TOP_P = 0.95
 DEFAULT_TOP_K = 50
+AUDIO_SOURCE_METADATA_KEYS = ("audios", "audio_data", "audio")
 
 # note (db-ol): dense multi speaker meetings decode to about 4.5 output
 # tokens per audio second including time markers, so 10 leaves roughly 2x
@@ -125,15 +126,10 @@ def audio_source_from_payload(payload: StagePayload) -> object:
         pass
 
     metadata = payload.request.metadata or {}
-    value = metadata.get("audios")
-    if value is not None:
-        return unwrap_source_dict(only_audio(value))
-    else:
-        pass
-    for key in ("audio_data", "audio"):
+    for key in AUDIO_SOURCE_METADATA_KEYS:
         value = metadata.get(key)
         if value is not None:
-            return unwrap_source_dict(value)
+            return unwrap_source_dict(only_audio(value) if key == "audios" else value)
         else:
             pass
     return unwrap_source_dict(inputs)
@@ -141,9 +137,7 @@ def audio_source_from_payload(payload: StagePayload) -> object:
 
 def has_metadata_audio_source(payload: StagePayload) -> bool:
     metadata = payload.request.metadata or {}
-    return any(
-        metadata.get(key) is not None for key in ("audios", "audio_data", "audio")
-    )
+    return any(metadata.get(key) is not None for key in AUDIO_SOURCE_METADATA_KEYS)
 
 
 def unwrap_source_dict(source: object) -> object:
@@ -663,6 +657,12 @@ def make_moss_transcribe_diarize_scheduler_adapters(
             stage_payload=payload,
         )
 
+    return request_builder, make_moss_td_result_adapter(tokenizer)
+
+
+def make_moss_td_result_adapter(
+    tokenizer: PreTrainedTokenizerBase,
+) -> Callable[[MossTranscribeDiarizeRequestData], StagePayload]:
     def result_adapter(data: MossTranscribeDiarizeRequestData) -> StagePayload:
         payload = data.stage_payload
         output_ids = list(data.output_ids or [])
@@ -694,7 +694,7 @@ def make_moss_transcribe_diarize_scheduler_adapters(
             },
         )
 
-    return request_builder, result_adapter
+    return result_adapter
 
 
 def make_moss_transcribe_diarize_stream_output_builder(

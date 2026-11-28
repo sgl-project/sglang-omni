@@ -14,12 +14,14 @@ import torch
 from huggingface_hub.errors import RepositoryNotFoundError
 from sglang.srt.speculative.dflash_worker_v2 import DFlashWorkerV2
 
+from sglang_omni.config.manager import ConfigManager
 from sglang_omni.models.moss_transcribe_diarize import (
     engine_builder,
     sglang_model,
     stages,
 )
 from sglang_omni.models.moss_transcribe_diarize.config import (
+    MossTranscribeDiarizePDPipelineConfig,
     MossTranscribeDiarizePipelineConfig,
 )
 from sglang_omni.models.moss_transcribe_diarize.engine_builder import (
@@ -43,6 +45,31 @@ from sglang_omni.speculative.dflash_draft import (
     ReducedVocabularyDFlashWorker,
 )
 from sglang_omni.utils.imports import import_string
+
+
+def test_moss_pd_profile_keeps_target_only_handoff_constraints() -> None:
+    path = Path(__file__).resolve().parents[3] / "examples/configs/moss_td_pd.yaml"
+    config = ConfigManager.from_file(str(path)).config
+
+    assert isinstance(config, MossTranscribeDiarizePDPipelineConfig)
+    assert [stage.name for stage in config.stages] == ["asr", "asr_decode"]
+    for stage, role in zip(config.stages, ("prefill", "decode"), strict=True):
+        assert config.stage_factory_kwargs(stage.name)["pd_role"] == role
+        assert stage.engine.page_size == 1
+        assert stage.engine.disable_radix_cache is True
+        assert stage.engine.disable_speculative_decoding is True
+
+
+def test_moss_colocated_stage_forwards_gpu_memory_fraction(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    build = Mock()
+    monkeypatch.setattr(MossTranscribeDiarizeEngineBuilder, "build", build)
+    create_sglang_moss_transcribe_diarize_executor(
+        "dummy", total_gpu_memory_fraction=0.85
+    )
+
+    assert build.call_args.kwargs["total_gpu_memory_fraction"] == 0.85
 
 
 def make_moss_engine_builder(
@@ -162,8 +189,6 @@ def test_moss_transcribe_diarize_omp_default_tracks_request_workers(
 
     config = config_module.MossTranscribeDiarizePipelineConfig(model_path="dummy")
     if worker_override is not None:
-        from sglang_omni.config.manager import ConfigManager
-
         config = ConfigManager(config).merge_config(
             [("asr.factory.request_build_max_workers", str(worker_override))]
         )
