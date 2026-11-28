@@ -367,6 +367,11 @@ def create_image_encoder_request_cost_fn(
         else:
             pass
         model_inputs = request.model_inputs
+        # note (ratish): one video's activations take most of the encoder's spare memory on a colocated card, so a request with video encodes alone.
+        if model_inputs.get("pixel_values_videos") is not None:
+            return QWEN3_IMAGE_ENCODER_BATCH_BUDGET_BYTES
+        else:
+            pass
         raw_bytes = tensor_bytes(model_inputs.get("pixel_values"))
         raw_bytes += tensor_bytes(model_inputs.get("pixel_values_videos"))
         visual_tokens = grid_visual_tokens(model_inputs.get("image_grid_thw"), merge)

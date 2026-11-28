@@ -3096,6 +3096,62 @@ def test_preprocessing_request_threads_keep_results_errors_and_running_abort(
     assert not worker.is_alive()
 
 
+def test_image_encoder_batches_images_together_and_each_video_alone() -> None:
+    """Videos preprocessed at once shared image encoder batches up to its fixed cost budget, so their activations together outgrew the memory a colocated card leaves the encoder."""
+    model = SimpleNamespace(
+        spatial_merge_size=2,
+        out_hidden_size=8,
+        deepstack_layers=3,
+        visual_dtype_bytes=2,
+    )
+
+    def encoder_request(request_id: str, pixels_key: str) -> IncomingMessage:
+        grid_key = (
+            "image_grid_thw" if pixels_key == "pixel_values" else "video_grid_thw"
+        )
+        encoder_inputs = {
+            pixels_key: torch.ones(16, 4),
+            grid_key: torch.tensor([[1, 4, 4]]),
+        }
+        return IncomingMessage(
+            request_id=request_id,
+            type="new_request",
+            data=StagePayload(
+                request_id=request_id,
+                request=OmniRequest(inputs="hi"),
+                data={"encoder_inputs": {"image_encoder": encoder_inputs}},
+            ),
+        )
+
+    scheduler = SimpleScheduler(
+        lambda payload: payload,
+        batch_compute_fn=lambda payloads: payloads,
+        max_batch_size=32,
+        request_cost_fn=qwen_stages.create_image_encoder_request_cost_fn(model),
+        max_batch_cost=qwen_stages.QWEN3_IMAGE_ENCODER_BATCH_BUDGET_BYTES,
+    )
+    for request_id, pixels_key in [
+        ("image-1", "pixel_values"),
+        ("image-2", "pixel_values"),
+        ("video-1", "pixel_values_videos"),
+        ("video-2", "pixel_values_videos"),
+        ("image-3", "pixel_values"),
+        ("image-4", "pixel_values"),
+    ]:
+        scheduler.inbox.put(encoder_request(request_id, pixels_key))
+    batches = []
+    while scheduler.pending_messages or not scheduler.inbox.empty():
+        batch = scheduler.collect_batch(scheduler.next_message())
+        batches.append([message.request_id for message in batch])
+
+    assert batches == [
+        ["image-1", "image-2"],
+        ["video-1"],
+        ["video-2"],
+        ["image-3", "image-4"],
+    ]
+
+
 @pytest.mark.parametrize(
     ("video_request_worker_count", "stage_cpu_count"), [(2, 8), (4, 2)]
 )
