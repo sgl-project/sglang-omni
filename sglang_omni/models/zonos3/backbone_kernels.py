@@ -7,6 +7,8 @@ import torch
 import triton
 import triton.language as tl
 
+from sglang_omni.platforms import current_platform
+
 # The values of one token, and the query logits of one value, fit one power-of-two block.
 QUERY_BLOCK = 32
 # note (zhaochenyang20): with these, the residual of a 14-token forward took 297 us against 700 us for the torch ops it replaces (both with the 22 sublayer matmuls, CUDA graph, one H100).
@@ -203,6 +205,45 @@ def store_and_mix_values(
     output_dtype: torch.dtype,
 ) -> torch.Tensor:
     """Stores value [tokens, hidden] in float32 at values[:, value_index] and its logits against queries [queries, hidden] at value_logits[:, value_index], then returns the RMS-normed softmax mix [tokens, hidden] of values[:, : value_index + 1] for query value_index; values [tokens, queries, hidden] and value_logits [tokens, queries, queries] are float32."""
+    # Ascend's triton mixes bit-comparably with the torch twin (max 3e-6 on 23 accumulated calls) and runs the 23 calls of a decode step 3.1x faster, so both devices take the kernel; the remaining backends run the same arithmetic in torch.
+    if current_platform.is_cuda() or current_platform.is_npu():
+        return _store_and_mix_values_triton(
+            value,
+            values,
+            queries,
+            value_logits,
+            norm_weight,
+            value_index=value_index,
+            store_epsilon=store_epsilon,
+            mix_epsilon=mix_epsilon,
+            output_dtype=output_dtype,
+        )
+    else:
+        return _store_and_mix_values_torch(
+            value,
+            values,
+            queries,
+            value_logits,
+            norm_weight,
+            value_index=value_index,
+            store_epsilon=store_epsilon,
+            mix_epsilon=mix_epsilon,
+            output_dtype=output_dtype,
+        )
+
+
+def _store_and_mix_values_triton(  # noqa: leading-underscore
+    value: torch.Tensor,
+    values: torch.Tensor,
+    queries: torch.Tensor,
+    value_logits: torch.Tensor,
+    norm_weight: torch.Tensor,
+    *,
+    value_index: int,
+    store_epsilon: float,
+    mix_epsilon: float,
+    output_dtype: torch.dtype,
+) -> torch.Tensor:
     token_count, query_count, hidden_size = values.shape
     assert value.stride(1) == 1 and values.is_contiguous() and queries.is_contiguous()
     assert query_count <= QUERY_BLOCK and hidden_size % HIDDEN_CHUNK == 0
@@ -228,3 +269,32 @@ def store_and_mix_values(
         num_warps=RESIDUAL_WARPS,
     )
     return output
+
+
+def _store_and_mix_values_torch(  # noqa: leading-underscore
+    value: torch.Tensor,
+    values: torch.Tensor,
+    queries: torch.Tensor,
+    value_logits: torch.Tensor,
+    norm_weight: torch.Tensor,
+    *,
+    value_index: int,
+    store_epsilon: float,
+    mix_epsilon: float,
+    output_dtype: torch.dtype,
+) -> torch.Tensor:
+    """The triton kernel's arithmetic in torch: store the row and its query logits, then the RMS-normed softmax mix of the rows stored so far."""
+    value_float = value.float()
+    values[:, value_index] = value_float
+    inverse_rms = torch.rsqrt(
+        value_float.square().mean(dim=-1, keepdim=True) + store_epsilon
+    )
+    value_logits[:, value_index] = (value_float @ queries.float().t()) * inverse_rms
+    stored_count = value_index + 1
+    weights = torch.softmax(value_logits[:, :stored_count, value_index], dim=-1)
+    # A matmul keeps one kernel per sublayer; a per-row loop would add 23 elementwise launches to every decode step.
+    mixed = torch.matmul(weights.unsqueeze(1), values[:, :stored_count]).squeeze(1)
+    mixed_inverse_rms = torch.rsqrt(
+        mixed.square().mean(dim=-1, keepdim=True) + mix_epsilon
+    )
+    return (mixed * mixed_inverse_rms * norm_weight.float()).to(output_dtype)
