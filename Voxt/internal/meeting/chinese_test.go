@@ -88,7 +88,7 @@ func TestDiarizeTrackAnchorsAcrossChineseScripts(t *testing.T) {
 		}},
 	}}
 	rate := asr.SampleRate
-	segs, err := diarizeTrack(context.Background(), SourceSystem, diarizer, asr.FileRequest{Lang: "zh-Hans"}, rate, make([]byte, rate*200*2), []vad.Segment{{Start: 0, End: rate * 200}}, nil)
+	segs, err := diarizeTrack(context.Background(), SourceSystem, diarizer, asr.FileRequest{Lang: "zh-Hans"}, rate, make([]byte, rate*200*2), []vad.Segment{{Start: 0, End: rate * 200}}, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -100,7 +100,7 @@ func TestDiarizeTrackAnchorsAcrossChineseScripts(t *testing.T) {
 func TestDiarizeTrackChineseScript(t *testing.T) {
 	diarizer := &seqDiarizer{results: []asr.Result{{Segments: []asr.SpeakerSegment{{End: time.Second, Speaker: "S01", Text: "我們今天討論會議轉寫。"}}}}}
 	rate := asr.SampleRate
-	segs, err := diarizeTrack(context.Background(), SourceSystem, diarizer, asr.FileRequest{Lang: "zh-Hans"}, rate, make([]byte, rate*2), []vad.Segment{{Start: 0, End: rate}}, nil)
+	segs, err := diarizeTrack(context.Background(), SourceSystem, diarizer, asr.FileRequest{Lang: "zh-Hans"}, rate, make([]byte, rate*2), []vad.Segment{{Start: 0, End: rate}}, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

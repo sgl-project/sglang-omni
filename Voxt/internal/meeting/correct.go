@@ -69,25 +69,27 @@ func (m *Manager) CorrectTranscript(ctx context.Context, id string) error {
 	m.mu.Lock()
 	overlap := m.cfg.correctOverlap
 	m.mu.Unlock()
-	var speculative map[string]string
-	if overlap != nil && overlap.meeting == id {
-		speculative = overlap.take()
-	}
 	currentSettings := m.cfg.Settings()
-	chat, err := m.cfg.LLM(ctx, currentSettings.LLM)
-	if err != nil {
-		return err
-	}
 	var tc TranscriptContext
 	if m.cfg.Context != nil {
 		tc = m.cfg.Context(ctx)
 	}
+	var speculative map[string]map[int]string
+	var completed map[string]bool
+	if overlap != nil && overlap.meeting == id {
+		speculative, completed = overlap.takeFor(currentSettings.LLM, currentSettings.CorrectionStyle, tc)
+	}
+	chat, err := m.cfg.LLM(ctx, currentSettings.LLM)
+	if err != nil {
+		return err
+	}
 	fixed := map[int]string{}
 	var firstErr error
 	for _, batch := range correctionBatches(segs) {
-		if speculativelyCorrected(batch, speculative) {
+		if speculativelyCorrected(batch, speculative, completed) {
+			batchFixed := speculative[correctionBatchKey(batch)]
 			for _, s := range batch {
-				if t := speculative[s.Text]; t != s.Text {
+				if t, ok := batchFixed[s.Idx]; ok && t != s.Text {
 					fixed[s.Idx] = t
 				}
 			}
@@ -113,18 +115,31 @@ func (m *Manager) CorrectTranscript(ctx context.Context, id string) error {
 	return firstErr
 }
 
-// speculativelyCorrected says whether the overlap corrected every line
-// of the batch during the final pass.
-func speculativelyCorrected(batch []store.MeetingSegment, speculative map[string]string) bool {
-	if speculative == nil {
+// speculativelyCorrected says whether the overlap corrected this exact
+// batch, not merely every line under a different track or batch boundary.
+func speculativelyCorrected(batch []store.MeetingSegment, speculative map[string]map[int]string, completed map[string]bool) bool {
+	batchFixed, ok := speculative[correctionBatchKey(batch)]
+	if !ok || !completed[correctionBatchKey(batch)] {
 		return false
 	}
 	for _, s := range batch {
-		if _, ok := speculative[s.Text]; !ok {
+		if _, ok := batchFixed[s.Idx]; !ok {
 			return false
 		}
 	}
 	return len(batch) > 0
+}
+
+func correctedLineKey(s store.MeetingSegment) string {
+	return string(s.Source) + "\x00" + s.Text
+}
+
+func correctionBatchKey(batch []store.MeetingSegment) string {
+	var key strings.Builder
+	for _, s := range batch {
+		fmt.Fprintf(&key, "%s:%d:%s|", s.Source, len([]rune(s.Text)), s.Text)
+	}
+	return key.String()
 }
 
 // correctionBatches splits the lines with text into requests.

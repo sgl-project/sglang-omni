@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -21,8 +22,9 @@ import (
 // leaving out the line "skip me", and answers a summary request with a
 // summary of what it was given.
 type fixingChat struct {
-	mu   sync.Mutex
-	reqs []llm.Request
+	mu      sync.Mutex
+	reqs    []llm.Request
+	answers map[int]string
 }
 
 func (f *fixingChat) Chat(_ context.Context, req llm.Request) (llm.Response, error) {
@@ -39,7 +41,11 @@ func (f *fixingChat) Chat(_ context.Context, req llm.Request) (llm.Response, err
 	var out []correctLine
 	for _, l := range lines {
 		if l.Text != "skip me" {
-			out = append(out, correctLine{I: l.I, Text: strings.ReplaceAll(l.Text, "Box", "Voxt")})
+			text := strings.ReplaceAll(l.Text, "Box", "Voxt")
+			if answer, ok := f.answers[l.I]; ok {
+				text = answer
+			}
+			out = append(out, correctLine{I: l.I, Text: text})
 		}
 	}
 	b, _ := json.Marshal(out)
@@ -101,6 +107,59 @@ func TestCorrectTranscript(t *testing.T) {
 		if !strings.Contains(sys, want) {
 			t.Fatalf("system prompt lacks %q:\n%s", want, sys)
 		}
+	}
+}
+
+// Identical system-track lines keep the answer for their own store index,
+// both within one correction batch and when a batch boundary separates them.
+func TestSystemCorrectionOverlapIdenticalSystemTextKeepsLineAnswers(t *testing.T) {
+	across := make([]string, 31)
+	for i := range across {
+		across[i] = fmt.Sprintf("system line %d", i)
+	}
+	across[0], across[30] = "same", "same"
+	tests := []struct {
+		name    string
+		lines   []string
+		answers map[int]string
+		batches int
+	}{
+		{"same batch", []string{"same", "same"}, map[int]string{0: "same-0", 1: "same-1"}, 1},
+		{"across batches", across, map[int]string{0: "same-0", 30: "same-30"}, 2},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			lines, runes := correctBatchLines, correctBatchRunes
+			correctBatchLines, correctBatchRunes = 30, 3000
+			t.Cleanup(func() { correctBatchLines, correctBatchRunes = lines, runes })
+			stored := make([]store.MeetingSegment, 0, len(tt.lines))
+			delta := make([]Segment, 0, len(tt.lines))
+			for _, text := range tt.lines {
+				stored = append(stored, store.MeetingSegment{Idx: -1, Source: store.SegmentSystem, Text: text})
+				delta = append(delta, Segment{Text: text})
+			}
+			m, repo, chat := correctFixture(t, stored...)
+			chat.answers = tt.answers
+			ctx := context.Background()
+			m.cfg.correctOverlap = m.startCorrectOverlap("m")
+			m.cfg.correctOverlap.speculateSystemDelta(ctx, m.cfg, delta)
+			m.cfg.correctOverlap.flush(ctx)
+			if err := m.CorrectTranscript(ctx, "m"); err != nil {
+				t.Fatal(err)
+			}
+			if len(chat.reqs) != tt.batches {
+				t.Fatalf("%d correction requests, want %d", len(chat.reqs), tt.batches)
+			}
+			_, segs, err := repo.Meeting(ctx, "m")
+			if err != nil {
+				t.Fatal(err)
+			}
+			for idx, want := range tt.answers {
+				if segs[idx].Source != store.SegmentSystem || segs[idx].Text != want {
+					t.Fatalf("line %d = %q (%s), want %q from the system track", idx, segs[idx].Text, segs[idx].Source, want)
+				}
+			}
+		})
 	}
 }
 

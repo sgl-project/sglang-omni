@@ -61,6 +61,8 @@ type recordingChat struct {
 	cur, max int
 	first    chan struct{}
 	once     sync.Once
+	onBatch  func([]string)
+	fail     map[string]int
 }
 
 func (c *recordingChat) Chat(_ context.Context, req llm.Request) (llm.Response, error) {
@@ -89,9 +91,19 @@ func (c *recordingChat) Chat(_ context.Context, req llm.Request) (llm.Response, 
 		texts = append(texts, l.Text)
 		out = append(out, correctLine{I: l.I, Text: strings.ReplaceAll(l.Text, "Box", "Voxt")})
 	}
+	if c.onBatch != nil {
+		c.onBatch(texts)
+	}
 	c.mu.Lock()
 	c.batches = append(c.batches, texts)
+	fail := c.fail[texts[0]]
+	if fail > 0 {
+		c.fail[texts[0]]--
+	}
 	c.mu.Unlock()
+	if fail > 0 {
+		return llm.Response{}, fmt.Errorf("correction failed")
+	}
 	b, _ := json.Marshal(out)
 	return llm.Response{Text: "```json\n" + string(b) + "\n```"}, nil
 }
@@ -113,6 +125,10 @@ func (c *recordingChat) requested() []string {
 // pass one more second than the number of texts.
 func overlapFixture(t *testing.T, micSeconds, systemSeconds int, micTexts, sysTexts []string) (context.Context, Config, store.Meetings, store.Meeting, *recordingChat) {
 	t.Helper()
+	// Small batches exercise chunk boundaries after the production limits grew.
+	lines, runes := correctBatchLines, correctBatchRunes
+	correctBatchLines, correctBatchRunes = 30, 3000
+	t.Cleanup(func() { correctBatchLines, correctBatchRunes = lines, runes })
 	ctx := context.Background()
 	root := t.TempDir()
 	db, err := sqlitestore.Open(ctx, filepath.Join(root, "db"))
@@ -179,7 +195,7 @@ func TestMeetingCorrectionOverlapStartsDuringSystemTrack(t *testing.T) {
 	micTexts := []string{"mic Box one", "mic Box two"}
 	sysTexts := []string{"system Box three", "system Box four"}
 	ctx, cfg, repo, mt, chat := overlapFixture(t, 3, 3, micTexts, sysTexts)
-	cfg.correctOverlap = &correctionOverlap{meeting: mt.ID, fixed: map[string]string{}}
+	cfg.correctOverlap = &correctionOverlap{meeting: mt.ID, fixed: map[string]map[int]string{}}
 	chat.first = make(chan struct{})
 	sysASR := &overlapFileASR{texts: sysTexts}
 	cfg.ASR = func(_ context.Context, src Source) (TrackASR, error) {
@@ -224,12 +240,6 @@ func TestMeetingCorrectionOverlapStartsDuringSystemTrack(t *testing.T) {
 // again, one request is in flight at a time, and at least 95% of the
 // recognised characters went through a correction request.
 func TestMeetingCorrectionOverlapCoversBothTracks(t *testing.T) {
-	// The line counts below are sized for 30-line, 3000-rune batches: 31
-	// mic lines make two batches, like a long meeting's mic track (#4539
-	// raised the real limits).
-	lines, runes := correctBatchLines, correctBatchRunes
-	correctBatchLines, correctBatchRunes = 30, 3000
-	t.Cleanup(func() { correctBatchLines, correctBatchRunes = lines, runes })
 	var micTexts, sysTexts []string
 	for i := 0; i < 31; i++ {
 		micTexts = append(micTexts, fmt.Sprintf("mic Box line %02d", i))
@@ -246,7 +256,7 @@ func TestMeetingCorrectionOverlapCoversBothTracks(t *testing.T) {
 		sysTexts = append(sysTexts, fmt.Sprintf("system Box utterance %02d %s", i, string(filler)))
 	}
 	ctx, cfg, repo, mt, chat := overlapFixture(t, 32, 31, micTexts, sysTexts)
-	cfg.correctOverlap = &correctionOverlap{meeting: mt.ID, fixed: map[string]string{}}
+	cfg.correctOverlap = &correctionOverlap{meeting: mt.ID, fixed: map[string]map[int]string{}}
 	if err := FinalizePass(ctx, cfg, mt, nil); err != nil {
 		t.Fatal(err)
 	}
@@ -308,7 +318,7 @@ func TestMeetingCorrectionOverlapEchoDroppedLine(t *testing.T) {
 	micTexts := []string{echo, "mic Box own words", echo}
 	sysTexts := []string{echo}
 	ctx, cfg, repo, mt, chat := overlapFixture(t, 4, 2, micTexts, sysTexts)
-	cfg.correctOverlap = &correctionOverlap{meeting: mt.ID, fixed: map[string]string{}}
+	cfg.correctOverlap = &correctionOverlap{meeting: mt.ID, fixed: map[string]map[int]string{}}
 	if err := FinalizePass(ctx, cfg, mt, nil); err != nil {
 		t.Fatal(err)
 	}
@@ -359,5 +369,408 @@ func TestStartCorrectOverlapGates(t *testing.T) {
 	m.cfg.LLM = nil
 	if o := m.startCorrectOverlap("m"); o != nil {
 		t.Fatal("no language model, no overlap")
+	}
+}
+
+func mtdResult(prefix string, n int) asr.Result {
+	parts := make([]asr.SpeakerSegment, 0, n)
+	for i := 0; i < n; i++ {
+		parts = append(parts, asr.SpeakerSegment{
+			Start: time.Duration(i) * time.Second, End: time.Duration(i+1) * time.Second,
+			Speaker: "S01", Text: fmt.Sprintf("%s %02d", prefix, i),
+		})
+	}
+	return asr.Result{Segments: parts}
+}
+
+func mtdTail(prefix string) asr.Result {
+	return asr.Result{Segments: []asr.SpeakerSegment{{End: 2 * time.Second, Speaker: "S01", Text: prefix + " 00"}}}
+}
+
+func mtdTailN(prefix string, n int) asr.Result {
+	parts := make([]asr.SpeakerSegment, 0, n)
+	for i := 0; i < n; i++ {
+		parts = append(parts, asr.SpeakerSegment{
+			Start: time.Duration(i) * time.Second, End: time.Duration(i+2) * time.Second,
+			Speaker: "S01", Text: fmt.Sprintf("%s %02d", prefix, i),
+		})
+	}
+	return asr.Result{Segments: parts}
+}
+
+func TestSystemCorrectionOverlapStartsBeforeSecondMTDChunk(t *testing.T) {
+	var sysTexts []string
+	for i := 0; i < 30; i++ {
+		sysTexts = append(sysTexts, fmt.Sprintf("system Box %02d", i))
+	}
+	ctx, cfg, repo, mt, chat := overlapFixture(t, 0, 200, nil, sysTexts)
+	cfg.correctOverlap = &correctionOverlap{meeting: mt.ID, fixed: map[string]map[int]string{}}
+	chat.first = make(chan struct{})
+	d := &seqDiarizer{results: []asr.Result{mtdResult("system Box", 30), mtdTail("system tail")}}
+	d.onCall = func(n int) {
+		if n == 1 {
+			select {
+			case <-chat.first:
+			case <-time.After(2 * time.Second):
+				t.Error("no system correction overlapped the second MTD chunk")
+			}
+		}
+	}
+	cfg.Diarizer = func(context.Context) (asr.Diarizer, error) { return d, nil }
+	if err := FinalizePass(ctx, cfg, mt, nil); err != nil {
+		t.Fatal(err)
+	}
+	cfg.correctOverlap.wg.Wait()
+	if got := len(chat.batches); got != 1 {
+		t.Fatalf("%d early system requests, want 1", got)
+	}
+	m := NewManager(cfg)
+	if err := m.CorrectTranscript(ctx, mt.ID); err != nil {
+		t.Fatal(err)
+	}
+	if got := len(chat.batches); got != 2 {
+		_, segs, err := repo.Meeting(ctx, mt.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Fatalf("%d total requests, want 2 (one early and one tail); stored segments=%d", got, len(segs))
+	}
+}
+
+func TestSystemCorrectionOverlapDoesNotSplitBatchAtChunk(t *testing.T) {
+	var sysTexts []string
+	for i := 0; i < 32; i++ {
+		sysTexts = append(sysTexts, fmt.Sprintf("system Box %02d", i))
+	}
+	sysTexts[30], sysTexts[31] = "system tail 00", "system tail 01"
+	ctx, cfg, _, mt, chat := overlapFixture(t, 0, 200, nil, sysTexts)
+	cfg.correctOverlap = &correctionOverlap{meeting: mt.ID, fixed: map[string]map[int]string{}}
+	cfg.Diarizer = func(context.Context) (asr.Diarizer, error) {
+		return &seqDiarizer{results: []asr.Result{mtdResult("system Box", 30), mtdTailN("system tail", 2)}}, nil
+	}
+	if err := FinalizePass(ctx, cfg, mt, nil); err != nil {
+		t.Fatal(err)
+	}
+	cfg.correctOverlap.wg.Wait()
+	if got := len(chat.batches); got != 1 || len(chat.batches[0]) != 30 {
+		t.Fatalf("early batches %+v, want one 30-line batch", chat.batches)
+	}
+	m := NewManager(cfg)
+	if err := m.CorrectTranscript(ctx, mt.ID); err != nil {
+		t.Fatal(err)
+	}
+	if got := len(chat.batches); got != 2 || len(chat.batches[1]) != 2 {
+		t.Fatalf("total batches %+v, want 30 then 2", chat.batches)
+	}
+	asked := map[string]int{}
+	for _, text := range chat.requested() {
+		asked[text]++
+	}
+	for _, text := range sysTexts {
+		if asked[text] != 1 {
+			t.Fatalf("line %q requested %d times, want once", text, asked[text])
+		}
+	}
+}
+
+func TestSystemCorrectionOverlapRoundRobinSingleFlight(t *testing.T) {
+	var micTexts, sysTexts []string
+	for i := 0; i < 60; i++ {
+		micTexts = append(micTexts, fmt.Sprintf("mic Box %02d", i))
+	}
+	for i := 0; i < 30; i++ {
+		sysTexts = append(sysTexts, fmt.Sprintf("system Box %02d", i))
+	}
+	ctx, cfg, _, mt, chat := overlapFixture(t, 61, 200, micTexts, sysTexts)
+	cfg.correctOverlap = &correctionOverlap{meeting: mt.ID, fixed: map[string]map[int]string{}}
+	release := make(chan struct{})
+	chat.onBatch = func(texts []string) {
+		if texts[0] == micTexts[0] {
+			<-release
+		}
+	}
+	d := &seqDiarizer{results: []asr.Result{mtdResult("system Box", 30), mtdTail("system tail")}}
+	d.onCall = func(n int) {
+		if n == 1 {
+			close(release)
+		}
+	}
+	cfg.Diarizer = func(context.Context) (asr.Diarizer, error) { return d, nil }
+	if err := FinalizePass(ctx, cfg, mt, nil); err != nil {
+		t.Fatal(err)
+	}
+	cfg.correctOverlap.wg.Wait()
+	if len(chat.batches) < 3 {
+		t.Fatalf("only %d batches, want at least 3", len(chat.batches))
+	}
+	got := []string{chat.batches[0][0], chat.batches[1][0], chat.batches[2][0]}
+	want := []string{micTexts[0], sysTexts[0], micTexts[30]}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("request order %q, want %q", got, want)
+		}
+	}
+	if chat.max != 1 {
+		t.Fatalf("%d correction requests in flight, want 1", chat.max)
+	}
+}
+
+func TestSystemCorrectionOverlapFailureIsRetried(t *testing.T) {
+	var sysTexts []string
+	for i := 0; i < 31; i++ {
+		sysTexts = append(sysTexts, fmt.Sprintf("system Box %02d", i))
+	}
+	ctx, cfg, repo, mt, chat := overlapFixture(t, 0, 200, nil, sysTexts)
+	cfg.correctOverlap = &correctionOverlap{meeting: mt.ID, fixed: map[string]map[int]string{}}
+	chat.fail = map[string]int{sysTexts[0]: 2}
+	cfg.Diarizer = func(context.Context) (asr.Diarizer, error) {
+		return &seqDiarizer{results: []asr.Result{mtdResult("system Box", 30), mtdTail("system tail")}}, nil
+	}
+	if err := FinalizePass(ctx, cfg, mt, nil); err != nil {
+		t.Fatal(err)
+	}
+	m := NewManager(cfg)
+	if err := m.CorrectTranscript(ctx, mt.ID); err == nil {
+		t.Fatal("the second failure must be reported")
+	}
+	if got := len(chat.batches); got != 3 {
+		t.Fatalf("%d requests, want 3 (early failure, final failure, tail)", got)
+	}
+	if chat.batches[0][0] != chat.batches[1][0] {
+		t.Fatalf("failed batch was not retried: %+v", chat.batches)
+	}
+	_, segs, err := repo.Meeting(ctx, mt.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, s := range segs {
+		if i < 30 && !strings.Contains(s.Text, "Box") {
+			t.Fatalf("failed line %d changed: %q", i, s.Text)
+		}
+		if i == 30 && strings.Contains(s.Text, "Box") {
+			t.Fatalf("successful tail line did not land: %q", s.Text)
+		}
+	}
+}
+
+func TestSystemCorrectionOverlapSingleChunkWaitsForFinal(t *testing.T) {
+	var sysTexts []string
+	for i := 0; i < 30; i++ {
+		sysTexts = append(sysTexts, fmt.Sprintf("system Box %02d", i))
+	}
+	ctx, cfg, _, mt, chat := overlapFixture(t, 0, 100, nil, sysTexts)
+	cfg.correctOverlap = &correctionOverlap{meeting: mt.ID, fixed: map[string]map[int]string{}}
+	cfg.Diarizer = func(context.Context) (asr.Diarizer, error) {
+		return &seqDiarizer{results: []asr.Result{mtdResult("system Box", 30)}}, nil
+	}
+	if err := FinalizePass(ctx, cfg, mt, nil); err != nil {
+		t.Fatal(err)
+	}
+	if got := len(chat.batches); got != 0 {
+		t.Fatalf("%d early requests for the last chunk, want 0", got)
+	}
+	m := NewManager(cfg)
+	if err := m.CorrectTranscript(ctx, mt.ID); err != nil {
+		t.Fatal(err)
+	}
+	if got := len(chat.batches); got != 1 {
+		t.Fatalf("%d final requests, want 1", got)
+	}
+}
+
+func TestSystemCorrectionOverlapSettingsChangeForcesRetry(t *testing.T) {
+	var sysTexts []string
+	for i := 0; i < 30; i++ {
+		sysTexts = append(sysTexts, fmt.Sprintf("system Box %02d", i))
+	}
+	ctx, cfg, _, mt, chat := overlapFixture(t, 0, 200, nil, sysTexts)
+	cfg.correctOverlap = &correctionOverlap{meeting: mt.ID, fixed: map[string]map[int]string{}}
+	cfg.Diarizer = func(context.Context) (asr.Diarizer, error) {
+		return &seqDiarizer{results: []asr.Result{mtdResult("system Box", 30), mtdTail("system tail")}}, nil
+	}
+	if err := FinalizePass(ctx, cfg, mt, nil); err != nil {
+		t.Fatal(err)
+	}
+	cfg.Settings = func() settings.Meeting { return settings.Meeting{CorrectionStyle: "changed"} }
+	m := NewManager(cfg)
+	if err := m.CorrectTranscript(ctx, mt.ID); err != nil {
+		t.Fatal(err)
+	}
+	if got := len(chat.batches); got != 3 {
+		t.Fatalf("%d requests, want 3 (early, retry after settings change, tail)", got)
+	}
+}
+
+func TestSystemCorrectionOverlapAbortDropsLateResults(t *testing.T) {
+	var sysTexts []string
+	for i := 0; i < 30; i++ {
+		sysTexts = append(sysTexts, fmt.Sprintf("system Box %02d", i))
+	}
+	ctx, cfg, _, mt, _ := overlapFixture(t, 0, 200, nil, sysTexts)
+	o := &correctionOverlap{meeting: mt.ID, fixed: map[string]map[int]string{}}
+	cfg.correctOverlap = o
+	cfg.Diarizer = func(context.Context) (asr.Diarizer, error) {
+		return &seqDiarizer{results: []asr.Result{mtdResult("system Box", 30), mtdTail("system tail")}, failAt: 2}, nil
+	}
+	if err := FinalizePass(ctx, cfg, mt, nil); err == nil {
+		t.Fatal("the second MTD failure must be returned")
+	}
+	o.abort()
+	if len(o.fixed) != 0 || len(o.completed) != 0 || len(o.queues[SourceMic])+len(o.queues[SourceSystem]) != 0 {
+		t.Fatalf("aborted run retained results: fixed=%v completed=%v queues=%v", o.fixed, o.completed, o.queues)
+	}
+}
+
+func TestSystemCorrectionOverlapKeepsCrossTrackBatch(t *testing.T) {
+	micTexts := []string{"mic Box zero", "mic Box one"}
+	var sysTexts []string
+	for i := 0; i < 31; i++ {
+		sysTexts = append(sysTexts, fmt.Sprintf("system Box %02d", i))
+	}
+	ctx, cfg, _, mt, chat := overlapFixture(t, 3, 200, micTexts, sysTexts)
+	cfg.correctOverlap = &correctionOverlap{meeting: mt.ID, fixed: map[string]map[int]string{}}
+	cfg.Diarizer = func(context.Context) (asr.Diarizer, error) {
+		return &seqDiarizer{results: []asr.Result{mtdResult("system Box", 30), mtdTail("system tail")}}, nil
+	}
+	if err := FinalizePass(ctx, cfg, mt, nil); err != nil {
+		t.Fatal(err)
+	}
+	cfg.correctOverlap.wg.Wait()
+	first := chat.batches[0]
+	if len(first) != 30 || first[0] != micTexts[0] || first[1] != micTexts[1] || first[2] != sysTexts[0] || first[29] != sysTexts[27] {
+		t.Fatalf("cross-track batch changed: first=%q last=%q", first[:3], first[29])
+	}
+	m := NewManager(cfg)
+	if err := m.CorrectTranscript(ctx, mt.ID); err != nil {
+		t.Fatal(err)
+	}
+	if got := len(chat.batches); got != 2 || len(chat.batches[1]) != 3 {
+		t.Fatalf("remaining batches %+v, want one 3-line batch", chat.batches)
+	}
+}
+
+// An echo-dropped mic line invalidates only the batches that contained
+// it (#4644 review): the final pass asks those again, every other batch
+// is asked once, and no text is reused from an invalidated batch.
+func TestSystemCorrectionOverlapEchoInvalidatesOnlyItsBatches(t *testing.T) {
+	echo := "the quick brown fox jumps over"
+	micTexts := []string{echo}
+	sysTexts := []string{echo}
+	var micFiller, systemFiller []rune
+	for r := '一'; len(micFiller) < 90; r++ {
+		micFiller = append(micFiller, r)
+	}
+	for r := '言'; len(systemFiller) < 90; r++ {
+		systemFiller = append(systemFiller, r)
+	}
+	for i := 0; i < 30; i++ {
+		micTexts = append(micTexts, fmt.Sprintf("mic Box line %02d %s", i, string(micFiller)))
+		sysTexts = append(sysTexts, fmt.Sprintf("system Box utterance %02d %s", i, string(systemFiller)))
+	}
+	ctx, cfg, repo, mt, chat := overlapFixture(t, 32, 32, micTexts, sysTexts)
+	cfg.correctOverlap = &correctionOverlap{meeting: mt.ID, fixed: map[string]map[int]string{}}
+	if err := FinalizePass(ctx, cfg, mt, nil); err != nil {
+		t.Fatal(err)
+	}
+	m := NewManager(cfg)
+	if err := m.CorrectTranscript(ctx, mt.ID); err != nil {
+		t.Fatal(err)
+	}
+	_, segs, err := repo.Meeting(ctx, mt.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(segs) != 61 {
+		t.Fatalf("%d lines, want 61 (the echo line dropped)", len(segs))
+	}
+	for _, s := range segs {
+		if strings.Contains(s.Text, "Box") {
+			t.Fatalf("line %d not corrected: %q", s.Idx, s.Text)
+		}
+		if s.Source == store.SegmentMic && s.Text == echo {
+			t.Fatalf("the echo line survived on the mic track")
+		}
+	}
+	// The same batch content was never asked twice: the drop re-asks only
+	// its own lines, inside their new batches.
+	asked := map[string]int{}
+	batchSeen := map[string]int{}
+	for _, batch := range chat.batches {
+		key := strings.Join(batch, "\x00")
+		batchSeen[key]++
+		if batchSeen[key] > 1 {
+			t.Fatalf("same batch content asked twice: %q", batch[0][:30])
+		}
+	}
+	for _, text := range chat.requested() {
+		asked[text]++
+	}
+	// The surviving lines are all covered (>=95% runes), in order, one
+	// request in flight.
+	covered, total := 0, 0
+	for _, s := range segs {
+		n := len([]rune(s.Text))
+		total += n
+		recognised := strings.ReplaceAll(s.Text, "Voxt", "Box")
+		if asked[recognised] > 0 {
+			covered += n
+		}
+	}
+	if total == 0 || covered*100 < total*95 {
+		t.Fatalf("correction coverage %d/%d runes, under 95%%", covered, total)
+	}
+	if chat.max != 1 {
+		t.Fatalf("%d correction requests in flight at once, want 1", chat.max)
+	}
+	t.Logf("%d requests for 60 surviving lines (echo line dropped)", len(chat.batches))
+}
+
+// Identical text on different lines can never share an answer: the reuse
+// is keyed by the exact batch and the line's store index, not by text.
+func TestSystemCorrectionOverlapSameTextKeepsLineAnswers(t *testing.T) {
+	ctx, cfg, repo, mt, _ := overlapFixture(t, 4, 2, []string{"mic Box same", "mic Box same"}, []string{"system Box x"})
+	cfg.correctOverlap = &correctionOverlap{meeting: mt.ID, fixed: map[string]map[int]string{}, completed: map[string]bool{}}
+	if err := FinalizePass(ctx, cfg, mt, nil); err != nil {
+		t.Fatal(err)
+	}
+	m := NewManager(cfg)
+	if err := m.CorrectTranscript(ctx, mt.ID); err != nil {
+		t.Fatal(err)
+	}
+	_, segs, err := repo.Meeting(ctx, mt.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, s := range segs {
+		if !strings.HasPrefix(s.Text, "mic Voxt same") && s.Source == store.SegmentMic && strings.Contains(s.Text, "same") {
+			t.Fatalf("line %d was not corrected as its own answer: %q", s.Idx, s.Text)
+		}
+	}
+}
+
+// One meeting's cleanup cancels only its own overlap: another meeting's
+// armed run keeps its context.
+func TestDropCorrectOverlapKeepsOtherMeetingsRun(t *testing.T) {
+	m, _, _ := correctFixture(t, store.MeetingSegment{Idx: 0, Source: store.SegmentMic, Text: "Box"})
+	other := m.startCorrectOverlap("meeting-B")
+	if other == nil {
+		t.Skip("no remote language model in this fixture")
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	other.cancel = cancel
+	m.cfg.correctOverlap = other
+	m.dropCorrectOverlap("m")
+	if ctx.Err() != nil {
+		t.Fatal("meeting A's cleanup cancelled meeting B's overlap")
+	}
+	if m.cfg.correctOverlap != other {
+		t.Fatal("meeting A's cleanup removed meeting B's overlap from the config")
+	}
+	m.dropCorrectOverlap("meeting-B")
+	if ctx.Err() == nil {
+		t.Fatal("meeting B's own cleanup did not cancel its overlap")
+	}
+	if m.cfg.correctOverlap != nil {
+		t.Fatal("meeting B's own cleanup did not clear its overlap from the config")
 	}
 }
