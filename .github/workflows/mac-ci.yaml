@@ -296,15 +296,16 @@ jobs:
           go test -count=1 -run 'TestMacE2ESessionLocal' -v . | tee "$RUNNER_TEMP/mac-e2e-session.txt"
           ! grep -- '--- SKIP' "$RUNNER_TEMP/mac-e2e-session.txt"
 
-  # Temporary: reports what the donated mlx-pr Mac mini is before jobs move to it; drop before merging.
-  mlx-pr-probe:
-    name: mlx-pr runner probe
+  # Temporary: reports what the runner behind Mac Metal CI's labels is; drop before merging.
+  # It may be a contributor's own Mac, so the probe reads only CI paths and runs MLX only as the GPU reports itself.
+  runner-probe:
+    name: self-hosted runner probe
     if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch'
-    runs-on: [mlx-pr]
+    runs-on: [self-hosted, macOS, ARM64]
     timeout-minutes: 20
     steps:
       # Each step reports everything it can, and a failed step does not hide the ones after it.
-      - name: Host, VM, disk and toolchain
+      - name: Host, disk and toolchain
         run: |
           set +e
           echo "runner=${RUNNER_NAME} os=${RUNNER_OS} arch=${RUNNER_ARCH} user=$(id -un) home=${HOME} temp=${RUNNER_TEMP}"
@@ -314,14 +315,12 @@ jobs:
             echo "${name}: $(sysctl -n "${name}" 2>&1)"
           done
           uptime
-          # A fresh VM per job has no record of an earlier probe run.
-          marker="${HOME}/.mlx-pr-probe-runs"
-          echo "earlier probe runs in this home: $(cat "${marker}" 2>/dev/null || echo none)"
-          echo "${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT} $(date -u +%FT%TZ)" >> "${marker}"
-          df -h
-          echo "MLX_CI_CACHE_ROOT=${MLX_CI_CACHE_ROOT:-<unset>}"
-          ls -la "${HOME}" "${HOME}/.cache" 2>&1
-          system_profiler SPDisplaysDataType SPHardwareDataType 2>&1 | grep -v -i -E "serial|uuid|udid"
+          df -h / "${HOME}" "${RUNNER_TEMP}"
+          cache_root="${MLX_CI_CACHE_ROOT:-${HOME}/.cache/sglang-omni-mlx-ci}"
+          echo "MLX_CI_CACHE_ROOT=${MLX_CI_CACHE_ROOT:-<unset>}; Mac Metal CI cache in ${cache_root}:"
+          du -sh "${cache_root}"/* 2>&1
+          system_profiler SPHardwareDataType 2>&1 | grep -v -i -E "serial|uuid|udid"
+          system_profiler SPDisplaysDataType 2>&1 | grep -E "Chipset Model|Total Number of Cores|Metal"
           echo "workflow DEVELOPER_DIR=${DEVELOPER_DIR} exists=$(test -d "${DEVELOPER_DIR}" && echo yes || echo no)"
           unset DEVELOPER_DIR
           ls -d /Applications/Xcode*.app 2>&1
@@ -360,7 +359,6 @@ jobs:
 
       - uses: astral-sh/setup-uv@v6
 
-      # MLX picks kernels from the GPU architecture name, and the VM reports air64_v27: each setting runs once as reported and once as a bare-metal M4 Pro and M5 Pro.
       - name: MLX on this GPU
         continue-on-error: true
         run: |
@@ -456,12 +454,9 @@ jobs:
           )[0]
           print(f"metal_kernel: {result.tolist()}")
           EOF
-          # The empty name keeps the architecture the VM reports; a run that hangs the GPU is stopped after 300 s so the next one still runs.
-          for gpu_architecture in "" applegpu_g16s applegpu_g17s; do
-            echo "=== MLX_METAL_GPU_ARCH=${gpu_architecture:-<reported>}"
-            MLX_METAL_GPU_ARCH="${gpu_architecture}" perl -e 'alarm shift; exec @ARGV' 300 "${RUNNER_TEMP}/probe-venv/bin/python" "${RUNNER_TEMP}/mlx_probe.py"
-            echo "exit status $?"
-          done
+          # A run that hangs the GPU is stopped after 300 s.
+          perl -e 'alarm shift; exec @ARGV' 300 "${RUNNER_TEMP}/probe-venv/bin/python" "${RUNNER_TEMP}/mlx_probe.py"
+          echo "exit status $?"
 
       - name: Download speed from Hugging Face
         run: |
