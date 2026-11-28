@@ -2,87 +2,98 @@
 
 from __future__ import annotations
 
-import queue
+import asyncio
 from array import array
+from collections import deque
 from dataclasses import replace
+from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
 import torch
 from sglang.srt.managers.schedule_batch import CaptureHiddenMode, Req
-from sglang.srt.mem_cache.memory_pool import ReqToTokenPool
+from sglang.srt.mem_cache.allocator.paged import PagedTokenToKVPoolAllocator
+from sglang.srt.mem_cache.memory_pool import (
+    KVCache,
+    MHATokenToKVPool,
+    MLATokenToKVPool,
+    ReqToTokenPool,
+)
 from sglang.srt.sampling.sampling_params import SamplingParams
 
-from sglang_omni.proto import (
+from sglang_omni.proto.kv_transfer import (
     KVBufferSpec,
     KVPoolLayout,
     KVTransferPrepareMessage,
-    OmniRequest,
-    StagePayload,
 )
+from sglang_omni.proto.request import OmniRequest, StagePayload
 from sglang_omni.proto.session import SessionIdentity, SessionOperation
-from sglang_omni.scheduling.pd_utils import (
+from sglang_omni.scheduling.pd_receiver import (
+    DecodeAdmission,
     DecodeContinuation,
     DecodeKVReceiver,
     ReservedKV,
+)
+from sglang_omni.scheduling.pd_scheduler import (
+    OmniDecodeScheduler,
+    OmniPrefillScheduler,
+    validate_pd_runtime,
+)
+from sglang_omni.scheduling.pd_utils import (
+    build_kv_pool,
     continuation_from_req,
     defer_first_token_finish,
-    req_from_continuation,
+    request_from_continuation,
+    request_page_indices,
 )
 from sglang_omni.scheduling.sglang_backend.request_data import SGLangARRequestData
+from tests.unit_test.fixtures.pd_fakes import (
+    FakeKVAllocator,
+    FakeRequestPool,
+    make_prefill_request,
+)
 
 
-class ReqPool:
-    def __init__(self, capacity: int = 4) -> None:
-        self.capacity = capacity
-        self.req_to_token = torch.zeros((capacity, 32), dtype=torch.int64)
-        self.active: dict[int, Req] = {}
+class ReqPool(FakeRequestPool):
+    """Request pool test double kept for existing PD unit tests."""
+
+    def __init__(self, capacity: int = 4, max_context_len: int = 32) -> None:
+        super().__init__(capacity=capacity, max_context_len=max_context_len)
+
+
+class KVAllocator(FakeKVAllocator):
+    """Paged/token KV allocator test double starting at slot 7."""
+
+    def __init__(
+        self,
+        *,
+        size: int = 1024,
+        page_size: int = 1,
+        device: str = "cpu",
+        kvcache: KVCache | None = None,
+    ) -> None:
+        super().__init__(
+            size=size,
+            page_size=page_size,
+            device=device,
+            kvcache=kvcache,
+            starting_slot=7,
+        )
 
     @property
-    def size(self) -> int:
-        return self.capacity
+    def next_slot(self) -> int:
+        return self.free_slot_heads[0]
 
-    def alloc(self, reqs):
-        if len(self.active) + len(reqs) > self.capacity:
-            return None
-        indices = []
-        for req in reqs:
-            index = next(i for i in range(self.capacity) if i not in self.active)
-            req.kv.req_pool_idx = index
-            self.active[index] = req
-            indices.append(index)
-        return indices
-
-    def write(self, key, value) -> None:
-        self.req_to_token[key] = value
-
-    def free(self, req) -> None:
-        assert req.kv.req_pool_idx is not None
-        self.active.pop(req.kv.req_pool_idx, None)
-        req.kv.req_pool_idx = None
-
-
-class KVAllocator:
-    def __init__(self) -> None:
-        self.next_slot = 7
-        self.freed = []
-
-    def available_size(self) -> int:
-        return 32
-
-    def alloc(self, count: int):
-        slots = torch.arange(self.next_slot, self.next_slot + count)
-        self.next_slot += count
-        return slots
-
-    def free(self, slots) -> None:
-        self.freed.append(slots)
+    @next_slot.setter
+    def next_slot(self, value: int) -> None:
+        self.starting_slot = value
+        self.free_slot_heads = list(range(value, value + self.size, self.page_size))
 
 
 def prefill_req(
     *,
     max_new_tokens: int = 16,
-    custom_params: dict | None = None,
+    custom_params: dict[str, object] | None = None,
     return_hidden_states: bool | str = False,
 ) -> Req:
     sampling = SamplingParams(
@@ -118,8 +129,14 @@ def prefill_req(
     return req
 
 
-def state_builder(req):
-    return req.omni_data.stage_payload.to_dict(), None, list(req.origin_input_ids)
+def state_builder(
+    request: Req,
+) -> tuple[dict[str, object], dict[str, object] | None, list[int]]:
+    return (
+        request.omni_data.stage_payload.to_dict(),
+        None,
+        list(request.origin_input_ids),
+    )
 
 
 def make_continuation() -> DecodeContinuation:
@@ -128,10 +145,12 @@ def make_continuation() -> DecodeContinuation:
 
 def make_allocation() -> ReservedKV:
     slots = torch.tensor([7, 8, 9], dtype=torch.int64)
-    return ReservedKV(slots=slots, page_indices=(7, 8, 9), seq_len=3)
+    return ReservedKV(slots=slots, page_indices=(7, 8, 9), sequence_length=3)
 
 
-def make_message(*, transfer_id="transfer-1", **metadata):
+def make_message(
+    *, transfer_id: str = "transfer-1", **metadata: object
+) -> KVTransferPrepareMessage:
     continuation = replace(make_continuation(), transfer_id=transfer_id)
     return KVTransferPrepareMessage(
         request_id=continuation.request_id,
@@ -146,11 +165,17 @@ def make_message(*, transfer_id="transfer-1", **metadata):
     )
 
 
-def make_receiver(admissions=None):
+def make_receiver(
+    admissions: deque[DecodeAdmission] | None = None,
+    req_to_token_pool: ReqPool | None = None,
+) -> DecodeKVReceiver:
     return DecodeKVReceiver(
         pool_id="decode:kv",
         allocator=KVAllocator(),
-        admissions=admissions if admissions is not None else queue.SimpleQueue(),
+        req_to_token_pool=(
+            req_to_token_pool if req_to_token_pool is not None else ReqPool()
+        ),
+        admissions=admissions if admissions is not None else deque(),
         resume_schema="test-v1",
     )
 
@@ -165,11 +190,13 @@ def test_continuation_round_trip_rebuilds_prebuilt_request() -> None:
         device="cpu",
         enable_memory_saver=False,
     )
-    req = req_from_continuation(
+    req = request_from_continuation(
         continuation,
         make_allocation(),
         req_to_token_pool=req_to_token_pool,
-        state_restorer=lambda req, data, _resume: setattr(req, "tokenizer", None),
+        state_restorer=lambda request, data, resume: setattr(
+            request, "tokenizer", None
+        ),
     )
 
     assert list(req.origin_input_ids) == [10, 11, 12]
@@ -187,15 +214,17 @@ def test_continuation_round_trip_rebuilds_prebuilt_request() -> None:
     assert req_to_token_pool.available_size() == req_to_token_pool.size
 
 
-def rebuilt_req(source):
+def rebuilt_req(source: Req) -> Req:
     continuation = DecodeContinuation.decode(
         continuation_from_req(source, "transfer-1", state_builder).encode()
     )
-    return req_from_continuation(
+    return request_from_continuation(
         continuation,
         make_allocation(),
         req_to_token_pool=ReqPool(),
-        state_restorer=lambda req, data, _resume: setattr(req, "tokenizer", None),
+        state_restorer=lambda request, data, resume: setattr(
+            request, "tokenizer", None
+        ),
     )
 
 
@@ -220,14 +249,14 @@ def test_continuation_strips_the_live_req_out_of_custom_params() -> None:
 
 
 def test_decode_receiver_commits_directly_to_admission_queue() -> None:
-    admissions = queue.SimpleQueue()
+    admissions: deque[DecodeAdmission] = deque()
     receiver = make_receiver(admissions)
     message = make_message()
 
-    destination = receiver.reserve(message)
+    destination = asyncio.run(receiver.reserve(message, timeout_seconds=5.0))
     receiver.commit(message, destination)
 
-    admission = admissions.get_nowait()
+    admission = admissions.popleft()
     assert admission.continuation.request_id == "request-1"
     assert admission.allocation.page_indices == destination.page_indices
 
@@ -299,3 +328,180 @@ def test_continuation_allows_asr_refresh_without_retained_kv(
     restored = rebuilt_req(request)
     assert restored.session is None
     assert restored.omni_data.stage_payload.request.params == parameters
+
+
+class CustomMHAKVPool(MHATokenToKVPool):
+    """Distinct MHA subclass that must not inherit SeparateKVAllocationsPool aliasing."""
+
+
+@pytest.mark.parametrize(
+    ("pool_kind", "page_size"),
+    [("mha", 1), ("mha", 16), ("mla", 1), ("mla", 16)],
+)
+def test_build_kv_pool_supports_mha_mla_and_validates_pointers(
+    pool_kind: str, page_size: int
+) -> None:
+    if pool_kind == "mha":
+        kv_cache: KVCache = MHATokenToKVPool(
+            size=64,
+            page_size=page_size,
+            dtype=torch.bfloat16,
+            head_num=2,
+            head_dim=16,
+            layer_num=2,
+            device="cpu",
+            enable_memory_saver=False,
+            enable_alt_stream=False,
+        )
+        expected_buffers = 4
+        expected_bytes_per_page = page_size * 2 * 16 * 2
+    else:
+        kv_cache = MLATokenToKVPool(
+            size=64,
+            page_size=page_size,
+            dtype=torch.bfloat16,
+            kv_lora_rank=16,
+            qk_rope_head_dim=8,
+            layer_num=2,
+            device="cpu",
+            enable_memory_saver=False,
+        )
+        expected_buffers = 2
+        expected_bytes_per_page = page_size * 24 * 2
+
+    pool = build_kv_pool(kv_cache, pool_id="stage:kv")
+    assert pool.page_size == page_size
+    assert len(pool.buffers) == expected_buffers
+    assert all(
+        region.bytes_per_page == expected_bytes_per_page for region in pool.buffers
+    )
+
+    if pool_kind == "mha" and page_size == 16:
+        custom_cache = CustomMHAKVPool(
+            size=64,
+            page_size=page_size,
+            dtype=torch.bfloat16,
+            head_num=2,
+            head_dim=16,
+            layer_num=2,
+            device="cpu",
+            enable_memory_saver=False,
+            enable_alt_stream=False,
+        )
+        custom_pool = build_kv_pool(custom_cache, pool_id="stage:kv")
+        assert custom_pool.layout_id != pool.layout_id
+
+        pointers, offsets, sizes = kv_cache.get_contiguous_buf_infos()
+        kv_cache.get_contiguous_buf_infos = lambda: (
+            [pointers[0] + 64, *pointers[1:]],
+            offsets,
+            sizes,
+        )
+        with pytest.raises(ValueError, match="do not match contiguous buffer pointers"):
+            build_kv_pool(kv_cache, pool_id="stage:kv")
+
+
+@pytest.mark.parametrize("sequence_length", [1, 16, 32, 35])
+def test_paged_request_indices_and_rebuilt_request_slice_and_free(
+    sequence_length: int,
+) -> None:
+    page_size = 16
+    allocator = PagedTokenToKVPoolAllocator(
+        size=page_size * 8,
+        page_size=page_size,
+        dtype=torch.bfloat16,
+        device="cpu",
+        kvcache=None,
+        need_sort=False,
+    )
+    req_to_token_pool = ReqToTokenPool(
+        size=4, max_context_len=64, device="cpu", enable_memory_saver=False
+    )
+    receiver = DecodeKVReceiver(
+        pool_id="decode:kv",
+        allocator=allocator,
+        req_to_token_pool=req_to_token_pool,
+        admissions=deque(),
+        resume_schema="test-v1",
+        page_size=page_size,
+    )
+
+    request = make_prefill_request(
+        f"req-{sequence_length}", prompt_tokens=sequence_length, with_first_output=True
+    )
+    continuation = continuation_from_req(request, "tx-paged", state_builder)
+    expected_pages = (sequence_length + page_size - 1) // page_size
+    slots = allocator.alloc(expected_pages * page_size)
+    assert slots is not None
+    receiver.reserved_request_rows = 1
+    allocation = ReservedKV(
+        slots=slots,
+        page_indices=tuple(int(s) // page_size for s in slots[::page_size].tolist()),
+        sequence_length=sequence_length,
+        row_credit_owner=receiver,
+        row_credit_held=True,
+    )
+
+    rebuilt = request_from_continuation(
+        continuation,
+        allocation,
+        req_to_token_pool=req_to_token_pool,
+        state_restorer=lambda restored, data, resume: setattr(
+            restored, "tokenizer", None
+        ),
+    )
+    assert receiver.reserved_request_rows == 0
+    assert allocation.row_credit_held is False
+    assert rebuilt.kv.req_pool_idx is not None
+    written = req_to_token_pool.req_to_token[rebuilt.kv.req_pool_idx, :sequence_length]
+    assert written.tolist() == slots[:sequence_length].tolist()
+    assert (
+        request_page_indices(req_to_token_pool, rebuilt, page_size=page_size)
+        == allocation.page_indices
+    )
+
+    allocator.free_segment(written, start_pos=0)
+    req_to_token_pool.free(rebuilt)
+    assert allocator.available_size() == page_size * 8
+
+    # Unaligned page head must be rejected by request_page_indices.
+    if sequence_length == 35:
+        req_to_token_pool.alloc([request])
+        req_to_token_pool.req_to_token[request.kv.req_pool_idx, 0] = 3
+        with pytest.raises(RuntimeError, match="unaligned page head"):
+            request_page_indices(req_to_token_pool, request, page_size=page_size)
+
+
+@pytest.mark.parametrize("scheduler_type", [OmniPrefillScheduler, OmniDecodeScheduler])
+def test_validate_pd_runtime_allows_paged_kv_and_rejects_unsupported_modes(
+    scheduler_type: type[OmniPrefillScheduler] | type[OmniDecodeScheduler],
+) -> None:
+    def make_runtime(
+        *,
+        page_size: int = 16,
+        async_prefill: bool = False,
+        post_capture_active: bool = False,
+    ) -> OmniPrefillScheduler | OmniDecodeScheduler:
+        scheduler = object.__new__(scheduler_type)
+        scheduler.session_adapter = None
+        scheduler.req_to_token_pool = ReqPool()
+        scheduler.token_to_kv_pool_allocator = KVAllocator(
+            page_size=max(page_size, 1),
+            kvcache=SimpleNamespace(post_capture_active=post_capture_active),
+        )
+        scheduler.server_args = SimpleNamespace(disable_radix_cache=True)
+        scheduler.tp_size = 1
+        scheduler.page_size = page_size
+        scheduler.async_prefill = async_prefill
+        scheduler.spec_algorithm = SimpleNamespace(is_none=lambda: True)
+        return scheduler
+
+    for page_size in (1, 16, 64):
+        validate_pd_runtime(make_runtime(page_size=page_size))
+
+    with pytest.raises(ValueError, match="page_size"):
+        validate_pd_runtime(make_runtime(page_size=0))
+    with pytest.raises(NotImplementedError, match="async_prefill"):
+        validate_pd_runtime(make_runtime(async_prefill=True))
+    with pytest.raises(NotImplementedError, match="post-capture"):
+        validate_pd_runtime(make_runtime(post_capture_active=True))

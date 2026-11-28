@@ -20,7 +20,11 @@ from sglang.srt.server_args import ServerArgs
 from sglang.srt.speculative.spec_info import SpeculativeAlgorithm
 from transformers import AutoConfig
 
-from sglang_omni.models.qwen3_omni.bootstrap import create_thinker_scheduler
+from sglang_omni.models.qwen3_omni.bootstrap import (
+    create_thinker_decode_scheduler,
+    create_thinker_prefill_scheduler,
+    create_thinker_scheduler,
+)
 from sglang_omni.models.qwen3_omni.components.audio_encoder import Qwen3OmniAudioEncoder
 from sglang_omni.models.qwen3_omni.components.image_encoder import (
     ImageEncoderOutput,
@@ -36,6 +40,7 @@ from sglang_omni.models.qwen3_omni.request_builders import (
     EncoderRequestData,
     apply_encoder_result,
     build_encoder_request,
+    validate_text_pd_output_modalities,
 )
 from sglang_omni.profiler.event_recorder import emit as _emit_event
 from sglang_omni.proto import StagePayload
@@ -49,12 +54,15 @@ from sglang_omni.scheduling.generation_batch_policy import (
 from sglang_omni.scheduling.sglang_backend import (
     apply_encoder_mem_reserve,
     build_sglang_server_args,
+    pin_resolved_device_type,
 )
 from sglang_omni.scheduling.sglang_backend.request_data import SGLangARRequestData
 from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
 from sglang_omni.scheduling.stage_cache import StageOutputCache
+from sglang_omni.scheduling.stage_kv_budget import peek_stage_kv_cache_bytes
 from sglang_omni.scheduling.threaded_simple_scheduler import ThreadedSimpleScheduler
 from sglang_omni.utils.cpu import automatic_video_decode_threads
+from sglang_omni.utils.device import resolve_concrete_device
 from sglang_omni.utils.gpu_memory import format_bytes_gib, get_process_gpu_memory_bytes
 from sglang_omni.utils.misc import avail_gpu_mem
 
@@ -62,12 +70,18 @@ if TYPE_CHECKING:
 
     from sglang_omni.models.qwen3_omni.talker_scheduler import QwenTalkerScheduler
     from sglang_omni.scheduling.omni_scheduler import OmniScheduler
+    from sglang_omni.scheduling.pd_scheduler import (
+        OmniDecodeScheduler,
+        OmniPrefillScheduler,
+    )
 else:
     pass
 
 IMAGE_STAGE = "image_encoder"
 AUDIO_STAGE = "audio_encoder"
 THINKER_STAGE = "thinker"
+THINKER_PREFILL_STAGE = "thinker_prefill"
+THINKER_DECODE_STAGE = "thinker_decode"
 
 logger = logging.getLogger(__name__)
 
@@ -1011,6 +1025,7 @@ def create_preprocessing_executor(
     video_max_pixels: int | None = None,
     video_total_pixels: int | None = None,
     video_decode_threads: int | None = None,
+    reject_audio_output_modality: bool = False,
 ) -> (
     SimpleScheduler[StagePayload, StagePayload]
     | ThreadedSimpleScheduler[StagePayload, StagePayload]
@@ -1031,6 +1046,10 @@ def create_preprocessing_executor(
     )
 
     async def _preprocess(payload: StagePayload) -> StagePayload:
+        if reject_audio_output_modality:
+            validate_text_pd_output_modalities(payload.request)
+        else:
+            pass
         return await preprocessor(payload)
 
     # Note (wenyao): threaded dispatch deepens thinker batches, and greedy bf16 MoE
@@ -1249,9 +1268,6 @@ def create_sglang_thinker_executor_from_config(
     continuation_aware_admission: bool = True,
 ) -> "OmniScheduler[SGLangARRequestData]":
     """Returns OmniScheduler for thinker."""
-    from sglang_omni.scheduling.sglang_backend import pin_resolved_device_type
-    from sglang_omni.utils.device import resolve_concrete_device
-
     concrete_device = resolve_concrete_device(device, gpu_id)
     gpu_id = concrete_device.index or 0
     # note (luojiaxuan):
@@ -1355,60 +1371,20 @@ def create_sglang_thinker_executor_from_config(
         overrides.setdefault("disable_decode_cuda_graph", True)
     else:
         pass
-    has_explicit_colocated_mem_fraction = (
-        total_gpu_memory_fraction is not None
-        and overrides.get("mem_fraction_static") is not None
-    )
-    colocated_encoder_mem_reserve = (
-        encoder_mem_reserve
-        if total_gpu_memory_fraction is not None
-        and not has_explicit_colocated_mem_fraction
-        else 0.0
-    )
-    memory_contract = apply_colocated_ar_memory_contract(
-        overrides,
-        stage_name="thinker",
-        total_gpu_memory_fraction=total_gpu_memory_fraction,
-        encoder_mem_reserve=colocated_encoder_mem_reserve,
-    )
-    pin_resolved_device_type(overrides, concrete_device.type)
-    server_args = build_sglang_server_args(
+    (
+        server_args,
+        effective_total_gpu_memory_fraction,
+        applied_encoder_reserve,
+    ) = finalize_thinker_server_args(
         model_path,
-        context_length=max_seq_len,
-        **overrides,
-    )
-    validate_generation_batch_policy(
+        overrides=overrides,
+        stage_name="thinker",
         model_name="Qwen3-Omni thinker",
-        server_args=server_args,
+        device_type=concrete_device.type,
+        max_seq_len=max_seq_len,
+        total_gpu_memory_fraction=total_gpu_memory_fraction,
+        encoder_mem_reserve=encoder_mem_reserve,
     )
-    if total_gpu_memory_fraction is None:
-        from sglang_omni.scheduling.stage_kv_budget import peek_stage_kv_cache_bytes
-
-        # Note (Jiaxin Deng): under a byte budget the KV configurator ignores
-        # mem_fraction_static, so an encoder reserve would be a silent no-op.
-        if peek_stage_kv_cache_bytes() is not None:
-            logger.info(
-                "thinker declares engine.kv_cache_bytes; skipping the "
-                f"encoder_mem_reserve={encoder_mem_reserve} fraction adjustment"
-            )
-            encoder_reserve_applied = False
-        else:
-            encoder_reserve_applied = apply_qwen_thinker_encoder_reserve(
-                server_args,
-                has_explicit_mem_fraction_static=(
-                    memory_contract.mem_fraction_static_pinned
-                ),
-                encoder_mem_reserve=encoder_mem_reserve,
-            )
-        effective_total_gpu_memory_fraction = total_gpu_memory_fraction
-        applied_encoder_reserve = (
-            encoder_mem_reserve if encoder_reserve_applied else 0.0
-        )
-    else:
-        effective_total_gpu_memory_fraction = (
-            memory_contract.effective_total_gpu_memory_fraction
-        )
-        applied_encoder_reserve = memory_contract.applied_encoder_mem_reserve
 
     from sglang.srt.arg_groups.model_override_base import resolved_view
 
@@ -1460,6 +1436,320 @@ def create_sglang_thinker_executor_from_config(
         f" post_load_process_mem={format_bytes_gib(post_load_process_mem)}"
     )
     return scheduler
+
+
+def finalize_thinker_server_args(
+    model_path: str,
+    *,
+    overrides: dict[str, object],
+    stage_name: str,
+    model_name: str,
+    device_type: str,
+    max_seq_len: int | None,
+    total_gpu_memory_fraction: float | None,
+    encoder_mem_reserve: float,
+) -> tuple[ServerArgs, float | None, float]:
+    """Apply memory contract, pin device type, build and validate SGLang ServerArgs."""
+    has_explicit_colocated_mem_fraction = (
+        total_gpu_memory_fraction is not None
+        and overrides.get("mem_fraction_static") is not None
+    )
+    colocated_encoder_mem_reserve = (
+        encoder_mem_reserve
+        if total_gpu_memory_fraction is not None
+        and not has_explicit_colocated_mem_fraction
+        else 0.0
+    )
+    memory_contract = apply_colocated_ar_memory_contract(
+        overrides,
+        stage_name=stage_name,
+        total_gpu_memory_fraction=total_gpu_memory_fraction,
+        encoder_mem_reserve=colocated_encoder_mem_reserve,
+    )
+    pin_resolved_device_type(overrides, device_type)
+    server_args = build_sglang_server_args(
+        model_path,
+        context_length=max_seq_len,
+        **overrides,
+    )
+    validate_generation_batch_policy(
+        model_name=model_name,
+        server_args=server_args,
+    )
+    if total_gpu_memory_fraction is None:
+        # Note (Jiaxin Deng): under a byte budget the KV configurator ignores
+        # mem_fraction_static, so an encoder reserve would be a silent no-op.
+        if peek_stage_kv_cache_bytes() is not None:
+            logger.info(
+                f"{stage_name} declares engine.kv_cache_bytes; skipping the "
+                f"encoder_mem_reserve={encoder_mem_reserve} fraction adjustment"
+            )
+            encoder_reserve_applied = False
+        elif encoder_mem_reserve <= 0.0:
+            encoder_reserve_applied = False
+        else:
+            encoder_reserve_applied = apply_qwen_thinker_encoder_reserve(
+                server_args,
+                has_explicit_mem_fraction_static=(
+                    memory_contract.mem_fraction_static_pinned
+                ),
+                encoder_mem_reserve=encoder_mem_reserve,
+            )
+        effective_total_gpu_memory_fraction = total_gpu_memory_fraction
+        applied_encoder_reserve = (
+            encoder_mem_reserve if encoder_reserve_applied else 0.0
+        )
+    else:
+        effective_total_gpu_memory_fraction = (
+            memory_contract.effective_total_gpu_memory_fraction
+        )
+        applied_encoder_reserve = memory_contract.applied_encoder_mem_reserve
+    return (
+        server_args,
+        effective_total_gpu_memory_fraction,
+        applied_encoder_reserve,
+    )
+
+
+def prepare_pd_thinker_server_args(
+    model_path: str,
+    *,
+    role: Literal["prefill", "decode"],
+    stage_name: str,
+    device: str | None,
+    gpu_id: int | None,
+    tp_size: int,
+    max_seq_len: int | None,
+    server_args_overrides: Mapping[str, object] | None,
+    encoder_mem_reserve: float,
+    total_gpu_memory_fraction: float | None,
+) -> tuple[ServerArgs, int, float | None, float]:
+    """Validate PD thinker overrides and build role-tuned SGLang ServerArgs."""
+    from sglang_omni.platforms import current_platform
+
+    concrete_device = resolve_concrete_device(device, gpu_id)
+    resolved_gpu_id = concrete_device.index or 0
+
+    if tp_size != 1:
+        raise ValueError(
+            f"Qwen3-Omni text-pd stage {stage_name!r} requires tp_size == 1, "
+            f"got {tp_size}"
+        )
+    else:
+        pass
+
+    raw_overrides = dict(server_args_overrides or {})
+    if raw_overrides.get("disable_radix_cache") is False:
+        raise ValueError(
+            f"Qwen3-Omni text-pd stage {stage_name!r} requires disable_radix_cache=True"
+        )
+    else:
+        pass
+    if raw_overrides.get("enable_mixed_chunk") is True:
+        raise ValueError(
+            f"Qwen3-Omni text-pd stage {stage_name!r} requires enable_mixed_chunk=False"
+        )
+    else:
+        pass
+    speculative_algorithm = SpeculativeAlgorithm.from_string(
+        raw_overrides.get("speculative_algorithm")
+    )
+    if (
+        not speculative_algorithm.is_none()
+        or raw_overrides.get("speculative_draft_model_path") is not None
+    ):
+        raise ValueError(
+            f"Qwen3-Omni text-pd stage {stage_name!r} does not support "
+            "speculative decoding"
+        )
+    else:
+        pass
+
+    normalized_overrides = disable_torch_compile_on_npu(raw_overrides)
+    if role == "prefill":
+        prefill_graph_backend = (
+            CudaGraphBackend.BREAKABLE
+            if current_platform.is_cuda()
+            else CudaGraphBackend.DISABLED
+        )
+        overrides = build_generation_batch_overrides(
+            max_running_requests=64,
+            server_args_overrides=normalized_overrides,
+            disable_cuda_graph=False,
+            disable_radix_cache=True,
+            # note (zhaochenyang20): MoE CUDA graph capture fails on topk_ids dtype under torch compile.
+            enable_torch_compile=False,
+            enable_mixed_chunk=False,
+            chunked_prefill_size=8192,
+            sampling_backend="flashinfer" if current_platform.is_cuda() else "pytorch",
+            cuda_graph_backend_prefill=prefill_graph_backend,
+        )
+    else:
+        # note (YzXiao): disable chunked prefill so Triton MoE skips 1..8192 prefill precompilation, and cap max_prefill_tokens=2048 so upstream memory_hook does not reserve ~25 GiB of prefill activation memory on H100.
+        overrides = build_generation_batch_overrides(
+            max_running_requests=128,
+            server_args_overrides=normalized_overrides,
+            disable_cuda_graph=False,
+            disable_radix_cache=True,
+            enable_torch_compile=False,
+            enable_mixed_chunk=False,
+            chunked_prefill_size=-1,
+            max_prefill_tokens=2048,
+            sampling_backend="flashinfer" if current_platform.is_cuda() else "pytorch",
+            cuda_graph_backend_prefill=CudaGraphBackend.DISABLED,
+        )
+    overrides["tp_size"] = tp_size
+    if role == "prefill" or not current_platform.enable_thinker_decode_graph():
+        overrides.setdefault("disable_decode_cuda_graph", True)
+    else:
+        pass
+
+    (
+        server_args,
+        effective_total_gpu_memory_fraction,
+        applied_encoder_reserve,
+    ) = finalize_thinker_server_args(
+        model_path,
+        overrides=overrides,
+        stage_name=stage_name,
+        model_name=f"Qwen3-Omni {stage_name}",
+        device_type=concrete_device.type,
+        max_seq_len=max_seq_len,
+        total_gpu_memory_fraction=total_gpu_memory_fraction,
+        encoder_mem_reserve=encoder_mem_reserve,
+    )
+    return (
+        server_args,
+        resolved_gpu_id,
+        effective_total_gpu_memory_fraction,
+        applied_encoder_reserve,
+    )
+
+
+def create_sglang_thinker_prefill_executor_from_config(
+    model_path: str,
+    *,
+    device: str | None = None,
+    gpu_id: int | None = None,
+    tp_rank: int = 0,
+    tp_size: int = 1,
+    nccl_port: int | None = None,
+    max_seq_len: int | None = None,
+    server_args_overrides: Mapping[str, object] | None = None,
+    encoder_mem_reserve: float = 0.05,
+    total_gpu_memory_fraction: float | None = None,
+    max_in_flight_handoffs: int | None = None,
+    prefill_coalesce_requests: int = 0,
+    prefill_coalesce_wait_ms: float = 60.0,
+    prefill_coalesce_when_idle: bool = False,
+    continuation_aware_admission: bool = True,
+) -> OmniPrefillScheduler:
+    """Returns OmniPrefillScheduler for Qwen3-Omni text-only PD Prefill."""
+    (
+        server_args,
+        resolved_gpu_id,
+        effective_total_gpu_memory_fraction,
+        applied_encoder_reserve,
+    ) = prepare_pd_thinker_server_args(
+        model_path,
+        role="prefill",
+        stage_name=THINKER_PREFILL_STAGE,
+        device=device,
+        gpu_id=gpu_id,
+        tp_size=tp_size,
+        max_seq_len=max_seq_len,
+        server_args_overrides=server_args_overrides,
+        encoder_mem_reserve=encoder_mem_reserve,
+        total_gpu_memory_fraction=total_gpu_memory_fraction,
+    )
+    logger.info(
+        f"sglang_ar_startup stage={THINKER_PREFILL_STAGE} role=prefill "
+        f"gpu_id={resolved_gpu_id} context_length={max_seq_len} "
+        f"effective_total_gpu_memory_fraction={effective_total_gpu_memory_fraction} "
+        f"encoder_mem_reserve={applied_encoder_reserve} "
+        f"max_in_flight_handoffs={max_in_flight_handoffs} pid={os.getpid()}"
+    )
+    return create_thinker_prefill_scheduler(
+        server_args,
+        resolved_gpu_id,
+        stage_name=THINKER_PREFILL_STAGE,
+        partner_stage=None,
+        tp_rank=tp_rank,
+        nccl_port=nccl_port,
+        total_gpu_memory_fraction=effective_total_gpu_memory_fraction,
+        max_in_flight_handoffs=max_in_flight_handoffs,
+        prefill_coalesce_requests=prefill_coalesce_requests,
+        prefill_coalesce_wait_ms=prefill_coalesce_wait_ms,
+        prefill_coalesce_when_idle=prefill_coalesce_when_idle,
+        operator_selected_prefill_backend=operator_selected_prefill_backend(
+            server_args_overrides
+        ),
+        continuation_aware_admission=continuation_aware_admission,
+    )
+
+
+def create_sglang_thinker_decode_executor_from_config(
+    model_path: str,
+    *,
+    device: str | None = None,
+    gpu_id: int | None = None,
+    tp_rank: int = 0,
+    tp_size: int = 1,
+    nccl_port: int | None = None,
+    max_seq_len: int | None = None,
+    server_args_overrides: Mapping[str, object] | None = None,
+    encoder_mem_reserve: float = 0.0,
+    total_gpu_memory_fraction: float | None = None,
+    enable_async_decode: bool | None = None,
+    async_decode_min_batch_size: int = 1,
+    decode_runway_tokens: int | None = None,
+    continuation_aware_admission: bool = True,
+) -> OmniDecodeScheduler:
+    """Returns OmniDecodeScheduler for Qwen3-Omni text-only PD Decode."""
+    (
+        server_args,
+        resolved_gpu_id,
+        effective_total_gpu_memory_fraction,
+        applied_encoder_reserve,
+    ) = prepare_pd_thinker_server_args(
+        model_path,
+        role="decode",
+        stage_name=THINKER_DECODE_STAGE,
+        device=device,
+        gpu_id=gpu_id,
+        tp_size=tp_size,
+        max_seq_len=max_seq_len,
+        server_args_overrides=server_args_overrides,
+        encoder_mem_reserve=encoder_mem_reserve,
+        total_gpu_memory_fraction=total_gpu_memory_fraction,
+    )
+    if enable_async_decode is None:
+        speculative_algorithm = SpeculativeAlgorithm.from_string(
+            server_args.speculative_algorithm
+        )
+        enable_async_decode = speculative_algorithm.is_none()
+    else:
+        pass
+    logger.info(
+        f"sglang_ar_startup stage={THINKER_DECODE_STAGE} role=decode "
+        f"gpu_id={resolved_gpu_id} context_length={max_seq_len} "
+        f"effective_total_gpu_memory_fraction={effective_total_gpu_memory_fraction} "
+        f"encoder_mem_reserve={applied_encoder_reserve} "
+        f"enable_async_decode={enable_async_decode} "
+        f"decode_runway_tokens={decode_runway_tokens} pid={os.getpid()}"
+    )
+    return create_thinker_decode_scheduler(
+        server_args,
+        resolved_gpu_id,
+        stage_name=THINKER_DECODE_STAGE,
+        enable_async_decode=enable_async_decode,
+        tp_rank=tp_rank,
+        nccl_port=nccl_port,
+        total_gpu_memory_fraction=effective_total_gpu_memory_fraction,
+        async_decode_min_batch_size=async_decode_min_batch_size,
+        decode_runway_tokens=decode_runway_tokens,
+        continuation_aware_admission=continuation_aware_admission,
+    )
 
 
 # note (ratish): the talker prefills unchunked, so no chunk bounds the capture;

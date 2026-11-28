@@ -3,13 +3,13 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Any
 from unittest.mock import AsyncMock, Mock
 from uuid import uuid4
 
 import pytest
 import torch
 
+from sglang_omni.admission import AdminDroppedRequestError, QueueFullError
 from sglang_omni.comm.engine import CommEngine, KVTransferCancelled, KVTransferRejected
 from sglang_omni.comm.kv_transfer import (
     KVBufferRegion,
@@ -19,6 +19,7 @@ from sglang_omni.comm.kv_transfer import (
 )
 from sglang_omni.comm.router import CommRouter
 from sglang_omni.pipeline.control_plane import (
+    PushSocket,
     deserialize_message,
     send_to_endpoint,
     serialize_message,
@@ -34,6 +35,13 @@ from sglang_omni.proto import (
 from tests.unit_test.fixtures.pipeline_fakes import FakeOp, FakeRelay
 from tests.unit_test.fixtures.trace_capture import capture_comm_trace
 from tests.unit_test.pipeline.helpers import make_stage
+
+RankControlMessage = (
+    KVTransferPrepareMessage
+    | KVTransferReadyMessage
+    | DataReadyMessage
+    | DataAckMessage
+)
 
 
 @pytest.fixture(autouse=True)
@@ -59,11 +67,12 @@ class PagedRelay(FakeRelay):
         self.put_ops: list[FakeOp] = []
         self.get_calls: list[tuple[str, tuple[int, ...], tuple[int, ...]]] = []
         self.received_source_tp_ranks: list[int] = []
+        self.received_ready_events: list[torch.Event | None] = []
 
     def register_kv_pool(self, pool: KVPool) -> None:
         del pool
 
-    def prepare_kv_destination(self, pool_id: str) -> dict[str, Any]:
+    def prepare_kv_destination(self, pool_id: str) -> dict[str, object]:
         return {"fake_kv": {"pool_id": pool_id}}
 
     async def put_kv_pages(
@@ -71,10 +80,20 @@ class PagedRelay(FakeRelay):
         *,
         source_pool_id: str,
         source_page_indices: tuple[int, ...],
-        destination_ref: dict[str, Any],
+        destination_ref: dict[str, object],
+        destination_pool_id: str | None = None,
+        destination_page_indices: tuple[int, ...] = (),
         transfer_id: str | None = None,
+        ready_event: torch.Event | None = None,
     ) -> FakeOp:
-        del source_pool_id, destination_ref, transfer_id
+        del (
+            source_pool_id,
+            destination_ref,
+            destination_pool_id,
+            destination_page_indices,
+            transfer_id,
+        )
+        self.received_ready_events.append(ready_event)
         op = FakeOp(
             {
                 "transfer_info": {"size": len(source_page_indices)},
@@ -89,7 +108,7 @@ class PagedRelay(FakeRelay):
 
     async def get_kv_pages(
         self,
-        metadata: dict[str, Any],
+        metadata: dict[str, object],
         *,
         destination_pool_id: str,
         source_page_indices: tuple[int, ...],
@@ -107,8 +126,13 @@ class PagedRelay(FakeRelay):
             self.log,
         )
 
-    async def put_async(self, *args: Any, **kwargs: Any) -> FakeOp:
-        del args, kwargs
+    async def put_async(
+        self,
+        tensor: torch.Tensor,
+        request_id: str | None = None,
+        dst_rank: int | None = None,
+        receiver_id: str | None = None,
+    ) -> FakeOp:
         raise AssertionError("paged KV transfer must not use staging put_async")
 
 
@@ -117,9 +141,23 @@ class Receiver:
         self.page_indices = page_indices
         self.committed: list[str] = []
         self.aborted: list[str] = []
+        self.abort_errors: list[BaseException] = []
+        self.reserve_calls: list[str] = []
+        self.reserve_timeouts: list[float] = []
+        self.cancelled_waiters: list[str] = []
 
-    def reserve(self, request: KVTransferPrepareMessage) -> KVPageDestination:
+    async def reserve(
+        self,
+        request: KVTransferPrepareMessage,
+        *,
+        timeout_seconds: float,
+    ) -> KVPageDestination:
+        self.reserve_calls.append(request.request_id)
+        self.reserve_timeouts.append(timeout_seconds)
         return KVPageDestination(request.target_pool_id, self.page_indices)
+
+    def cancel_request_waiters(self, request_id: str) -> None:
+        self.cancelled_waiters.append(request_id)
 
     def commit(
         self,
@@ -135,13 +173,20 @@ class Receiver:
         destination: KVPageDestination | None,
         error: BaseException,
     ) -> None:
-        del destination, error
+        # Preserve destination parameter for the KVReceiver.abort protocol.
         self.aborted.append(request.request_id)
+        self.abort_errors.append(error)
 
 
 class FailingReceiver(Receiver):
-    def reserve(self, request: KVTransferPrepareMessage) -> KVPageDestination:
-        del request
+    async def reserve(
+        self,
+        request: KVTransferPrepareMessage,
+        *,
+        timeout_seconds: float,
+    ) -> KVPageDestination:
+        self.reserve_calls.append(request.request_id)
+        self.reserve_timeouts.append(timeout_seconds)
         raise RuntimeError("rank-local reserve failed")
 
 
@@ -164,7 +209,7 @@ class BlockingPagedRelay(PagedRelay):
 
     async def get_kv_pages(
         self,
-        metadata: dict[str, Any],
+        metadata: dict[str, object],
         *,
         destination_pool_id: str,
         source_page_indices: tuple[int, ...],
@@ -511,7 +556,8 @@ def test_kv_transfer_rejects_layout_mismatch() -> None:
                     lease=lease,
                 )
 
-            assert receiver.aborted == ["request"]
+            assert receiver.aborted == []
+            assert receiver.reserve_calls == []
             lease.release.assert_called_once_with()
             assert not relay.put_ops
         finally:
@@ -531,7 +577,9 @@ def test_kv_ack_timeout_retains_pending_sender_resources(
         source.task_done_callback = stage.on_background_task_done
 
         async def drop_data_ready(
-            sockets: dict[str, Any], target_endpoint: str, message: Any
+            sockets: dict[str, PushSocket],
+            target_endpoint: str,
+            message: RankControlMessage,
         ) -> None:
             if isinstance(message, DataReadyMessage):
                 return
@@ -579,7 +627,9 @@ def test_kv_cleanup_before_ready_cancels_only_the_transfer(
 ) -> None:
     async def run() -> None:
         async def accept_prepare(
-            sockets: dict[str, Any], target_endpoint: str, message: Any
+            sockets: dict[str, PushSocket],
+            target_endpoint: str,
+            message: RankControlMessage,
         ) -> None:
             del sockets, target_endpoint
             assert isinstance(message, KVTransferPrepareMessage)
@@ -764,27 +814,33 @@ def test_rank_endpoint_dispatches_concurrent_kv_copies_and_aborts_once() -> None
 
 
 def test_kv_cleanup_aborts_reserved_destination() -> None:
-    relay = PagedRelay()
-    destination = engine("destination", relay)
-    destination_pool = make_pool("destination_pool")
-    destination.register_kv_pool(destination_pool)
-    receiver = Receiver((2,))
-    destination.register_kv_receiver("destination_pool", receiver)
-    prepare = KVTransferPrepareMessage(
-        request_id="request",
-        transfer_id="transfer",
-        from_stage="source",
-        to_stage="destination",
-        source_pool_id="source_pool",
-        target_pool_id="destination_pool",
-        source_page_indices=(0,),
-        source_layout=destination_pool.layout,
-    )
+    async def run() -> None:
+        relay = PagedRelay()
+        destination = engine("destination", relay)
+        destination_pool = make_pool("destination_pool")
+        destination.register_kv_pool(destination_pool)
+        receiver = Receiver((2,))
+        destination.register_kv_receiver("destination_pool", receiver)
+        prepare = KVTransferPrepareMessage(
+            request_id="request",
+            transfer_id="transfer",
+            from_stage="source",
+            to_stage="destination",
+            source_pool_id="source_pool",
+            target_pool_id="destination_pool",
+            source_page_indices=(0,),
+            source_layout=destination_pool.layout,
+        )
 
-    assert destination.prepare_kv_receive(prepare).success
-    destination.cleanup("request")
+        try:
+            assert (await destination.prepare_kv_receive(prepare)).success
+            destination.cleanup("request")
 
-    assert receiver.aborted == ["request"]
+            assert receiver.aborted == ["request"]
+        finally:
+            await destination.close()
+
+    asyncio.run(run())
 
 
 # --- trace events on the paged KV path -------------------------------------
@@ -948,7 +1004,9 @@ def test_kv_ack_timeout_traces_the_retained_transfer_with_a_running_count(
             relay, source, destination = await start_pair()
 
             async def drop_data_ready(
-                sockets: dict[str, Any], target_endpoint: str, message: Any
+                sockets: dict[str, PushSocket],
+                target_endpoint: str,
+                message: RankControlMessage,
             ) -> None:
                 if isinstance(message, DataReadyMessage):
                     return
@@ -1021,3 +1079,604 @@ def test_kv_transfer_emits_nothing_when_the_env_gate_is_unset(
         asyncio.run(run())
 
     assert events == []
+
+
+def register_pair(
+    source: CommEngine,
+    destination: CommEngine,
+    receiver: Receiver,
+) -> None:
+    source.register_kv_pool(make_pool("source_pool"))
+    destination.register_kv_pool(make_pool("destination_pool"))
+    destination.register_kv_receiver("destination_pool", receiver)
+
+
+def make_prepare(
+    layout: KVPoolLayout,
+    *,
+    request_id: str,
+    transfer_id: str,
+) -> KVTransferPrepareMessage:
+    return KVTransferPrepareMessage(
+        request_id=request_id,
+        transfer_id=transfer_id,
+        from_stage="source",
+        to_stage="destination",
+        source_pool_id="source_pool",
+        target_pool_id="destination_pool",
+        source_page_indices=(0,),
+        source_layout=layout,
+    )
+
+
+class GatedReceiver(Receiver):
+    """Receiver whose reserve can block specific requests on an event."""
+
+    def __init__(
+        self,
+        page_indices: tuple[int, ...],
+        blocked_request_ids: set[str],
+    ) -> None:
+        super().__init__(page_indices)
+        self.blocked_request_ids = blocked_request_ids
+        self.entered_events: dict[str, asyncio.Event] = {
+            request_id: asyncio.Event() for request_id in blocked_request_ids
+        }
+        self.release_events: dict[str, asyncio.Event] = {
+            request_id: asyncio.Event() for request_id in blocked_request_ids
+        }
+        self.waiter_futures: dict[str, list[asyncio.Future[KVPageDestination]]] = {}
+        self.abort_event = asyncio.Event()
+
+    async def reserve(
+        self,
+        request: KVTransferPrepareMessage,
+        *,
+        timeout_seconds: float,
+    ) -> KVPageDestination:
+        self.reserve_calls.append(request.request_id)
+        self.reserve_timeouts.append(timeout_seconds)
+        if request.request_id not in self.blocked_request_ids:
+            return KVPageDestination(request.target_pool_id, self.page_indices)
+        self.entered_events[request.request_id].set()
+        waiter: asyncio.Future[KVPageDestination] = (
+            asyncio.get_running_loop().create_future()
+        )
+        self.waiter_futures.setdefault(request.request_id, []).append(waiter)
+
+        async def release_waiter() -> None:
+            await self.release_events[request.request_id].wait()
+            if not waiter.done():
+                waiter.set_result(
+                    KVPageDestination(request.target_pool_id, self.page_indices)
+                )
+
+        releaser = asyncio.create_task(release_waiter())
+        try:
+            return await waiter
+        finally:
+            releaser.cancel()
+
+    def cancel_request_waiters(self, request_id: str) -> None:
+        super().cancel_request_waiters(request_id)
+        for waiter in self.waiter_futures.pop(request_id, []):
+            if not waiter.done():
+                waiter.set_exception(
+                    KVTransferCancelled(
+                        f"request {request_id!r} aborted while waiting for decode KV"
+                    )
+                )
+
+    def abort(
+        self,
+        request: KVTransferPrepareMessage,
+        destination: KVPageDestination | None,
+        error: BaseException,
+    ) -> None:
+        super().abort(request, destination, error)
+        self.abort_event.set()
+
+
+class ErrorReceiver(Receiver):
+    def __init__(self, error: Exception) -> None:
+        super().__init__((0,))
+        self.error = error
+
+    async def reserve(
+        self,
+        request: KVTransferPrepareMessage,
+        *,
+        timeout_seconds: float,
+    ) -> KVPageDestination:
+        self.reserve_calls.append(request.request_id)
+        self.reserve_timeouts.append(timeout_seconds)
+        raise self.error
+
+
+class FailingGetPagedRelay(PagedRelay):
+    async def get_kv_pages(
+        self,
+        metadata: dict[str, object],
+        *,
+        destination_pool_id: str,
+        source_page_indices: tuple[int, ...],
+        destination_page_indices: tuple[int, ...],
+        request_id: str,
+        transfer_id: str | None = None,
+    ) -> FakeOp:
+        raise RuntimeError(
+            f"receiver copy failed for {request_id} on {destination_pool_id}"
+        )
+
+
+def test_kv_prepare_does_not_block_concurrent_prepare_on_rank_control() -> None:
+    async def run() -> None:
+        _, source, destination = await start_pair()
+        destination.prealloc_timeout_seconds = 7.5
+        source.prealloc_timeout_seconds = 7.5
+        receiver = GatedReceiver((0,), blocked_request_ids={"slow-request"})
+        register_pair(source, destination, receiver)
+        slow_lease, fast_lease = Mock(), Mock()
+        slow_task = asyncio.create_task(
+            source.send_kv_pages(
+                request_id="slow-request",
+                transfer_id="transfer-slow",
+                source_pool_id="source_pool",
+                source_page_indices=(1,),
+                target_pool_id="destination_pool",
+                to_stage="destination",
+                lease=slow_lease,
+            )
+        )
+        try:
+            await asyncio.wait_for(
+                receiver.entered_events["slow-request"].wait(), timeout=2.0
+            )
+            assert not slow_task.done()
+            fast_data_ref = await asyncio.wait_for(
+                source.send_kv_pages(
+                    request_id="fast-request",
+                    transfer_id="transfer-fast",
+                    source_pool_id="source_pool",
+                    source_page_indices=(2,),
+                    target_pool_id="destination_pool",
+                    to_stage="destination",
+                    lease=fast_lease,
+                ),
+                timeout=2.0,
+            )
+            assert fast_data_ref.object_id == "transfer-fast"
+            assert receiver.committed == ["fast-request"]
+            fast_lease.release.assert_called_once_with()
+            assert not slow_task.done()
+
+            receiver.release_events["slow-request"].set()
+            slow_data_ref = await asyncio.wait_for(slow_task, timeout=2.0)
+            assert slow_data_ref.object_id == "transfer-slow"
+            assert receiver.committed == ["fast-request", "slow-request"]
+            assert receiver.reserve_timeouts == [7.5, 7.5]
+            slow_lease.release.assert_called_once_with()
+        finally:
+            receiver.release_events["slow-request"].set()
+            await source.close()
+            await destination.close()
+            await asyncio.gather(slow_task, return_exceptions=True)
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize(
+    ("error", "expected_direct_type", "expected_substring"),
+    [
+        (
+            QueueFullError(
+                f"{QueueFullError.MESSAGE} Decode KV preallocation timed out after 12s"
+            ),
+            QueueFullError,
+            "timed out after 12s",
+        ),
+        (
+            AdminDroppedRequestError(),
+            AdminDroppedRequestError,
+            AdminDroppedRequestError.MESSAGE,
+        ),
+        (
+            ValueError(
+                "Request request-direct exceeds the maximum number of tokens: 128 > 64"
+            ),
+            RuntimeError,
+            "exceeds the maximum number of tokens:",
+        ),
+    ],
+    ids=["queue_full", "admin_dropped", "oversize_400"],
+)
+def test_kv_prepare_rejection_rehydrates_exception_types(
+    error: Exception,
+    expected_direct_type: type[Exception],
+    expected_substring: str,
+) -> None:
+    async def run() -> None:
+        _, source, destination = await start_pair()
+        register_pair(source, destination, ErrorReceiver(error))
+        direct_lease = Mock()
+        try:
+            with pytest.raises(expected_direct_type, match=expected_substring):
+                await source.send_kv_pages(
+                    request_id="request-direct",
+                    transfer_id="transfer-direct",
+                    source_pool_id="source_pool",
+                    source_page_indices=(1,),
+                    target_pool_id="destination_pool",
+                    to_stage="destination",
+                    lease=direct_lease,
+                )
+            direct_lease.release.assert_called_once_with()
+        finally:
+            await source.close()
+            await destination.close()
+
+    asyncio.run(run())
+
+
+def test_kv_orphan_timer_expires_unstarted_without_aborting_copy_started(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with capture_comm_trace(monkeypatch) as events:
+
+        async def run() -> None:
+            destination = engine("destination", PagedRelay())
+            destination.ack_timeout_s = 0.02
+            pool = make_pool("destination_pool")
+            destination.register_kv_pool(pool)
+            orphan_receiver = GatedReceiver((2,), blocked_request_ids=set())
+            destination.register_kv_receiver("destination_pool", orphan_receiver)
+            prepare = make_prepare(
+                pool.layout,
+                request_id="orphan-request",
+                transfer_id="orphan-transfer",
+            )
+            try:
+                assert (await destination.prepare_kv_receive(prepare)).success
+                assert "orphan-transfer" in destination.inbound_kv
+                await asyncio.wait_for(orphan_receiver.abort_event.wait(), timeout=2.0)
+                assert "orphan-transfer" not in destination.inbound_kv
+                assert orphan_receiver.aborted == ["orphan-request"]
+                assert isinstance(orphan_receiver.abort_errors[0], TimeoutError)
+            finally:
+                await destination.close()
+
+            blocking_relay = BlockingPagedRelay()
+            _, source, active_destination = await start_pair(relay=blocking_relay)
+            active_destination.ack_timeout_s = 0.02
+            source.ack_timeout_s = 5.0
+            active_receiver = Receiver((0,))
+            register_pair(source, active_destination, active_receiver)
+            send_task = asyncio.create_task(
+                source.send_kv_pages(
+                    request_id="active-request",
+                    transfer_id="active-transfer",
+                    source_pool_id="source_pool",
+                    source_page_indices=(1,),
+                    target_pool_id="destination_pool",
+                    to_stage="destination",
+                    lease=Mock(),
+                )
+            )
+            try:
+                assert (
+                    await asyncio.wait_for(
+                        blocking_relay.copy_started.get(), timeout=2.0
+                    )
+                    == "active-request"
+                )
+                state = active_destination.inbound_kv["active-transfer"]
+                assert state.copy_started is True
+                assert state.orphan_timer is None
+                await asyncio.sleep(0)
+                active_destination.expire_orphan_inbound_kv("active-transfer")
+                assert active_receiver.aborted == []
+                assert "active-transfer" in active_destination.inbound_kv
+            finally:
+                await active_destination.close()
+                await source.close()
+                await asyncio.gather(send_task, return_exceptions=True)
+
+        asyncio.run(run())
+
+    aborted = first(events, "comm_kv_prepare_aborted")
+    assert aborted["transfer_id"] == "orphan-transfer"
+    assert aborted["reason"] == "orphan_timeout"
+    assert aborted["error"] == "TimeoutError"
+
+
+def test_kv_ready_send_failure_rolls_back_inbound_reservation_without_killing_stage(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with capture_comm_trace(monkeypatch) as events:
+
+        async def run() -> None:
+            _, source, destination = await start_pair()
+            stage = make_stage(name="destination")
+            stage.running = True
+            destination.task_done_callback = stage.on_background_task_done
+            destination.ack_timeout_s = 60.0
+            pool = make_pool("destination_pool")
+            destination.register_kv_pool(pool)
+            receiver = GatedReceiver((3,), blocked_request_ids=set())
+            destination.register_kv_receiver("destination_pool", receiver)
+
+            async def fail_ready_send(
+                sockets: dict[str, PushSocket],
+                target_endpoint: str,
+                message: RankControlMessage,
+            ) -> None:
+                if isinstance(message, KVTransferReadyMessage):
+                    raise RuntimeError("rank ready send failed")
+                await send_to_endpoint(sockets, target_endpoint, message)
+
+            monkeypatch.setattr(
+                "sglang_omni.comm.engine.send_to_endpoint",
+                fail_ready_send,
+            )
+            prepare = make_prepare(
+                pool.layout,
+                request_id="request-send-fail",
+                transfer_id="transfer-send-fail",
+            )
+            try:
+                await send_to_endpoint(
+                    source.rank_send_sockets,
+                    source.rank_endpoints["destination"][0],
+                    prepare,
+                )
+                await asyncio.wait_for(receiver.abort_event.wait(), timeout=2.0)
+                await asyncio.gather(*tuple(destination.rank_prepare_tasks))
+                await asyncio.sleep(0)
+
+                assert "transfer-send-fail" not in destination.inbound_kv
+                assert receiver.aborted == ["request-send-fail"]
+                assert isinstance(receiver.abort_errors[0], RuntimeError)
+                assert stage.running
+                assert stage.background_task_error is None
+                assert not stage.control_plane.closed
+            finally:
+                await source.close()
+                await destination.close()
+
+        asyncio.run(run())
+
+    aborted = first(events, "comm_kv_prepare_aborted")
+    assert aborted["transfer_id"] == "transfer-send-fail"
+    assert aborted["reason"] == "ready_send_failed"
+    assert aborted["error"] == "RuntimeError"
+
+
+def test_kv_cleanup_records_tombstone_and_cancels_queued_prepare_waiters() -> None:
+    async def run() -> None:
+        _, source, destination = await start_pair()
+        receiver = GatedReceiver((0,), blocked_request_ids={"queued-request"})
+        tombstone_seen_during_cancel: list[bool] = []
+        original_cancel = receiver.cancel_request_waiters
+
+        def spy_cancel(request_id: str) -> None:
+            tombstone_seen_during_cancel.append(
+                request_id in destination.aborted_kv_requests
+            )
+            original_cancel(request_id)
+
+        receiver.cancel_request_waiters = spy_cancel
+        register_pair(source, destination, receiver)
+        lease = Mock()
+        send_task = asyncio.create_task(
+            source.send_kv_pages(
+                request_id="queued-request",
+                transfer_id="transfer-queued",
+                source_pool_id="source_pool",
+                source_page_indices=(1,),
+                target_pool_id="destination_pool",
+                to_stage="destination",
+                lease=lease,
+            )
+        )
+        try:
+            await asyncio.wait_for(
+                receiver.entered_events["queued-request"].wait(), timeout=2.0
+            )
+            destination.cleanup("queued-request")
+
+            with pytest.raises(KVTransferCancelled, match="aborted while waiting"):
+                await asyncio.wait_for(send_task, timeout=2.0)
+
+            assert tombstone_seen_during_cancel == [True]
+            assert receiver.cancelled_waiters == ["queued-request"]
+            assert "queued-request" in destination.aborted_kv_requests
+            assert "transfer-queued" not in destination.inbound_kv
+            assert "transfer-queued" not in destination.pending_inbound_kv_transfers
+            lease.release.assert_called_once_with()
+
+            stage = make_stage(name="source")
+            stage.comm = source
+            stage.running = True
+            stage.active_requests.add("queued-request")
+            aborted_stage_lease = Mock()
+            await stage.send_kv_transfer(
+                KVPageTransfer(
+                    request_id="queued-request",
+                    transfer_id="transfer-after-tombstone",
+                    source_pool_id="source_pool",
+                    target_pool_id="destination_pool",
+                    source_page_indices=(1,),
+                    to_stage="destination",
+                    lease=aborted_stage_lease,
+                )
+            )
+            aborted_stage_lease.release.assert_called_once_with()
+            assert stage.control_plane.completions == []
+            assert stage.running
+        finally:
+            await source.close()
+            await destination.close()
+            await asyncio.gather(send_task, return_exceptions=True)
+
+    asyncio.run(run())
+
+
+def test_kv_duplicate_transfer_id_rejected_while_pending_and_active() -> None:
+    async def run() -> None:
+        destination = engine("destination", PagedRelay())
+        pool = make_pool("destination_pool")
+        destination.register_kv_pool(pool)
+        receiver = GatedReceiver((0,), blocked_request_ids={"request-duplicate"})
+        destination.register_kv_receiver("destination_pool", receiver)
+        prepare = make_prepare(
+            pool.layout,
+            request_id="request-duplicate",
+            transfer_id="duplicate-transfer",
+        )
+        first_task = asyncio.create_task(destination.prepare_kv_receive(prepare))
+        try:
+            await asyncio.wait_for(
+                receiver.entered_events["request-duplicate"].wait(), timeout=2.0
+            )
+            assert "duplicate-transfer" in destination.pending_inbound_kv_transfers
+
+            duplicate_while_pending = await destination.prepare_kv_receive(prepare)
+            assert not duplicate_while_pending.success
+            assert "duplicate inbound KV transfer" in (
+                duplicate_while_pending.error or ""
+            )
+
+            receiver.release_events["request-duplicate"].set()
+            assert (await asyncio.wait_for(first_task, timeout=2.0)).success
+            assert "duplicate-transfer" in destination.inbound_kv
+
+            duplicate_while_active = await destination.prepare_kv_receive(prepare)
+            assert not duplicate_while_active.success
+            assert "duplicate inbound KV transfer" in (
+                duplicate_while_active.error or ""
+            )
+            assert receiver.reserve_calls == ["request-duplicate"]
+        finally:
+            receiver.release_events["request-duplicate"].set()
+            await destination.close()
+            await asyncio.gather(first_task, return_exceptions=True)
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize(
+    "failure_mode",
+    [
+        "pre_data_ready_timeout",
+        "explicit_data_ack_false",
+        "post_data_ready_missing_ack",
+    ],
+)
+def test_stage_failure_isolation_vs_fatal_fast_fail(
+    failure_mode: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def run() -> None:
+        relay = (
+            FailingGetPagedRelay()
+            if failure_mode == "explicit_data_ack_false"
+            else PagedRelay()
+        )
+        _, source, destination = await start_pair(relay=relay)
+        failure_callbacks: list[str] = []
+        stage = make_stage(
+            name="source",
+            process_failure_callback=lambda: failure_callbacks.append("called"),
+        )
+        stage.comm = source
+        source.task_done_callback = stage.on_background_task_done
+        stage.running = True
+        stage.active_requests.update({"request-target", "request-other"})
+        register_pair(source, destination, Receiver((0,)))
+
+        dropped_type: type[RankControlMessage] | None = None
+        if failure_mode == "pre_data_ready_timeout":
+            source.prealloc_timeout_seconds = 0.02
+            source.ack_timeout_s = 0.02
+            dropped_type = KVTransferPrepareMessage
+        elif failure_mode == "post_data_ready_missing_ack":
+            source.ack_timeout_s = 0.05
+            dropped_type = DataReadyMessage
+        if dropped_type is not None:
+
+            async def drop_message(
+                sockets: dict[str, PushSocket],
+                target_endpoint: str,
+                message: RankControlMessage,
+            ) -> None:
+                if isinstance(message, dropped_type):
+                    return
+                await send_to_endpoint(sockets, target_endpoint, message)
+
+            monkeypatch.setattr(
+                "sglang_omni.comm.engine.send_to_endpoint", drop_message
+            )
+
+        lease = Mock()
+        transfer = KVPageTransfer(
+            request_id="request-target",
+            transfer_id="transfer-isolation",
+            source_pool_id="source_pool",
+            target_pool_id="destination_pool",
+            source_page_indices=(1,),
+            to_stage="destination",
+            lease=lease,
+        )
+        try:
+            await stage.send_kv_transfer(transfer)
+            await asyncio.sleep(0)
+            if failure_mode == "post_data_ready_missing_ack":
+                lease.release.assert_not_called()
+                assert len(source.retained_pending_kv_transfers) == 1
+                assert isinstance(stage.background_task_error, TimeoutError)
+                assert failure_callbacks == ["called"]
+                assert not stage.running
+                assert stage.control_plane.closed
+            else:
+                lease.release.assert_called_once_with()
+                assert source.retained_pending_kv_transfers == []
+                assert stage.background_task_error is None
+                assert failure_callbacks == []
+                assert stage.running
+                assert not stage.control_plane.closed
+                [completion] = stage.control_plane.completions
+                assert completion.request_id == "request-target"
+                assert not completion.success
+                assert stage.active_requests == {"request-other"}
+        finally:
+            await source.close()
+            await destination.close()
+
+    asyncio.run(run())
+
+
+def test_kv_pool_and_comm_engine_validation() -> None:
+    region = KVBufferRegion("layer.0.kv", torch.zeros((4, 4), dtype=torch.uint8), 4)
+    with pytest.raises(ValueError, match="page_size must be positive"):
+        KVPool(pool_id="p", layout_id="NHD", page_size=0, buffers=(region,))
+    with pytest.raises(ValueError, match="must not be empty"):
+        KVPool(
+            pool_id="p", layout_id="NHD", page_size=1, buffers=(region,)
+        ).validate_page_indices(())
+    with pytest.raises(ValueError, match="prealloc_timeout_seconds must be positive"):
+        CommEngine(
+            CommRouter(
+                stage_name="source",
+                gpu_id=0,
+                same_process_targets=set(),
+                gpu_stage_names={"source"},
+                comm_config={"prealloc_timeout_seconds": 0.0},
+            )
+        )
+
+    comm = engine("destination", PagedRelay())
+    comm.aborted_kv_requests = {f"old-{index}": None for index in range(10000)}
+    comm.cleanup("newest-request")
+    assert len(comm.aborted_kv_requests) == 5000
+    assert "old-0" not in comm.aborted_kv_requests
+    assert "newest-request" in comm.aborted_kv_requests

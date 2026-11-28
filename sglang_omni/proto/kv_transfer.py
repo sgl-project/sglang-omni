@@ -56,6 +56,7 @@ class KVTransferPrepareMessage:
     source_page_indices: tuple[int, ...]
     source_layout: KVPoolLayout
     metadata: dict[str, object] = field(default_factory=dict)
+    replica_bindings: dict[str, int] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, object]:
         value = msgspec.to_builtins(self)
@@ -82,6 +83,7 @@ class KVTransferReadyMessage:
     destination_page_indices: tuple[int, ...] = ()
     destination_ref: dict[str, object] | None = None
     error: str | None = None
+    cancelled: bool = False
 
     def to_dict(self) -> dict[str, object]:
         return {"type": "kv_transfer_ready", **msgspec.to_builtins(self)}

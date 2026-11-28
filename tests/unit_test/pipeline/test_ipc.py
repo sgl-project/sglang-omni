@@ -34,6 +34,7 @@ from sglang_omni.config.topology import (
     compile_logical_processes,
     resolve_coordinator_max_in_flight,
 )
+from sglang_omni.pipeline.replicas import BindingPolicy, LeastInFlightBindingPolicy
 from sglang_omni.pipeline.stage_workers import StageLaunchConfig, StageWorkerProcessSpec
 from sglang_omni.profiler.event_recorder import get_recorder
 from sglang_omni.serve import launcher
@@ -408,6 +409,7 @@ async def test_mp_runner_stop_cleans_runtime_dir(
             terminal_stages_resolver=None,
             replica_topology=None,
             logical_process_plan=None,
+            binding_policy: BindingPolicy | None = None,
             max_in_flight=None,
             max_total_backlog_bytes: int | None = None,
             session_route=None,
@@ -426,6 +428,7 @@ async def test_mp_runner_stop_cleans_runtime_dir(
                 session_graph,
                 max_output_lead_ms,
             )
+            self.binding_policy = binding_policy
             self.max_total_backlog_bytes = max_total_backlog_bytes
             self.control_plane = SimpleNamespace(
                 completion_endpoint=completion_endpoint
@@ -492,12 +495,43 @@ async def test_mp_runner_stop_cleans_runtime_dir(
     await runner.start()
     capacity.assert_called_once_with()
     assert len([path for path in tmp_path.iterdir() if path.is_dir()]) == 1
+    assert runner.coordinator.binding_policy is None
     assert runner.coordinator.max_total_backlog_bytes == 1024**3
 
     await runner.stop()
 
     assert group.shutdown_called
     assert list(tmp_path.iterdir()) == []
+
+    pd_config = PipelineConfig(
+        model_path="dummy",
+        stages=[
+            StageConfig(
+                name="prefill",
+                process="prefill",
+                factory_path=f"{__name__}.noop_factory",
+                kv_transfer_to="decode",
+                gpu=0,
+                gpu_memory_fraction=0.4,
+            ),
+            StageConfig(
+                name="decode",
+                process="decode",
+                factory_path=f"{__name__}.noop_factory",
+                terminal=True,
+                gpu=0,
+                gpu_memory_fraction=0.4,
+            ),
+        ],
+        endpoints=EndpointsConfig(base_path=str(tmp_path)),
+    )
+    pd_runner = mp_runner.MultiProcessPipelineRunner(pd_config)
+    await pd_runner.start()
+    assert isinstance(pd_runner.coordinator.binding_policy, LeastInFlightBindingPolicy)
+    assert pd_runner.coordinator.binding_policy.tracked_processes == frozenset(
+        {"decode"}
+    )
+    await pd_runner.stop()
 
 
 async def run_launcher_with_fake_runner(

@@ -48,6 +48,11 @@ def prompt_token_count(state: Qwen3OmniPipelineState) -> int:
         return 0
     else:
         pass
+    prompt_tokens = state.prompt.get("prompt_tokens")
+    if type(prompt_tokens) is int and prompt_tokens >= 0:
+        return prompt_tokens
+    else:
+        pass
     input_ids = state.prompt.get("input_ids")
     if input_ids is None:
         return 0

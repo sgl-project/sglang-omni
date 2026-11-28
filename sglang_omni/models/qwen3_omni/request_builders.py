@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, TypedDict, overload
 
 import torch
 import xxhash
+from sglang.srt.managers.schedule_batch import MultimodalInputs, Req
 from sglang.srt.mem_cache.base_prefix_cache import BasePrefixCache
 from sglang.srt.tokenizer.tiktoken_tokenizer import TiktokenTokenizer
 from transformers import PreTrainedTokenizerBase
@@ -51,6 +52,7 @@ if TYPE_CHECKING:
         ImageEncoderOutput,
     )
     from sglang_omni.models.qwen3_omni.components.talker import Qwen3OmniTalker
+    from sglang_omni.scheduling.pd_utils import StateRestorer
 else:
     pass
 
@@ -59,10 +61,18 @@ logger = logging.getLogger(__name__)
 IMAGE_STAGE = "image_encoder"
 AUDIO_STAGE = "audio_encoder"
 THINKER_STAGE = "thinker"
+THINKER_PREFILL_STAGE = "thinker_prefill"
+THINKER_DECODE_STAGE = "thinker_decode"
 DECODE_STAGE = "decode"
 TALKER_STAGE = "talker_ar"
 CODE2WAV_STAGE = "code2wav"
 MM_AGGREGATE_STAGE = "mm_aggregate"
+
+QWEN3_OMNI_MROPE_RESUME_SCHEMA = "qwen3_omni_mrope_v1"
+QWEN3_OMNI_TEXT_PD_AUDIO_ERROR = (
+    "Qwen3-Omni text-pd variant supports only text output modality; "
+    "audio output is not enabled"
+)
 
 THINKER_DEFAULT_MAX_NEW_TOKENS = 2048
 TALKER_DEFAULT_MAX_NEW_TOKENS = 4096
@@ -171,6 +181,15 @@ def should_generate_audio_output(
     return modalities is None or "audio" in modalities
 
 
+def validate_text_pd_output_modalities(request: OmniRequest | None) -> None:
+    """Reject explicit audio output requests on text-pd while allowing default None."""
+    modalities = output_modalities(request)
+    if modalities is not None and "audio" in modalities:
+        raise ValueError(QWEN3_OMNI_TEXT_PD_AUDIO_ERROR)
+    else:
+        pass
+
+
 def speech_token_budget(talker_max_new_tokens: int) -> int:
     """The thinker tokens of a spoken reply whose slowest speech, with the margin, fits in talker_max_new_tokens codec frames; a thinker writes at least one."""
     frames = talker_max_new_tokens / SPEECH_BUDGET_MARGIN
@@ -259,6 +278,17 @@ def resolve_preprocessing_next_stages_speech(
     else:
         pass
     return targets
+
+
+def resolve_preprocessing_next_stages_text_pd(
+    request_id: str, output: StagePayload
+) -> list[str]:
+    # Route signature matches Stage.route_fn(request_id, output).
+    state = Qwen3OmniPipelineState.from_dict(output.data)
+    return [
+        *encoder_stages_with_model_inputs(state.encoder_inputs),
+        THINKER_PREFILL_STAGE,
+    ]
 
 
 def resolve_mm_aggregate_wait_sources(
@@ -1224,6 +1254,156 @@ def make_thinker_stream_output_builder(
     return _build_stream_output
 
 
+def extract_clean_prompt_token_ids(
+    request: Req,
+    state: Qwen3OmniPipelineState,
+) -> list[int]:
+    """Return un-salted prompt token ids so Decode penalty kernels stay in vocab range."""
+    raw_prompt_ids = (
+        state.prompt.get("input_ids") if isinstance(state.prompt, dict) else None
+    )
+    if isinstance(raw_prompt_ids, torch.Tensor):
+        clean_input_ids = raw_prompt_ids.detach().cpu().reshape(-1).tolist()
+    elif isinstance(raw_prompt_ids, (list, tuple)):
+        clean_input_ids = [int(token_id) for token_id in raw_prompt_ids]
+    else:
+        clean_input_ids = list(request.origin_input_ids)
+
+    expected_length = len(request.origin_input_ids)
+    if len(clean_input_ids) != expected_length:
+        raise ValueError(
+            f"PD prompt token length mismatch for {request.rid!r}: "
+            f"expected {expected_length}, got {len(clean_input_ids)}"
+        )
+    else:
+        pass
+    vocab_size = request.vocab_size
+    if any(token_id < 0 or token_id >= vocab_size for token_id in clean_input_ids):
+        raise ValueError(
+            f"PD clean prompt token id out of vocab range [0, {vocab_size}) "
+            f"for {request.rid!r}"
+        )
+    else:
+        pass
+    return clean_input_ids
+
+
+def extract_mrope_position_delta(request: Req) -> int | None:
+    """Extract an exact integer M-RoPE decode delta, returning None when zero."""
+    multimodal_inputs = request.multimodal_inputs
+    if multimodal_inputs is None or multimodal_inputs.mrope_position_delta is None:
+        return None
+    else:
+        pass
+    raw_delta = multimodal_inputs.mrope_position_delta.detach().cpu().reshape(-1)
+    if raw_delta.numel() != 1:
+        raise ValueError(
+            f"Expected scalar mrope_position_delta for {request.rid!r}, "
+            f"got shape {tuple(multimodal_inputs.mrope_position_delta.shape)}"
+        )
+    else:
+        pass
+    scalar = raw_delta[0].item()
+    if isinstance(scalar, bool):
+        raise ValueError(f"Invalid boolean mrope_position_delta for {request.rid!r}")
+    elif isinstance(scalar, float):
+        if not math.isfinite(scalar) or not scalar.is_integer():
+            raise ValueError(
+                f"Expected integer mrope_position_delta for {request.rid!r}, "
+                f"got {scalar!r}"
+            )
+        else:
+            pass
+        delta_int = int(scalar)
+    else:
+        delta_int = scalar
+    return delta_int if delta_int != 0 else None
+
+
+def build_qwen3_omni_pd_state(
+    request: Req,
+) -> tuple[dict[str, object], dict[str, object] | None, list[int]]:
+    """Build tensor-free DecodeContinuation state for Qwen3-Omni text-pd."""
+    request_data = request.omni_data
+    if request_data is None or request_data.stage_payload is None:
+        raise ValueError(
+            f"Prefill request {request.rid!r} is missing stage_payload for PD handoff"
+        )
+    else:
+        pass
+    payload = request_data.stage_payload
+    state = Qwen3OmniPipelineState.from_dict(payload.data)
+    clean_input_ids = extract_clean_prompt_token_ids(request, state)
+
+    # note (YzXiao): strip all multimodal encoder tensors and arbitrary request metadata, and store only prompt_tokens here because DecodeContinuation already carries origin_input_ids.
+    lean_request = OmniRequest(
+        inputs=None,
+        params={"stream": bool((payload.request.params or {}).get("stream", False))},
+        metadata={},
+    )
+    lean_state = Qwen3OmniPipelineState(
+        prompt={"prompt_tokens": len(clean_input_ids)},
+        stream_state=copy_mutable_containers(state.stream_state),
+    )
+    lean_payload = StagePayload(
+        request_id=payload.request_id,
+        request=lean_request,
+        data=lean_state.to_dict(),
+    ).to_dict()
+
+    delta_int = extract_mrope_position_delta(request)
+    if delta_int is not None:
+        multimodal_resume: dict[str, object] | None = {
+            "schema": QWEN3_OMNI_MROPE_RESUME_SCHEMA,
+            "mrope_position_delta": delta_int,
+        }
+    else:
+        multimodal_resume = None
+    return lean_payload, multimodal_resume, clean_input_ids
+
+
+def make_qwen3_omni_pd_state_restorer(
+    *,
+    tokenizer: PreTrainedTokenizerBase | TiktokenTokenizer | None,
+) -> StateRestorer:
+    """Restore tokenizer and scalar M-RoPE decode delta on the Decode stage."""
+
+    def restore_qwen3_omni_pd_state(
+        request: Req,
+        request_data: SGLangARRequestData,
+        multimodal_resume: dict[str, object] | None,
+    ) -> None:
+        # Signature matches StateRestorer(request, request_data, multimodal_resume).
+        request.tokenizer = tokenizer
+        request.omni_model_inputs = None
+        request._omni_consumed = None  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+        request._codec_suppress_tokens = None  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+        request._omni_mm_positions = None  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+        if multimodal_resume is None:
+            request.multimodal_inputs = None
+            return
+        else:
+            pass
+        schema = multimodal_resume.get("schema")
+        if schema != QWEN3_OMNI_MROPE_RESUME_SCHEMA:
+            raise ValueError(f"Unsupported multimodal resume schema {schema!r}")
+        else:
+            pass
+        delta = multimodal_resume.get("mrope_position_delta")
+        if type(delta) is not int:
+            raise ValueError(
+                f"Expected int mrope_position_delta in multimodal_resume, got {delta!r}"
+            )
+        else:
+            pass
+        mm_inputs = MultimodalInputs(mm_items=[])
+        mm_inputs.mrope_positions = None
+        mm_inputs.mrope_position_delta = torch.tensor([[delta]], dtype=torch.int64)
+        request.multimodal_inputs = mm_inputs
+
+    return restore_qwen3_omni_pd_state
+
+
 def make_thinker_scheduler_adapters(
     *,
     tokenizer: PreTrainedTokenizerBase | TiktokenTokenizer | None,
@@ -1233,6 +1413,7 @@ def make_thinker_scheduler_adapters(
     capture_prompt_hidden_states: bool,
     speech_enabled: bool,
     is_speculative: bool = False,
+    reject_audio_output_modality: bool = False,
 ) -> tuple[
     Callable[[StagePayload], SGLangARRequestData],
     Callable[[SGLangARRequestData], StagePayload],
@@ -1240,6 +1421,10 @@ def make_thinker_scheduler_adapters(
     """Build model-specific StagePayload <-> scheduler adapters for thinker."""
 
     def request_builder(payload: StagePayload) -> SGLangARRequestData:
+        if reject_audio_output_modality:
+            validate_text_pd_output_modalities(payload.request)
+        else:
+            pass
         state = Qwen3OmniPipelineState.from_dict(payload.data)
         params = payload.request.params or {}
         req_data = build_sglang_thinker_request(

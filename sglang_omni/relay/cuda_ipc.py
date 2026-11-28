@@ -23,6 +23,11 @@ from sglang_omni.profiler.comm_trace import now_ns as _comm_now_ns
 
 from .base import Relay, RelayOperation, register_relay
 
+try:
+    from sgl_kernel import transfer_kv_per_layer_mla
+except ImportError:
+    transfer_kv_per_layer_mla = None
+
 logger = logging.getLogger(__name__)
 
 _PEER_ENABLED: set[tuple[int, int]] = set()
@@ -315,7 +320,7 @@ class ReceiverAckOperation(RelayOperation):
         metadata: dict[str, str | dict[str, int] | CudaPoolInfo] | CudaKvMetadata,
         *,
         held_references: (
-            tuple[()] | tuple[torch.cuda.Event, tuple[torch.Tensor, ...]]
+            tuple[()] | tuple[torch.cuda.Event | torch.Event, tuple[torch.Tensor, ...]]
         ) = (),
     ) -> None:
         self._metadata = metadata  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
@@ -495,12 +500,9 @@ class CudaIpcGetOperation(RelayOperation):
         wait_executor: ThreadPoolExecutor,
         start_event: torch.cuda.Event | None = None,
         done_event: torch.cuda.Event | None = None,
-        held_references: (
-            tuple[()]
-            | tuple[
-                torch.cuda.Event, tuple[torch.Tensor, ...], torch.Tensor, torch.Tensor
-            ]
-        ) = (),
+        held_references: tuple[
+            torch.cuda.Event | torch.Tensor | tuple[torch.Tensor, ...], ...
+        ] = (),
         finish_on_interrupt: bool = False,
         emit_trace: bool = True,
     ) -> None:
@@ -806,6 +808,7 @@ class CudaIpcRelay(Relay):
             tuple[str, str], tuple[CudaStorageHandle, ...]
         ] = {}
         self.remote_kv_pools: dict[tuple[str, str], tuple[torch.Tensor, ...]] = {}
+        self.kv_copy_stream: torch.cuda.Stream | None = None
         self.failed_error: BaseException | None = None
         self.failed_event = asyncio.Event()
         self.stranded_slots_total = 0
@@ -1278,6 +1281,10 @@ class CudaIpcRelay(Relay):
         )
 
     def register_kv_pool(self, pool: KVPool) -> None:
+        if self.kv_pools.get(pool.pool_id) is pool:
+            return
+        else:
+            pass
         expected_device = torch.device(self.device)
         if pool.device != expected_device:
             raise ValueError(
@@ -1295,9 +1302,13 @@ class CudaIpcRelay(Relay):
             else:
                 pass
         self.kv_pools[pool.pool_id] = pool
-        self.kv_pool_registration_ids.setdefault(
-            pool.pool_id,
-            f"{self.engine_id}:{os.getpid()}:{uuid.uuid4().hex}",
+        self.kv_pool_storage_handles = {
+            key: value
+            for key, value in self.kv_pool_storage_handles.items()
+            if key[0] != pool.pool_id
+        }
+        self.kv_pool_registration_ids[pool.pool_id] = (
+            f"{self.engine_id}:{os.getpid()}:{uuid.uuid4().hex}"
         )
 
     def export_kv_source_pool(
@@ -1347,11 +1358,23 @@ class CudaIpcRelay(Relay):
         source_pool_id: str,
         source_page_indices: tuple[int, ...],
         destination_ref: dict[str, dict[str, str]],
+        destination_pool_id: str | None = None,
+        destination_page_indices: tuple[int, ...] = (),
         transfer_id: str | None = None,
+        ready_event: torch.cuda.Event | torch.Event | None = None,
     ) -> ReceiverAckOperation:
         pool = self.kv_pools.get(source_pool_id)
         if pool is None:
             raise KeyError(f"unknown cuda_ipc KV pool {source_pool_id!r}")
+        else:
+            pass
+        if destination_page_indices and len(destination_page_indices) != len(
+            source_page_indices
+        ):
+            raise ValueError(
+                f"KV transfer page count mismatch: source has {len(source_page_indices)}, "
+                f"destination has {len(destination_page_indices)}"
+            )
         else:
             pass
         destination_registration_id = destination_ref["cuda_ipc_kv_destination"][
@@ -1359,10 +1382,13 @@ class CudaIpcRelay(Relay):
         ]
 
         device = pool.device
-        stream = torch.cuda.current_stream(device)
-        ready_event = torch.cuda.Event(interprocess=True)
-        with torch.cuda.device(device), torch.cuda.stream(stream):
-            ready_event.record(stream)
+        if ready_event is None:
+            stream = torch.cuda.current_stream(device)
+            ready_event = torch.cuda.Event(interprocess=True)
+            with torch.cuda.device(device), torch.cuda.stream(stream):
+                ready_event.record(stream)
+        else:
+            pass
         relay_info = self.export_kv_source_pool(
             source_pool_id,
             destination_registration_id=destination_registration_id,
@@ -1374,11 +1400,13 @@ class CudaIpcRelay(Relay):
             )
         }
         relay_info["cuda_ipc_kv"] = dict(relay_info["cuda_ipc_kv"])
-        relay_info["cuda_ipc_kv"]["ready_event"] = ready_event.ipc_handle()
+        with torch.cuda.device(device):
+            relay_info["cuda_ipc_kv"]["ready_event"] = ready_event.ipc_handle()
         _comm_trace(
             "cuda_ipc_kv_put",
             transfer_id=transfer_id,
             source_pool_id=source_pool_id,
+            destination_pool_id=destination_pool_id,
             num_pages=len(source_page_indices),
             bytes=relay_info["transfer_info"]["size"],
             device_id=device.index if device.index is not None else 0,
@@ -1401,6 +1429,12 @@ class CudaIpcRelay(Relay):
         request_id: str,
         transfer_id: str | None = None,
     ) -> CudaIpcGetOperation:
+        if transfer_kv_per_layer_mla is None:
+            raise RuntimeError(
+                "sgl_kernel.transfer_kv_per_layer_mla is required for CUDA IPC KV transfers"
+            )
+        else:
+            pass
         destination = self.kv_pools.get(destination_pool_id)
         if destination is None:
             raise KeyError(f"unknown cuda_ipc KV pool {destination_pool_id!r}")
@@ -1442,6 +1476,13 @@ class CudaIpcRelay(Relay):
         source_buffers = self.remote_kv_pools.get(remote_pool_key)
         remote_pool_cached = source_buffers is not None
         if source_buffers is None:
+            if not source_meta["storages"]:
+                raise KeyError(
+                    "missing CUDA IPC storage handles for uncached remote KV pool "
+                    f"{remote_pool_key!r}"
+                )
+            else:
+                pass
             source_buffers = tuple(
                 load_cuda_storage_handle(storage, device=destination_device)
                 for storage in source_meta["storages"]
@@ -1459,40 +1500,49 @@ class CudaIpcRelay(Relay):
             )
         )
 
-        ready_event = torch.cuda.Event.from_ipc_handle(
-            destination_device,
-            source_meta["ready_event"],
-        )
-        source_indices = torch.tensor(
-            source_page_indices,
-            dtype=torch.int64,
-            device=destination_device,
-        )
-        destination_indices = torch.tensor(
-            destination_page_indices,
-            dtype=torch.int64,
-            device=destination_device,
-        )
-        stream = torch.cuda.current_stream(destination_device)
-        done_event = torch.cuda.Event()
-        from sgl_kernel import transfer_kv_per_layer_mla
-
-        with torch.cuda.device(destination_device), torch.cuda.stream(stream):
-            stream.wait_event(ready_event)
-            try:
-                for source, target, item_size in copy_args:
-                    transfer_kv_per_layer_mla(
-                        src=source,
-                        dst=target,
-                        src_indices=source_indices,
-                        dst_indices=destination_indices,
-                        item_size=item_size,
+        with torch.cuda.device(destination_device):
+            if self.kv_copy_stream is None:
+                self.kv_copy_stream = torch.cuda.Stream(device=destination_device)
+            else:
+                pass
+            stream = self.kv_copy_stream
+            ready_event = torch.cuda.Event.from_ipc_handle(
+                destination_device,
+                source_meta["ready_event"],
+            )
+            source_indices_host = torch.tensor(
+                source_page_indices,
+                dtype=torch.int64,
+                pin_memory=True,
+            )
+            destination_indices_host = torch.tensor(
+                destination_page_indices,
+                dtype=torch.int64,
+                pin_memory=True,
+            )
+            done_event = torch.cuda.Event()
+            with torch.cuda.stream(stream):
+                try:
+                    source_indices = source_indices_host.to(
+                        destination_device, non_blocking=True
                     )
-                done_event.record(stream)
-            except Exception:
-                with suppress(Exception):
-                    stream.synchronize()
-                raise
+                    destination_indices = destination_indices_host.to(
+                        destination_device, non_blocking=True
+                    )
+                    stream.wait_event(ready_event)
+                    for source, target, item_size in copy_args:
+                        transfer_kv_per_layer_mla(
+                            src=source,
+                            dst=target,
+                            src_indices=source_indices,
+                            dst_indices=destination_indices,
+                            item_size=item_size,
+                        )
+                    done_event.record(stream)
+                except Exception:
+                    with suppress(Exception):
+                        stream.synchronize()
+                    raise
         transfer_size = sum(
             buffer.bytes_per_page * len(source_page_indices)
             for buffer in destination.buffers
@@ -1521,6 +1571,8 @@ class CudaIpcRelay(Relay):
             held_references=(
                 ready_event,
                 source_buffers,
+                source_indices_host,
+                destination_indices_host,
                 source_indices,
                 destination_indices,
             ),
@@ -1544,6 +1596,7 @@ class CudaIpcRelay(Relay):
         self.pool_storage_handles.clear()
         self.pool_tensor = None
         self.allocator = None
+        self.kv_copy_stream = None
         # Each queued wait guards a GPU copy that was already launched, so let
         # queued waits finish instead of cancelling them.
         self.wait_executor.shutdown(wait=False, cancel_futures=False)

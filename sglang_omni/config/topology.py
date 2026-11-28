@@ -128,6 +128,7 @@ def compile_logical_processes(
 
     process_edges = cross_process_edges(stages, plan)
     validate_process_local_edges(config, process_edges)
+    validate_kv_transfer_edges(config, plan)
     return plan, stages
 
 
@@ -159,16 +160,26 @@ def resolve_coordinator_max_in_flight(
     *,
     logical_process_plan: LogicalProcessPlan,
 ) -> int | None:
-    """Return the in-flight cap: the generation stage capacity, or an entry
-    stage limit no larger than any engine stage capacity, across replicas."""
+    """Return the in-flight cap across engine stages, PD KV chains, and entry admission."""
     config_cls = type(config)
     engine_stages = [
         stage
         for stage in config.stages
-        if config_cls.stage_config_cls(stage.name).engine_stage
+        if stage.engine_stage or config_cls.stage_config_cls(stage.name).engine_stage
     ]
+    engine_stage_names = {stage.name for stage in engine_stages}
+    kv_sources_by_target: dict[str, list[str]] = defaultdict(list)
+    kv_source_names: set[str] = set()
+    for stage in engine_stages:
+        target = stage.kv_transfer_to
+        if target is not None and target in engine_stage_names:
+            kv_sources_by_target[target].append(stage.name)
+            kv_source_names.add(stage.name)
+        else:
+            pass
+
     entry_limit = config.entry_stage_admission_limit()
-    if entry_limit is None:
+    if not kv_sources_by_target and entry_limit is None:
         return (
             engine_stage_capacity(config, engine_stages[0], logical_process_plan)
             if engine_stages
@@ -176,18 +187,50 @@ def resolve_coordinator_max_in_flight(
         )
     else:
         pass
-    # note (Richard Wang): an entry stage that admits requests may send each of
-    # them to any engine stage, so no engine stage may hold fewer.
-    entry_process = logical_process_plan.process_of(config.resolved_entry_stage)
-    capacities = [
-        engine_stage_capacity(config, stage, logical_process_plan)
+
+    stage_capacities = {
+        stage.name: engine_stage_capacity(config, stage, logical_process_plan)
         for stage in engine_stages
-    ]
-    return min(
-        [
-            entry_limit * entry_process.num_replicas,
-            *(capacity for capacity in capacities if capacity is not None),
-        ]
+    }
+    bounds: list[int] = []
+    for stage in engine_stages:
+        if stage.name in kv_source_names:
+            continue
+        else:
+            pass
+        # note (YzXiao): requests flow serially across a KV transfer edge, so chain capacity is the sum when every member is bounded.
+        chain_members = [*kv_sources_by_target.get(stage.name, ()), stage.name]
+        if all(stage_capacities[name] is not None for name in chain_members):
+            member_capacities = [
+                capacity
+                for name in chain_members
+                if (capacity := stage_capacities[name]) is not None
+            ]
+            bounds.append(sum(member_capacities))
+        else:
+            pass
+
+    if entry_limit is not None:
+        entry_process = logical_process_plan.process_of(config.resolved_entry_stage)
+        bounds.append(entry_limit * entry_process.num_replicas)
+    else:
+        pass
+
+    if not bounds:
+        return None
+    else:
+        return min(bounds)
+
+
+def resolve_tracked_binding_processes(
+    config: PipelineConfig,
+    logical_process_plan: LogicalProcessPlan,
+) -> frozenset[str]:
+    """Return logical processes owning KV transfer target stages."""
+    return frozenset(
+        logical_process_plan.stage_to_process[stage.kv_transfer_to]
+        for stage in config.stages
+        if stage.kv_transfer_to is not None
     )
 
 
@@ -300,6 +343,10 @@ def pipeline_edges(stages: list[StageConfig]) -> set[tuple[str, str]]:
             pass
         for target in list(targets or []) + list(stage.stream_to):
             edges.add((stage.name, target))
+        if stage.kv_transfer_to is not None:
+            edges.add((stage.name, stage.kv_transfer_to))
+        else:
+            pass
         for source in stage.wait_for or []:
             edges.add((source, stage.name))
     return edges
@@ -332,6 +379,65 @@ def validate_process_local_edges(
         )
     else:
         pass
+
+
+def validate_kv_transfer_edges(
+    config: PipelineConfig,
+    logical_process_plan: LogicalProcessPlan,
+) -> None:
+    """Validate static topology invariants for declared KV transfer edges."""
+    stage_by_name = {stage.name: stage for stage in config.stages}
+    kv_target_names: set[str] = set()
+    for stage in config.stages:
+        if stage.kv_transfer_to is None:
+            continue
+        else:
+            pass
+        target = stage_by_name[stage.kv_transfer_to]
+        kv_target_names.add(target.name)
+        source_process = logical_process_plan.stage_to_process[stage.name]
+        target_process = logical_process_plan.stage_to_process[target.name]
+        if source_process == target_process:
+            raise ValueError(
+                f"Stage {stage.name!r} kv_transfer_to={target.name!r} requires "
+                f"distinct processes, but both belong to process {source_process!r}"
+            )
+        else:
+            pass
+        if stage.tp_size != target.tp_size:
+            raise ValueError(
+                f"Stage {stage.name!r} (tp_size={stage.tp_size}) kv_transfer_to="
+                f"{target.name!r} (tp_size={target.tp_size}) requires matching tp_size"
+            )
+        else:
+            pass
+        if target.kv_transfer_to is not None:
+            raise ValueError(
+                f"Stage {stage.name!r} kv_transfer_to={target.name!r} cannot chain "
+                f"into another kv_transfer_to={target.kv_transfer_to!r}"
+            )
+        else:
+            pass
+        if stage.gpu is None or target.gpu is None:
+            raise ValueError(
+                f"Stage {stage.name!r} (gpu={stage.gpu!r}) kv_transfer_to="
+                f"{target.name!r} (gpu={target.gpu!r}) requires GPU placement on "
+                "both stages"
+            )
+        else:
+            pass
+    for stage in config.stages:
+        if (
+            stage.name not in kv_target_names
+            and stage.comm is not None
+            and stage.comm.prealloc_timeout_seconds is not None
+        ):
+            raise ValueError(
+                f"Stage {stage.name!r} sets comm.prealloc_timeout_seconds, which is "
+                "only valid on a kv_transfer_to target stage"
+            )
+        else:
+            pass
 
 
 def build_process_topology_plan(

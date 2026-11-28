@@ -14,6 +14,10 @@ if TYPE_CHECKING:
 
     from sglang_omni.models.qwen3_omni.talker_scheduler import QwenTalkerScheduler
     from sglang_omni.scheduling.omni_scheduler import OmniScheduler
+    from sglang_omni.scheduling.pd_scheduler import (
+        OmniDecodeScheduler,
+        OmniPrefillScheduler,
+    )
     from sglang_omni.scheduling.sglang_backend.request_data import SGLangARRequestData
 else:
     pass
@@ -215,6 +219,213 @@ def create_thinker_scheduler(
     else:
         pass
     return scheduler
+
+
+def create_thinker_prefill_scheduler(
+    server_args: ServerArgs,
+    gpu_id: int = 0,
+    *,
+    stage_name: str = "thinker_prefill",
+    partner_stage: str | None = None,
+    tp_rank: int = 0,
+    nccl_port: int | None = None,
+    total_gpu_memory_fraction: float | None = None,
+    max_in_flight_handoffs: int | None = None,
+    prefill_coalesce_requests: int = 0,
+    prefill_coalesce_wait_ms: float = 60.0,
+    prefill_coalesce_when_idle: bool = False,
+    operator_selected_prefill_backend: bool = False,
+    continuation_aware_admission: bool = True,
+) -> OmniPrefillScheduler:
+    """Create the Qwen thinker Prefill scheduler for text-only PD."""
+    from sglang.srt.utils.hf_transformers_utils import get_tokenizer
+
+    from sglang_omni.models.qwen3_omni.request_builders import (
+        build_qwen3_omni_pd_state,
+        make_thinker_scheduler_adapters,
+    )
+    from sglang_omni.models.qwen3_omni.thinker_model_runner import (
+        Qwen3OmniThinkerModelRunner,
+    )
+    from sglang_omni.scheduling.bootstrap import create_sglang_infrastructure
+    from sglang_omni.scheduling.generation_batch_policy import (
+        CudaGraphBackend,
+        get_prefill_cuda_graph_backend,
+    )
+    from sglang_omni.scheduling.pd_scheduler import OmniPrefillScheduler
+    from sglang_omni.scheduling.sglang_backend import SGLangOutputProcessor
+    from sglang_omni.utils import cuda_graph_batch_validator
+
+    prefill_graph_backend = get_prefill_cuda_graph_backend(server_args)
+    enable_prefill_input_embeds = prefill_graph_backend == CudaGraphBackend.BREAKABLE
+    (
+        model_worker,
+        tree_cache,
+        req_to_token_pool,
+        token_to_kv_pool_allocator,
+        model_config,
+    ) = create_sglang_infrastructure(
+        server_args,
+        gpu_id,
+        tp_rank=tp_rank,
+        nccl_port=nccl_port,
+        model_arch_override="Qwen3OmniThinkerForCausalLM",
+        total_gpu_memory_fraction=total_gpu_memory_fraction,
+        enable_prefill_input_embeds=enable_prefill_input_embeds,
+        defer_cuda_graph_capture=False,
+        supports_speculative_decoding=False,
+        enable_async_decode=False,
+    )
+    if prefill_graph_backend == CudaGraphBackend.BREAKABLE:
+        cuda_graph_batch_validator.attest_prefill_cuda_graphs(
+            model_worker.model_runner,
+            operator_selected=operator_selected_prefill_backend,
+        )
+    else:
+        pass
+
+    output_proc = SGLangOutputProcessor()
+    model_runner = Qwen3OmniThinkerModelRunner(
+        model_worker,
+        output_proc,
+        capture_prompt_hidden_states=False,
+    )
+    tokenizer = get_tokenizer(
+        model_config.model_path,
+        trust_remote_code=True,
+    )
+    thinker_config = model_config.hf_config.thinker_config
+    request_builder, _ = make_thinker_scheduler_adapters(
+        tokenizer=tokenizer,
+        vocab_size=model_config.vocab_size,
+        thinker_config=thinker_config,
+        capture_prompt_hidden_states=False,
+        speech_enabled=False,
+        is_speculative=False,
+        reject_audio_output_modality=True,
+    )
+    scheduler_kwargs: dict[str, int] = {}
+    if max_in_flight_handoffs is not None:
+        scheduler_kwargs["max_in_flight_handoffs"] = max_in_flight_handoffs
+    else:
+        pass
+    return OmniPrefillScheduler(
+        tp_worker=model_worker,
+        tree_cache=tree_cache,
+        req_to_token_pool=req_to_token_pool,
+        token_to_kv_pool_allocator=token_to_kv_pool_allocator,
+        server_args=server_args,
+        model_config=model_config,
+        model_runner=model_runner,
+        request_builder=request_builder,
+        result_adapter=None,
+        stream_output_builder=None,
+        session_adapter=None,
+        enable_async_decode=False,
+        prefill_coalesce_requests=prefill_coalesce_requests,
+        prefill_coalesce_wait_ms=prefill_coalesce_wait_ms,
+        prefill_coalesce_when_idle=prefill_coalesce_when_idle,
+        continuation_aware_admission=continuation_aware_admission,
+        stage_name=stage_name,
+        partner_stage=partner_stage,
+        state_builder=build_qwen3_omni_pd_state,
+        **scheduler_kwargs,
+    )
+
+
+def create_thinker_decode_scheduler(
+    server_args: ServerArgs,
+    gpu_id: int = 0,
+    *,
+    stage_name: str = "thinker_decode",
+    enable_async_decode: bool,
+    tp_rank: int = 0,
+    nccl_port: int | None = None,
+    total_gpu_memory_fraction: float | None = None,
+    async_decode_min_batch_size: int = 1,
+    decode_runway_tokens: int | None = None,
+    continuation_aware_admission: bool = True,
+) -> OmniDecodeScheduler:
+    """Create the Qwen thinker Decode scheduler for text-only PD."""
+    from sglang.srt.utils.hf_transformers_utils import get_tokenizer
+
+    from sglang_omni.model_runner.thinker_model_runner import ThinkerModelRunner
+    from sglang_omni.models.qwen3_omni.request_builders import (
+        QWEN3_OMNI_MROPE_RESUME_SCHEMA,
+        make_qwen3_omni_pd_state_restorer,
+        make_thinker_scheduler_adapters,
+        make_thinker_stream_output_builder,
+    )
+    from sglang_omni.scheduling.bootstrap import create_sglang_infrastructure
+    from sglang_omni.scheduling.pd_scheduler import OmniDecodeScheduler
+    from sglang_omni.scheduling.sglang_backend import SGLangOutputProcessor
+
+    (
+        model_worker,
+        tree_cache,
+        req_to_token_pool,
+        token_to_kv_pool_allocator,
+        model_config,
+    ) = create_sglang_infrastructure(
+        server_args,
+        gpu_id,
+        tp_rank=tp_rank,
+        nccl_port=nccl_port,
+        model_arch_override="Qwen3OmniThinkerForCausalLM",
+        total_gpu_memory_fraction=total_gpu_memory_fraction,
+        enable_prefill_input_embeds=False,
+        defer_cuda_graph_capture=False,
+        supports_speculative_decoding=False,
+        enable_async_decode=enable_async_decode,
+    )
+    output_proc = SGLangOutputProcessor()
+    model_runner = ThinkerModelRunner(
+        model_worker,
+        output_proc,
+        capture_prompt_hidden_states=False,
+    )
+    tokenizer = get_tokenizer(
+        model_config.model_path,
+        trust_remote_code=True,
+    )
+    _, result_adapter = make_thinker_scheduler_adapters(
+        tokenizer=tokenizer,
+        vocab_size=model_config.vocab_size,
+        stage_name=stage_name,
+        capture_prompt_hidden_states=False,
+        speech_enabled=False,
+        is_speculative=False,
+    )
+    stream_output_builder = make_thinker_stream_output_builder(
+        speech_enabled=False,
+        prompt_hidden_store=None,
+    )
+    scheduler_kwargs: dict[str, int] = {}
+    if decode_runway_tokens is not None:
+        scheduler_kwargs["decode_runway_tokens"] = decode_runway_tokens
+    else:
+        pass
+    return OmniDecodeScheduler(
+        tp_worker=model_worker,
+        tree_cache=tree_cache,
+        req_to_token_pool=req_to_token_pool,
+        token_to_kv_pool_allocator=token_to_kv_pool_allocator,
+        server_args=server_args,
+        model_config=model_config,
+        model_runner=model_runner,
+        request_builder=None,
+        result_adapter=result_adapter,
+        stream_output_builder=stream_output_builder,
+        session_adapter=None,
+        enable_async_decode=enable_async_decode,
+        async_decode_min_batch_size=async_decode_min_batch_size,
+        continuation_aware_admission=continuation_aware_admission,
+        stage_name=stage_name,
+        state_restorer=make_qwen3_omni_pd_state_restorer(tokenizer=tokenizer),
+        resume_schema=QWEN3_OMNI_MROPE_RESUME_SCHEMA,
+        emit_transferred_token=True,
+        **scheduler_kwargs,
+    )
 
 
 def create_talker_scheduler(

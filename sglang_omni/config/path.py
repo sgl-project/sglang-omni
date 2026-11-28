@@ -116,6 +116,12 @@ _VISIBILITY_RULES: tuple[tuple[str, PathVisibility, str], ...] = (
         "model's config class, not set from a user-facing source",
     ),
     (
+        "stages.*.kv_transfer_to",
+        PathVisibility.INTERNAL,
+        "KV transfer wiring is part of the stage topology and is declared by "
+        "the model's config class, not set from a user-facing source",
+    ),
+    (
         "stages.*.terminal",
         PathVisibility.INTERNAL,
         "stage routing is part of the stage topology and is declared by the "
