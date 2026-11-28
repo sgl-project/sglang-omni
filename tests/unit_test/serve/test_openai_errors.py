@@ -2,9 +2,13 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+from io import BytesIO
+from pathlib import Path
 
 import httpx
 import pytest
+from PIL import Image
 from sglang.srt.sampling.sampling_params import (
     MAX_STOP_COUNT,
     MAX_STOP_REGEX_COUNT,
@@ -12,8 +16,13 @@ from sglang.srt.sampling.sampling_params import (
     SamplingParams,
 )
 
+from sglang_omni.client.types import ClientError
 from sglang_omni.pipeline.coordinator import Coordinator
-from sglang_omni.preprocessing.resource_connector import media_http_error
+from sglang_omni.preprocessing.image import ensure_image_list_async
+from sglang_omni.preprocessing.resource_connector import (
+    MultiModalResourceConnector,
+    media_http_error,
+)
 from sglang_omni.proto import SubmitMessage
 from sglang_omni.serve.openai_errors import (
     generation_error_status_code,
@@ -109,3 +118,64 @@ def test_only_a_missing_media_url_is_a_bad_request(
     error = media_http_error(raised.value, url)
 
     assert generation_error_status_code(error) == expected_status
+
+
+def png_bytes() -> bytes:
+    buffer = BytesIO()
+    Image.new("RGB", (32, 32), (200, 10, 10)).save(buffer, "PNG")
+    return buffer.getvalue()
+
+
+def image_load_status_codes(image_reference: str) -> tuple[int, int]:
+    """Status codes for a failed image load, raised directly and after the client round trip."""
+    load = ensure_image_list_async(
+        [image_reference], media_connector=MultiModalResourceConnector()
+    )
+    with pytest.raises(ValueError) as raised:
+        asyncio.run(load)
+    return (
+        generation_error_status_code(raised.value),
+        generation_error_status_code(ClientError(str(raised.value))),
+    )
+
+
+@pytest.mark.parametrize(
+    "image_url",
+    [
+        pytest.param("data:image/png;base64,abc", id="bad-base64"),
+        pytest.param("data:image/png,hello", id="not-base64-encoded"),
+        pytest.param("data:image/png;base64", id="no-comma"),
+        pytest.param(
+            "data:image/png;base64," + base64.b64encode(b"hello world").decode(),
+            id="not-an-image",
+        ),
+        pytest.param(
+            "data:image/png;base64," + base64.b64encode(png_bytes()[:-40]).decode(),
+            id="truncated-png",
+        ),
+    ],
+)
+def test_unreadable_image_data_urls_are_bad_requests(image_url: str) -> None:
+    """A data URL image the server cannot decode answered 500 instead of 400."""
+    assert image_load_status_codes(image_url) == (400, 400)
+
+
+@pytest.mark.parametrize(
+    "file_payload",
+    [
+        pytest.param(None, id="missing"),
+        pytest.param(b"hello world", id="not-an-image"),
+        pytest.param(png_bytes()[:-40], id="truncated-png"),
+    ],
+)
+def test_unreadable_local_images_are_bad_requests(
+    tmp_path: Path, file_payload: bytes | None
+) -> None:
+    """A local image path the server cannot decode answered 500 instead of 400."""
+    image_path = tmp_path / "image.png"
+    if file_payload is not None:
+        image_path.write_bytes(file_payload)
+    else:
+        pass
+
+    assert image_load_status_codes(str(image_path)) == (400, 400)

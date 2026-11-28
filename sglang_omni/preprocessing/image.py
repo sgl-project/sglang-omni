@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import binascii
 from collections.abc import Mapping
 from io import BytesIO
 from pathlib import Path
@@ -19,9 +20,19 @@ from .cache_key import compute_media_cache_key
 from .resource_connector import await_media_cleanup
 
 
+def open_image(source: str | Path | BytesIO, image_mode: str) -> Image.Image:
+    """Decode an image, reporting unreadable caller input as a ValueError."""
+    try:
+        return Image.open(source).convert(image_mode)
+    except UnidentifiedImageError as exc:
+        raise ValueError("Invalid image input: not a recognized image format") from exc
+    except OSError as exc:
+        raise ValueError(f"Invalid image input: {exc}") from exc
+
+
 def load_image_path(path: str | Path) -> Image.Image:
     """Load an image from disk as RGB."""
-    return Image.open(path).convert("RGB")
+    return open_image(path, "RGB")
 
 
 class ImageMediaIO(MediaIO[Image.Image]):
@@ -40,10 +51,7 @@ class ImageMediaIO(MediaIO[Image.Image]):
 
     def load_bytes(self, data: bytes) -> Image.Image:
         """Load image from raw bytes."""
-        try:
-            return Image.open(BytesIO(data)).convert(self.image_mode)
-        except UnidentifiedImageError as e:
-            raise ValueError(f"Failed to identify image: {e}") from e
+        return open_image(BytesIO(data), self.image_mode)
 
     def load_base64(
         self,
@@ -51,14 +59,17 @@ class ImageMediaIO(MediaIO[Image.Image]):
         data: str,
     ) -> Image.Image:
         """Load image from base64-encoded data."""
-        return self.load_bytes(base64.b64decode(data))
+        try:
+            decoded = base64.b64decode(data)
+        except binascii.Error as exc:
+            raise ValueError(
+                "Invalid image input: data URL is not valid base64"
+            ) from exc
+        return self.load_bytes(decoded)
 
     def load_file(self, filepath: Path) -> Image.Image:
         """Load image from a local file path."""
-        try:
-            return Image.open(filepath).convert(self.image_mode)
-        except UnidentifiedImageError as e:
-            raise ValueError(f"Failed to identify image: {e}") from e
+        return open_image(filepath, self.image_mode)
 
 
 def compute_image_cache_key(images: object) -> str | None:
