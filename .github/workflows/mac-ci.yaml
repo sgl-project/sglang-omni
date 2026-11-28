@@ -176,8 +176,8 @@ jobs:
           "$RUNNER_TEMP/runtime-build/cmake/tokenizer_preference_test"
           "$RUNNER_TEMP/runtime-build/cmake/moss_model_test"
           "$RUNNER_TEMP/runtime-build/cmake/moss_realtime_test"
-          for run in $(seq 1 10); do
-            echo "Pause-refresh native regression $run/10"
+          for run in $(seq 1 100); do
+            echo "Pause-refresh native regression $run/100"
             "$RUNNER_TEMP/runtime-build/cmake/qwen3_asr_pause_refresh_test"
           done
           ccache --show-stats
