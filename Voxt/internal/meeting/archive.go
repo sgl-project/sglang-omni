@@ -14,12 +14,12 @@ import (
 )
 
 // Archive writes per-source WAV files under a meeting folder. Frames with
-// a capture time (PCMParams.HostMS) are placed by it, so the same
-// position in every file is the same moment: the first timed frame of a
-// period (the meeting's start, each resume) sets the origin (what another
-// track captured before it is cut), a gap is padded with silence and an
-// overlap is cut, and Close pads the files to one length (a track the
-// meeting stopped, by a change of mode, goes on in silence).
+// a time (PCMParams.HostMS) are placed by it, so the same position in
+// every file is the same moment. A period (the meeting's start, each
+// resume) starts at its first timed frame; what another track captured
+// before it is cut. Gaps are padded with silence and overlaps are cut.
+// Close pads the files to one length, so a track a change of mode stopped
+// goes on in silence.
 type Archive struct {
 	dir string
 	mu  sync.Mutex
@@ -28,18 +28,18 @@ type Archive struct {
 	// the period's first timed frame.
 	origin float64
 	base   int64
-	timed  bool // a frame had a capture time
+	timed  bool // a frame had a time
 }
 
-// archiveSlack is the misplacement left alone (capture-time jitter,
-// clock drift): 20 ms.
+// archiveSlack is the misplacement left alone (time-stamp jitter, clock
+// drift): 20 ms.
 const archiveSlack = asr.SampleRate / 50
 
 // archiveMaxGap is how far a frame may land past the longest file, or
 // before where its own file ends: further is a clock that went wrong, and
 // the frame is appended as it comes. Past the longest file, not past its
 // own: a track that starts late (Recording switched to Meeting after an
-// hour) still lines up.
+// hour) still lines up. A var so tests can shorten it.
 var archiveMaxGap int64 = 30 * 60 * asr.SampleRate
 
 func newArchive(dir string) *Archive {
@@ -53,8 +53,8 @@ func (a *Archive) path(src Source) string {
 // Write appends PCM16 mono frames to src's WAV.
 func (a *Archive) Write(src Source, pcm []byte) error { return a.WriteAt(src, pcm, 0) }
 
-// WriteAt writes PCM16 mono frames to src's WAV where hostMS (the
-// capture time of their first sample) places them; 0 appends them.
+// WriteAt writes PCM16 mono frames to src's WAV where hostMS (when their
+// first sample was in the air) places them; 0 appends them.
 func (a *Archive) WriteAt(src Source, pcm []byte, hostMS float64) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -68,7 +68,7 @@ func (a *Archive) WriteAt(src Source, pcm []byte, hostMS float64) error {
 			a.origin = hostMS
 		}
 		want := a.base + int64(math.Round((hostMS-a.origin)*asr.SampleRate/1000))
-		// Else a clock gone wrong: appended as it comes.
+		// Out of these bounds is a clock gone wrong: appended as it comes.
 		if want-w.samples >= -archiveMaxGap && want-a.longest() <= archiveMaxGap {
 			if want < a.base {
 				// Before the period's first frame (the other track's): that
@@ -107,7 +107,6 @@ func (a *Archive) NewPeriod() error {
 	return first
 }
 
-// padLocked pads every file to the longest one.
 func (a *Archive) padLocked() error {
 	var first error
 	longest := a.longest()

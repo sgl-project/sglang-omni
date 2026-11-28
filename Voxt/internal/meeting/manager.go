@@ -196,7 +196,7 @@ func (m *Manager) Pause(_ context.Context, id string) error {
 		return fmt.Errorf("meeting: not recording")
 	}
 	// Dropped, not only stopped: a track whose stop timed out must not write
-	// the pause's audio into the period Resume starts.
+	// its audio from before the pause into the period Resume starts.
 	m.dropTracksLocked(m.openSourcesLocked())
 	m.timeline.NotePause()
 	// A pause is not evidence that the system track stayed silent.
@@ -220,7 +220,7 @@ func (m *Manager) Resume(ctx context.Context, id string) error {
 	}
 	m.timeline.NoteResume()
 	if m.archive != nil {
-		// The pause's tracks have stopped: the files line up again here.
+		// The tracks from before the pause have stopped: the files line up again here.
 		if err := m.archive.NewPeriod(); err != nil && m.cfg.Warn != nil {
 			m.cfg.Warn("meeting: aligning the recordings after a pause: " + err.Error())
 		}
@@ -517,7 +517,6 @@ func (m *Manager) stopAllTracksLocked() {
 	m.stopTracksLocked(m.openSourcesLocked())
 }
 
-// openSourcesLocked are the sources with a track.
 func (m *Manager) openSourcesLocked() []Source {
 	sources := make([]Source, 0, len(m.tracks))
 	for src := range m.tracks {

@@ -239,7 +239,7 @@ final class CaptureRun: @unchecked Sendable {
         guard let res = MonoResampler(inputRate: format.sampleRate, rate: rate) else {
             throw RPCError(Code.deviceUnavailable, "cannot convert \(Int(format.sampleRate)) Hz")
         }
-        let shift = -ioLatencyMs(device, input: true) // Core Audio queries, outside the lock the IO thread takes
+        let shift = -ioLatencyMs(device, input: true)
         let gen: Int = lock.withLock {
             generation += 1
             callbacksThisEngine = 0
@@ -532,7 +532,6 @@ final class CaptureRun: @unchecked Sendable {
         for f in fs {
             if firstFrameMs == nil { firstFrameMs = ((monotonicMs() - t0) * 10).rounded() / 10 }
             frames += 1
-            // The frame's time from the latest timed buffer (the padded silence's too).
             let hostMs = host.ms(at: f.offset)
             out.notify(Method.capturePCM, PCMParams(job: job, seq: f.seq, offset: f.offset, data: f.pcm, hostMs: hostMs))
         }

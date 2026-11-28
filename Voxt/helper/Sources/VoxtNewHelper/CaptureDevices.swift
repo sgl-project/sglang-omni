@@ -26,11 +26,11 @@ func stringProperty(_ object: AudioObjectID, _ selector: AudioObjectPropertySele
     return s as String
 }
 
-/// How long sound takes between a device's host time stamps and the air,
-/// in ms: the device's, its safety offset's and its first stream's latency,
-/// plus the IO buffer for an output (written a buffer ahead). Measured on a
-/// MacBook's speakers and microphone, the two sum to the echo's lag. 0 when
-/// unknown, or past maxIOLatencyMs (a driver's nonsense).
+/// How long sound takes between a device's time stamps and the air, in ms:
+/// device latency + safety offset + first stream's latency, plus the IO
+/// buffer for an output (written a buffer ahead). 0 when unknown or past
+/// maxIOLatencyMs. It queries Core Audio: call it outside the locks the IO
+/// thread takes.
 func ioLatencyMs(_ device: AudioObjectID, input: Bool) -> Double {
     let scope = input ? kAudioDevicePropertyScopeInput : kAudioDevicePropertyScopeOutput
     var rate = 0.0
@@ -46,7 +46,7 @@ func ioLatencyMs(_ device: AudioObjectID, input: Bool) -> Double {
     return ms <= maxIOLatencyMs ? ms : 0
 }
 
-/// AirPlay's is about 2 s.
+/// Past this a reported latency is a driver's mistake (AirPlay's is about 2 s).
 private let maxIOLatencyMs = 5000.0
 
 private func objectList(_ object: AudioObjectID, _ selector: AudioObjectPropertySelector, scope: AudioObjectPropertyScope) -> [AudioObjectID] {
