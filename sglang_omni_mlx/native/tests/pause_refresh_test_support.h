@@ -48,27 +48,37 @@ inline void WaitFor(std::future<void> &event, const std::string &message) {
 
 class TestSignal {
 public:
-  TestSignal() : event_(promise_.get_future().share()) {}
+  TestSignal() = default;
+  TestSignal(const TestSignal &) = delete;
+  TestSignal &operator=(const TestSignal &) = delete;
 
   void Notify(std::exception_ptr error = nullptr) {
-    std::call_once(notify_once_, [this, error] {
+    const std::shared_ptr<State> state = state_;
+    std::call_once(state->notify_once, [state, error] {
       if (error != nullptr) {
-        promise_.set_exception(error);
+        state->promise.set_exception(error);
       } else {
-        promise_.set_value();
+        state->promise.set_value();
       }
     });
   }
 
   void Wait(const std::string &message) const {
-    WaitFor(event_, message);
-    event_.get();
+    const std::shared_ptr<State> state = state_;
+    WaitFor(state->event, message);
+    state->event.get();
   }
 
 private:
-  std::promise<void> promise_;
-  std::shared_future<void> event_;
-  std::once_flag notify_once_;
+  struct State {
+    State() : event(promise.get_future().share()) {}
+
+    std::promise<void> promise;
+    std::shared_future<void> event;
+    std::once_flag notify_once;
+  };
+
+  std::shared_ptr<State> state_ = std::make_shared<State>();
 };
 
 class TestGate {
