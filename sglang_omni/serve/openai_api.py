@@ -2007,7 +2007,10 @@ def register_speech(app: FastAPI) -> None:
             headers["X-Gen-Text"] = quote(result.text)
         else:
             pass
-        if result.usage is not None:
+        if (
+            result.usage is not None
+            and request.headers.get("X-Include-Usage", "").strip().lower() == "true"
+        ):
             headers.update(
                 {
                     name: str(tokens)

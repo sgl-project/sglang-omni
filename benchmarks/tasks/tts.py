@@ -1447,7 +1447,9 @@ def make_tts_send_fn(
         )
         start_time = time.perf_counter()
         try:
-            async with session.post(api_url, json=payload) as response:
+            async with session.post(
+                api_url, json=payload, headers={"X-Include-Usage": "true"}
+            ) as response:
                 if response.status != 200:
                     result.error = f"HTTP {response.status}: {await response.text()}"
                 elif stream:

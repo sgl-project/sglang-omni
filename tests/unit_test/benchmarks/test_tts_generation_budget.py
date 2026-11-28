@@ -36,6 +36,7 @@ async def test_probe_pairs_seeds_and_records_truncated_audio(
 
     def answer(request: httpx.Request) -> httpx.Response:
         if request.method == "POST":
+            assert request.headers["x-include-usage"] == "true"
             body = json.loads(request.content)
             requests.append(body)
             return httpx.Response(

@@ -104,6 +104,7 @@ async def synthesize_probe(
             "POST",
             f"{base_url.rstrip('/')}/audio/speech",
             json=result.request.model_dump(exclude_none=True),
+            headers={"X-Include-Usage": "true"},
         ) as response:
             response.raise_for_status()
             result.request_id = response.headers.get("X-Request-Id")

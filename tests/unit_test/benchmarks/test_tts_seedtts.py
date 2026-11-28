@@ -22,7 +22,7 @@ from unittest.mock import MagicMock
 import numpy as np
 import pytest
 import requests
-from aiohttp import web
+from aiohttp import ClientSession, web
 
 from benchmarks.benchmarker.data import FinishReason
 from benchmarks.benchmarker.runner import BenchmarkRunner, RunConfig
@@ -247,8 +247,58 @@ def test_stream_send_fn_records_the_ids_the_outcome_collector_needs():
     assert result.is_success
     assert result.speech_outcome_id == "speech-1"
     assert result.server_worker_id == "worker-b"
+    assert session.post.call_args.kwargs["headers"] == {"X-Include-Usage": "true"}
 
     session.get.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_non_streaming_benchmark_keeps_opt_in_usage() -> None:
+    audio = io.BytesIO()
+    with wave.open(audio, "wb") as writer:
+        writer.setnchannels(1)
+        writer.setsampwidth(2)
+        writer.setframerate(24000)
+        writer.writeframes(bytes(48000))
+    received_headers: list[str | None] = []
+
+    async def speech(request: web.Request) -> web.Response:
+        include_usage = request.headers.get("X-Include-Usage")
+        received_headers.append(include_usage)
+        headers = (
+            {
+                "X-Prompt-Tokens": "7",
+                "X-Completion-Tokens": "120",
+                "X-Engine-Time": "4.8",
+            }
+            if include_usage == "true"
+            else {}
+        )
+        return web.Response(
+            body=audio.getvalue(), content_type="audio/wav", headers=headers
+        )
+
+    application = web.Application()
+    application.router.add_post("/v1/audio/speech", speech)
+    server = web.AppRunner(application)
+    await server.setup()
+    with socket.socket() as listener:
+        listener.bind(("127.0.0.1", 0))
+        listener.setblocking(False)
+        api_url = f"http://127.0.0.1:{listener.getsockname()[1]}/v1/audio/speech"
+        await web.SockSite(server, listener).start()
+        try:
+            send = make_tts_send_fn("tts", api_url, no_ref_audio=True, no_ref_text=True)
+            async with ClientSession() as session:
+                result = await send(session, SEEDTTS_SAMPLE)
+            assert received_headers == ["true"]
+            assert result.is_success
+            assert result.audio_duration_s == pytest.approx(1.0)
+            assert result.prompt_tokens == 7
+            assert result.completion_tokens == 120
+            assert result.tok_per_s == pytest.approx(25.0)
+        finally:
+            await server.cleanup()
 
 
 @pytest.mark.asyncio

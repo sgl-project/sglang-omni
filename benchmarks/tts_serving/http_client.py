@@ -107,6 +107,10 @@ async def run_http_scenario(
                 if scenario.body_type == "multipart"
                 else {"json": scenario.payload}
             )
+            if scenario.endpoint == "speech":
+                kwargs["headers"] = {"X-Include-Usage": "true"}
+            else:
+                pass
             result.request_bytes = request_size(scenario)
             async with session.post(url, **kwargs) as response:
                 if scenario.endpoint == "speech_stream":
