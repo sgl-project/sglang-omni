@@ -41,6 +41,15 @@ Regenerate this directory from the pinned upstream commit and reapply those
 compatibility changes and scope reductions when updating it. Remove the
 backport once the repository dependency moves to Transformers 5.13 or newer.
 
+The vendored encoder attention passes its relative-position bias to
+`scaled_dot_product_attention` directly, as an additive tensor.
+It does not pass the bias through `attention_mask`.
+Transformers converts any non-bool `attention_mask` to bool when `torch_npu`
+is importable, which masks every position and returns a zero attention output
+(#4385).
+Keep the direct call when regenerating this directory.
+Drop it once the pinned Transformers carries the upstream fix.
+
 Mixed-progress batching is implemented outside this backport in
 [`../../models/nemotron3_5_asr/encoder.py`](../../models/nemotron3_5_asr/encoder.py)
 and [`../../models/nemotron3_5_asr/cache.py`](../../models/nemotron3_5_asr/cache.py).
