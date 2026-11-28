@@ -705,6 +705,7 @@ void TestDeferredPauseClearedOnSegmentRollover() {
               std::future_status::ready,
           "segment rollover did not finish after releasing the preview");
   Require(rollover.get(), "segment rollover append was rejected");
+  fixture.Drain();
   Require(decoded_samples.size() == 2 &&
               decoded_samples[0] ==
                   100 * static_cast<int>(kSampleRate) / 1000 &&
