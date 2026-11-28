@@ -1,14 +1,17 @@
 # SPDX-License-Identifier: Apache-2.0
 import asyncio
+import threading
 import wave
 from contextlib import asynccontextmanager
 from dataclasses import replace
 
 import pytest
 import yaml
+from pydantic import JsonValue
 
 from examples.streaming_cascade.run import run
 from sglang_omni.models.streaming_cascade.base import control_chunk
+from sglang_omni.models.streaming_cascade.config import StreamingCascadePipelineConfig
 from sglang_omni.pipeline.mp_runner import MultiProcessPipelineRunner
 from sglang_omni.proto import OmniRequest
 from sglang_omni.proto.session import SessionLimits, TimedChunk
@@ -453,6 +456,33 @@ async def test_background_http_failure_reaches_reader_without_another_append(bac
         await session.command(COMMIT)
         await session.until(lambda: session.error is not None)
         assert "abort" in str(session.error)
+
+
+@pytest.mark.asyncio
+async def test_background_asr_failure_reaches_reader_without_another_append(
+    backends: tuple[
+        StreamingCascadePipelineConfig,
+        list[bytes],
+        list[str],
+        list[list[dict[str, JsonValue]]],
+    ],
+    failing_realtime_transcription_server: tuple[str, threading.Event],
+) -> None:
+    """A failed streaming recognizer left the real session graph's output reader waiting."""
+    base_url, release_failure = failing_realtime_transcription_server
+    declaration = backends[0].model_dump(mode="json")
+    declaration["session_nodes"]["asr"] = {
+        "kind": "realtime_transcription",
+        "inputs": ["input"],
+        "base_url": base_url,
+        "model": "test-asr",
+    }
+    config = StreamingCascadePipelineConfig.model_validate(declaration)
+    async with conversation(config) as session:
+        await session.audio()
+        release_failure.set()
+        await session.until(lambda: session.error is not None)
+        assert "transcription failed: backend failed" in str(session.error)
 
 
 @pytest.mark.asyncio

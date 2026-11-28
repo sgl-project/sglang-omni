@@ -5,12 +5,15 @@ import base64
 import json
 import threading
 import time
+from collections.abc import Iterator
+from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import numpy as np
 import pytest
 import yaml
-from websockets.sync.server import serve
+from websockets.http11 import Request, Response
+from websockets.sync.server import ServerConnection, serve
 
 from sglang_omni.models.streaming_cascade.config import StreamingCascadePipelineConfig
 
@@ -187,6 +190,45 @@ def backends(request, backend_requests):
         server.shutdown()
         server.server_close()
         thread.join(5)
+
+
+@pytest.fixture
+def failing_realtime_transcription_server() -> Iterator[tuple[str, threading.Event]]:
+    """A real WebSocket backend whose error follows the acknowledged microphone frame."""
+    release_failure = threading.Event()
+
+    def probe(connection: ServerConnection, request: Request) -> Response | None:
+        if request.path == "/v1/models":
+            return connection.respond(HTTPStatus.OK, '{"data": []}')
+        else:
+            return None
+
+    def transcribe(websocket: ServerConnection) -> None:
+        websocket.send(json.dumps({"type": "session.created"}))
+        for encoded in websocket:
+            event = json.loads(encoded)
+            if event["type"] == "session.update":
+                websocket.send(json.dumps({"type": "session.updated"}))
+            else:
+                assert event["type"] == "input_audio_buffer.append"
+                assert release_failure.wait(10)
+                websocket.send(
+                    json.dumps(
+                        {"type": "error", "error": {"message": "backend failed"}}
+                    )
+                )
+                return
+
+    with serve(transcribe, "127.0.0.1", 0, process_request=probe) as server:
+        thread = threading.Thread(target=server.serve_forever)
+        thread.start()
+        try:
+            port = server.socket.getsockname()[1]
+            yield f"ws://127.0.0.1:{port}", release_failure
+        finally:
+            release_failure.set()
+            server.shutdown()
+            thread.join(5)
 
 
 @pytest.fixture
