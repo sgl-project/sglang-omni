@@ -504,10 +504,12 @@ async def write_payload(
 ) -> tuple[DataRef, RelayOperation]:
     data_without_tensors, tensors = extract_tensors(payload.data)
     chunks, entries = pack_tensor_chunks(tensors, device=relay_device(relay))
-    header = StagePayload(
-        request_id=payload.request_id,
-        request=payload.request,
-        data=data_without_tensors,
+    header = pickle.dumps(
+        StagePayload(
+            request_id=payload.request_id,
+            request=payload.request,
+            data=data_without_tensors,
+        )
     )
     # note (ratish): the SHM relay concatenates the chunks straight into its block, so the payload is copied once instead of packed and then copied again.
     if isinstance(relay, ShmRelay):
@@ -528,7 +530,7 @@ async def write_payload(
             transport=transport,
             relay_info=op.metadata,
         ),
-        header=pickle.dumps(header),
+        header=header,
         tensors=tuple(entries),
     )
     return data_ref, op
@@ -840,6 +842,15 @@ async def read_transfer_buffer(
     )
     await op.wait_for_completion()
     return buf
+
+
+def packed_size_bytes(tensors: dict[str, torch.Tensor]) -> int:
+    """Byte length of the buffer pack_tensors builds for these tensors."""
+    offset = 0
+    for tensor in tensors.values():
+        offset += pad_offset(offset, dtype_alignment(tensor.dtype))
+        offset += tensor.numel() * tensor.element_size()
+    return offset
 
 
 def dtype_alignment(dtype: torch.dtype) -> int:

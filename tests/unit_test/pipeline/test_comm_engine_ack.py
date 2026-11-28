@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 from typing import Any
 from unittest.mock import Mock
 
 import pytest
 import torch
 
+from sglang_omni.comm import stage_io
 from sglang_omni.comm.data_ref import DataRef, TransportKind
 from sglang_omni.comm.engine import CommEngine, PendingTransfer, pending_transfer_bytes
 from sglang_omni.comm.router import CommRouter
@@ -337,6 +339,143 @@ def test_comm_engine_releases_sender_op_after_data_ack(ack_success: bool) -> Non
         if not ack_success:
             assert type(op.failed) is RuntimeError
             assert str(op.failed) == "payload read failed"
+
+    asyncio.run(run())
+
+
+class FailingLevelZeroRelay(AckedRelay):
+    def __init__(self, error: Exception, on_failure: Any) -> None:
+        super().__init__()
+        self.error = error
+        self.on_failure = on_failure
+
+    async def put_async(
+        self,
+        tensor: torch.Tensor,
+        request_id: str | None = None,
+        dst_rank: int | None = None,
+        receiver_id: str | None = None,
+    ) -> AckedOp:
+        if self.on_failure is not None:
+            self.on_failure(self.error)
+        else:
+            pass
+        raise self.error
+
+
+def level_zero_sender_with_shm() -> tuple[CommEngine, AckedRelay]:
+    router = CommRouter(
+        stage_name="sender",
+        gpu_id=None,
+        same_process_targets=set(),
+        gpu_stage_names=set(),
+        comm_config={"ack_timeout_s": 1.0},
+    )
+    shm = AckedRelay()
+    router.relays[TransportKind.SHM] = shm
+    return CommEngine(router), shm
+
+
+async def send_over_level_zero(
+    engine: CommEngine,
+    relay: AckedRelay,
+    control_plane: RecordingStageControlPlane,
+    kind: str,
+) -> None:
+    if kind == "payload":
+        await engine.send_payload(
+            relay=relay,
+            control_plane=control_plane,
+            request_id="req-1",
+            payload=make_stage_payload(request_id="req-1", data={"x": torch.ones(2)}),
+            transport=TransportKind.LEVEL_ZERO_IPC,
+            from_stage="sender",
+            to_stage="receiver",
+            target_endpoint="inproc://receiver",
+        )
+    else:
+        await engine.send_stream_chunk(
+            relay=relay,
+            control_plane=control_plane,
+            request_id="req-1",
+            data=torch.ones(2),
+            target_stage="receiver",
+            target_endpoint="inproc://receiver",
+            from_stage="sender",
+            chunk_id=0,
+            metadata=None,
+            transport=TransportKind.LEVEL_ZERO_IPC,
+        )
+
+
+@pytest.mark.parametrize("kind", ["payload", "stream"])
+def test_a_failed_level_zero_relay_sends_the_same_transfer_over_shm(
+    monkeypatch: pytest.MonkeyPatch, kind: str
+) -> None:
+    async def run() -> None:
+        engine, shm = level_zero_sender_with_shm()
+        level_zero = FailingLevelZeroRelay(
+            RuntimeError("staging copy timed out"),
+            on_failure=engine.router.downgrade_level_zero_ipc,
+        )
+        control_plane = RecordingStageControlPlane()
+
+        await send_over_level_zero(engine, level_zero, control_plane, kind)
+
+        published = [
+            DataRef.from_dict(msg.data_ref) for _, _, msg in control_plane.sent_to_stage
+        ]
+        assert [ref.transport for ref in published] == [TransportKind.SHM]
+        assert len(shm.ops) == 1
+        assert engine.router.level_zero_ipc_failure is level_zero.error
+        engine.ack_transfer(
+            DataAckMessage(
+                request_id="req-1",
+                from_stage="receiver",
+                to_stage="sender",
+                object_id=published[0].object_id,
+            )
+        )
+        await wait_until(lambda: shm.ops[0].waited)
+        await engine.close()
+
+    with capture_comm_trace(monkeypatch) as events:
+        asyncio.run(run())
+
+    event = "comm_payload_send" if kind == "payload" else "comm_stream_send"
+    sends = [record for record in events if record["event"] == event]
+    assert [record["transport"] for record in sends] == ["shm"]
+
+
+def test_a_payload_whose_header_cannot_be_pickled_takes_no_relay_slots() -> None:
+    relay = AckedRelay()
+    payload = make_stage_payload(
+        request_id="req-1", data={"x": torch.ones(2), "lock": threading.Lock()}
+    )
+
+    with pytest.raises(TypeError, match="pickle"):
+        asyncio.run(
+            stage_io.write_payload(
+                relay, "req-1", payload, transport=TransportKind.LEVEL_ZERO_IPC
+            )
+        )
+    assert relay.ops == []
+
+
+@pytest.mark.parametrize("kind", ["payload", "stream"])
+def test_a_level_zero_error_that_leaves_the_relay_up_is_not_resent(kind: str) -> None:
+    async def run() -> None:
+        engine, shm = level_zero_sender_with_shm()
+        level_zero = FailingLevelZeroRelay(ValueError("not an XPU tensor"), None)
+        control_plane = RecordingStageControlPlane()
+
+        with pytest.raises(ValueError, match="not an XPU tensor"):
+            await send_over_level_zero(engine, level_zero, control_plane, kind)
+
+        assert control_plane.sent_to_stage == []
+        assert shm.ops == []
+        assert engine.router.level_zero_ipc_failure is None
+        await engine.close()
 
     asyncio.run(run())
 
