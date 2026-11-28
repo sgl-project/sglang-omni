@@ -103,6 +103,8 @@ from sglang_omni.models.qwen3_tts.streaming_vocoder import (
 )
 from sglang_omni.models.registry import PIPELINE_CONFIG_REGISTRY
 from sglang_omni.pipeline.stage.stream_queue import StreamItem
+from sglang_omni.platforms.interface import OmniPlatform
+from sglang_omni.platforms.xpu import XPUOmniPlatform
 from sglang_omni.preprocessing.cache_key import PromptRowCacheKeys
 from sglang_omni.profiler.event_recorder import (
     RequestEventBuffer,
@@ -1236,6 +1238,50 @@ def test_qwen3_tts_extra_scheduler_kwargs_keeps_stream_output_builder() -> None:
     assert kwargs["stream_output_builder"] is sentinel
     assert kwargs["prefill_coalesce_requests"] == 4
     assert kwargs["prefill_coalesce_wait_ms"] == 120.0
+
+
+@pytest.mark.parametrize(
+    ("platform_cls", "platform_default"),
+    [(OmniPlatform, False), (XPUOmniPlatform, True)],
+)
+@pytest.mark.parametrize("override", [None, True, False])
+def test_qwen3_tts_async_decode_follows_the_platform_unless_overridden(
+    monkeypatch: pytest.MonkeyPatch,
+    platform_cls: type[OmniPlatform],
+    platform_default: bool,
+    override: bool | None,
+) -> None:
+    monkeypatch.setattr(qwen3_engine_builder, "current_platform", platform_cls())
+
+    builder = Qwen3TtsEngineBuilder(enable_async_decode=override)
+
+    expected = platform_default if override is None else override
+    assert builder.extra_scheduler_kwargs()["enable_async_decode"] is expected
+
+
+@pytest.mark.parametrize("override", [None, True, False])
+def test_qwen3_tts_factory_forwards_the_async_decode_override_to_builder(
+    monkeypatch: pytest.MonkeyPatch,
+    override: bool | None,
+) -> None:
+    captured: dict[str, object] = {}
+
+    class FakeBuilder:
+        def __init__(self, **kwargs) -> None:
+            captured.update(kwargs)
+
+        def build(self, model_path, **kwargs):
+            del model_path, kwargs
+            return "engine"
+
+    monkeypatch.setattr(qwen3_engine_builder, "Qwen3TtsEngineBuilder", FakeBuilder)
+
+    result = qwen3_stages.create_sglang_tts_engine_executor(
+        "model", enable_async_decode=override
+    )
+
+    assert result == "engine"
+    assert captured["enable_async_decode"] is override
 
 
 def test_qwen3_tts_coalescing_defaults_leave_gate_disabled() -> None:
@@ -9680,11 +9726,13 @@ def test_qwen3_tts_steady_decode_reports_cuda_graph_ready(
         generation_steps=0,
         speech_output_tokens=0,
         extra_model_outputs={},
+        inflight_feedback=None,
     )
     request = SimpleNamespace(request_id="req", data=data)
     schedule_batch = SimpleNamespace(
         forward_mode=SimpleNamespace(is_extend=lambda: False),
         is_prefill_only=False,
+        sampling_info=SimpleNamespace(penalizer_orchestrator=None),
     )
 
     output = runner.execute(

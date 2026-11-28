@@ -3,10 +3,17 @@
 
 from __future__ import annotations
 
+from contextlib import AbstractContextManager
+from dataclasses import dataclass
 from types import ModuleType
 from typing import TYPE_CHECKING, TypedDict
 
 import torch
+from sglang.srt.sampling.penaltylib import (
+    BatchedPenalizerOrchestrator,
+    BatchedRepetitionPenalizer,
+)
+from sglang.srt.utils.common import async_h2d
 
 from sglang_omni.model_runner.base import ModelRunner
 from sglang_omni.model_runner.model_worker import ModelWorker
@@ -24,7 +31,7 @@ from sglang_omni.utils.device import has_device_streams
 
 if TYPE_CHECKING:
     from sglang.srt.layers.logits_processor import LogitsProcessorOutput
-    from sglang.srt.managers.schedule_batch import ScheduleBatch
+    from sglang.srt.managers.schedule_batch import Req, ScheduleBatch
     from sglang.srt.managers.scheduler import GenerationBatchResult
     from sglang.srt.model_executor.forward_batch_info import ForwardBatch
 
@@ -47,6 +54,30 @@ class Qwen3TTSModelInfo(TypedDict):
     predictor_cuda_graph: PredictorGraphStats
 
 
+PenaltyRowsKey = tuple[tuple[tuple[str, int | None], ...], tuple[int, ...]]
+
+
+@dataclass(kw_only=True, slots=True)
+class Qwen3TTSLaunchedStep:
+    """A launched decode step's sampled ids, codec frame and inputs, held until resolve."""
+
+    ids: torch.Tensor
+    codes: torch.Tensor
+    feedback_rows: list[torch.Tensor]
+    input_rows: list[torch.Tensor]
+    ready: torch.Event | None
+
+
+def is_lookahead_safe_request(req: Req) -> bool:
+    params = req.sampling_params
+    return (
+        params.frequency_penalty == 0.0
+        and params.presence_penalty == 0.0
+        and params.min_new_tokens == 0
+        and req.custom_logit_processor is None
+    )
+
+
 class Qwen3TTSModelRunner(ModelRunner):
     """Runs Qwen3-TTS AR steps and stores generated codec frames per request."""
 
@@ -55,6 +86,11 @@ class Qwen3TTSModelRunner(ModelRunner):
     # Resolved in __init__: post_process_outputs records a readiness event per
     # decode step, and the device cannot change under the runner.
     codes_event_module: ModuleType | None = None
+    resolved_step: Qwen3TTSLaunchedStep | None = None
+    launch_input_rows: list[torch.Tensor] | None = None
+    penalty_rows_key: PenaltyRowsKey | None = None
+    penalty_rows: tuple[torch.Tensor, torch.Tensor] | None = None
+    live_penalizer_orchestrator: BatchedPenalizerOrchestrator | None = None
 
     def __init__(
         self,
@@ -77,6 +113,19 @@ class Qwen3TTSModelRunner(ModelRunner):
 
     def model_info(self) -> Qwen3TTSModelInfo:
         return {"predictor_cuda_graph": self.model.predictor_graph_stats()}
+
+    def execution_context(
+        self,
+        schedule_batch: ScheduleBatch,
+        *,
+        isolate_sampling: bool = False,
+    ) -> AbstractContextManager[None]:
+        self.live_penalizer_orchestrator = (
+            schedule_batch.sampling_info.penalizer_orchestrator
+        )
+        return super().execution_context(
+            schedule_batch, isolate_sampling=isolate_sampling
+        )
 
     def before_prefill(
         self,
@@ -104,10 +153,15 @@ class Qwen3TTSModelRunner(ModelRunner):
         *,
         is_lookahead: bool = False,
     ) -> None:
-        del is_lookahead
         del schedule_batch
         self.model.prepare_decode_buffers(requests)
-        self.write_feedback_buffers(forward_batch, requests)
+        if is_lookahead:
+            self.launch_input_rows = self.stage_feedback_buffers(
+                forward_batch, requests
+            )
+            self.add_inflight_repetition_penalty(forward_batch, requests)
+        else:
+            self.write_feedback_buffers(forward_batch, requests)
 
     def post_prefill(
         self,
@@ -145,11 +199,74 @@ class Qwen3TTSModelRunner(ModelRunner):
         del forward_batch, schedule_batch, requests
         return True
 
-    def lookahead_eligible(self, batch: ScheduleBatch | None) -> bool:
-        # note(ratish): the lookahead's launch and resolve hooks do not run the
-        # codec collect, they would feed token embeddings back.
-        del batch
-        return False
+    def lookahead_eligible(self, batch: ScheduleBatch) -> bool:
+        if not batch.forward_mode.is_decode():
+            return False
+        else:
+            return all(is_lookahead_safe_request(req) for req in batch.reqs)
+
+    def post_decode_launch(
+        self,
+        result: GenerationBatchResult,
+        forward_batch: ForwardBatch | None,
+        requests: list[SchedulerRequest],
+    ) -> Qwen3TTSLaunchedStep:
+        assert (
+            requests
+            and result.next_token_ids is not None
+            and self.launch_input_rows is not None
+        ), "Qwen3-TTS step-ahead launches only sampled decode batches that before_decode staged"
+        layer0_codes = result.next_token_ids
+        self.run_code_predictor(result, forward_batch, layer0_codes)
+        batch_size = len(requests)
+        codes = self.model.output_codes[:batch_size].detach().clone()
+        embeds = self.model.output_embeds[:batch_size].detach().clone()
+        ready = self.record_codes_ready()
+        feedback_rows = [embeds[row_idx] for row_idx in range(batch_size)]
+        codec_ids = layer0_codes.reshape(-1)[:batch_size].to(torch.int64)
+        codec_id_rows = [codec_ids[row_idx] for row_idx in range(batch_size)]
+        for row_idx, sched_req in enumerate(requests):
+            sched_req.data.inflight_feedback = feedback_rows[row_idx]
+            sched_req.data.inflight_codec_id = codec_id_rows[row_idx]
+        input_rows = self.launch_input_rows
+        self.launch_input_rows = None
+        ids = layer0_codes.reshape(-1)[:batch_size]
+        host_ids = self.next_host_staging((batch_size,), ids.dtype)
+        host_ids[:batch_size].copy_(ids, non_blocking=True)
+        return Qwen3TTSLaunchedStep(
+            ids=host_ids,
+            codes=codes,
+            feedback_rows=feedback_rows,
+            input_rows=input_rows,
+            ready=ready,
+        )
+
+    def post_decode_resolve(
+        self,
+        launch_buf: Qwen3TTSLaunchedStep | None,
+        result: GenerationBatchResult | None,
+        forward_batch: ForwardBatch | None,
+        schedule_batch: ScheduleBatch | None,
+        requests: list[SchedulerRequest],
+    ) -> None:
+        del forward_batch, schedule_batch
+        assert (
+            launch_buf is not None and result is not None and requests
+        ), "Qwen3-TTS resolves only the step its own launch staged"
+        result.next_token_ids = launch_buf.ids[: len(requests)]
+        self.resolved_step = launch_buf
+
+    def record_codes_ready(self) -> torch.Event | None:
+        if self.codes_event_module is None:
+            return None
+        else:
+            ready = self.codes_event_module.Event()
+            ready.record()
+            return ready
+
+    def emitted_codec_frames(self, data: Qwen3TTSSGLangRequestData) -> int:
+        inflight = 0 if data.inflight_feedback is None else 1
+        return len(data.output_codes) + inflight
 
     # ------------------------------------------------------------------
     # Qwen3-TTS logit shaping
@@ -182,7 +299,10 @@ class Qwen3TTSModelRunner(ModelRunner):
         else:
             active_logits[:, suppress_start:suppress_stop] = float("-inf")
         for row_index, scheduled_request in enumerate(requests):
-            if len(scheduled_request.data.output_codes) < QWEN3_TTS_MIN_NEW_FRAMES:
+            if (
+                self.emitted_codec_frames(scheduled_request.data)
+                < QWEN3_TTS_MIN_NEW_FRAMES
+            ):
                 # note (ratish): a slice fills on the device; assigning one element copies a host scalar and waits for the stream.
                 active_logits[row_index, codec_eos : codec_eos + 1] = float("-inf")
             else:
@@ -195,7 +315,7 @@ class Qwen3TTSModelRunner(ModelRunner):
             for row_index, scheduled_request in enumerate(requests):
                 if (
                     scheduled_request.data.mask_leading_silence
-                    and len(scheduled_request.data.output_codes)
+                    and self.emitted_codec_frames(scheduled_request.data)
                     < self.leading_silence_mask_frames
                 ):
                     active_logits[row_index].index_fill_(
@@ -238,15 +358,22 @@ class Qwen3TTSModelRunner(ModelRunner):
             return
         else:
             pass
-        layer0_codes = result.next_token_ids
+        # note(ratish): the layer 0 id is the step's only host read, staged ahead
+        # of the predictor so the finalize wait covers the sample, not the predictor.
+        self.stage_token_ids(result, result.next_token_ids)
+        self.run_code_predictor(result, forward_batch, result.next_token_ids)
+        self.has_pending_code_step = True
+
+    def run_code_predictor(
+        self,
+        result: GenerationBatchResult,
+        forward_batch: ForwardBatch | None,
+        layer0_codes: torch.Tensor,
+    ) -> None:
         if layer0_codes.ndim == 1:
             layer0_codes = layer0_codes.unsqueeze(1)
         else:
             pass
-        # note(ratish): the layer 0 id is the step's only host read, staged ahead
-        # of the predictor so the finalize wait covers the sample, not the predictor.
-        self.stage_token_ids(result, result.next_token_ids)
-
         hidden = result.logits_output.hidden_states
         if isinstance(hidden, torch.Tensor) and hidden.ndim == 2:
             hidden = hidden.unsqueeze(1)
@@ -258,7 +385,6 @@ class Qwen3TTSModelRunner(ModelRunner):
             hidden,
             semantic_positions=semantic_positions,
         )
-        self.has_pending_code_step = True
 
     def post_process_outputs(
         self,
@@ -267,6 +393,13 @@ class Qwen3TTSModelRunner(ModelRunner):
         outputs: dict[str, RequestOutput],
     ) -> None:
         del result
+        resolved = self.resolved_step
+        if resolved is not None:
+            self.resolved_step = None
+            self.apply_resolved_step(resolved, scheduler_output, outputs)
+            return
+        else:
+            pass
         if not self.has_pending_code_step:
             return
         else:
@@ -278,12 +411,7 @@ class Qwen3TTSModelRunner(ModelRunner):
         batch_size = len(scheduler_output.requests)
         codes_snap = self.model.output_codes[:batch_size].detach().clone()
         embeds_snap = self.model.output_embeds[:batch_size].detach().clone()
-        codes_ready = None
-        if self.codes_event_module is not None:
-            codes_ready = self.codes_event_module.Event()
-            codes_ready.record()
-        else:
-            pass
+        codes_ready = self.record_codes_ready()
         for row_idx, sched_req in enumerate(scheduler_output.requests):
             req_output = outputs[sched_req.request_id]
             # note (ratish): a middle prefill chunk samples at a prompt row; SGLang drops
@@ -302,6 +430,46 @@ class Qwen3TTSModelRunner(ModelRunner):
             sched_req.data.latest_stream_code_chunk = code_chunk
             sched_req.data.codes_ready_event = codes_ready
             sched_req.data.pending_feedback_queue.append(embeds_snap[row_idx])
+
+    def apply_resolved_step(
+        self,
+        resolved: Qwen3TTSLaunchedStep,
+        scheduler_output: SchedulerOutput,
+        outputs: dict[str, RequestOutput],
+    ) -> None:
+        eos_id = int(self.model.config.codec_eos_token_id)
+        for row_idx, sched_req in enumerate(scheduler_output.requests):
+            data = sched_req.data
+            if data.inflight_feedback is resolved.feedback_rows[row_idx]:
+                data.inflight_feedback = None
+                data.inflight_codec_id = None
+            else:
+                pass
+            req = data.req
+            req_output = outputs[sched_req.request_id]
+            if (
+                req.finished()
+                or self.req_is_retracted(req)
+                or req.inflight_middle_chunks > 0
+                or req_output.data is None
+            ):
+                continue
+            else:
+                pass
+            QwenTalkerModelRunner.pop_next_decode_inputs(data)
+            QwenTalkerModelRunner.append_decode_input_history(
+                data, resolved.input_rows[row_idx]
+            )
+            data.speech_output_tokens += 1
+            if int(req_output.data) == eos_id:
+                continue
+            else:
+                pass
+            code_chunk = resolved.codes[row_idx]
+            data.output_codes.append(code_chunk)
+            data.latest_stream_code_chunk = code_chunk
+            data.codes_ready_event = resolved.ready
+            data.pending_feedback_queue.append(resolved.feedback_rows[row_idx])
 
     def finalize_skip_rids(self, scheduler_output: SchedulerOutput) -> set[str]:
         return {
@@ -322,9 +490,92 @@ class Qwen3TTSModelRunner(ModelRunner):
     def write_feedback_buffers(
         self, forward_batch: ForwardBatch | None, requests: list[SchedulerRequest]
     ) -> None:
+        history_rows = self.stage_feedback_buffers(forward_batch, requests)
+        for sched_req, history_row in zip(requests, history_rows, strict=True):
+            QwenTalkerModelRunner.pop_next_decode_inputs(sched_req.data)
+            QwenTalkerModelRunner.append_decode_input_history(
+                sched_req.data, history_row
+            )
+
+    def add_inflight_repetition_penalty(
+        self, forward_batch: ForwardBatch, requests: list[SchedulerRequest]
+    ) -> None:
+        scaling = forward_batch.sampling_info.acc_scaling_penalties
+        if scaling is None:
+            return
+        else:
+            pass
+        rows = [
+            row_idx
+            for row_idx, sched_req in enumerate(requests)
+            if sched_req.data.inflight_codec_id is not None
+        ]
+        if not rows:
+            return
+        else:
+            pass
+        codec_ids = torch.stack(
+            [requests[row_idx].data.inflight_codec_id for row_idx in rows]
+        )
+        row_index, penalties = self.staged_penalty_rows(
+            requests, rows, scaling.device, scaling.dtype
+        )
+        scaling.index_put_((row_index, codec_ids), penalties)
+        live_penalties = self.live_repetition_penalties()
+        if live_penalties is not None:
+            live_penalties.index_put_((row_index, codec_ids), penalties)
+        else:
+            pass
+
+    def live_repetition_penalties(self) -> torch.Tensor | None:
+        orchestrator = self.live_penalizer_orchestrator
+        if orchestrator is None:
+            return None
+        else:
+            pass
+        penalizer = orchestrator.penalizers.get(BatchedRepetitionPenalizer)
+        if penalizer is None or not penalizer.is_prepared():
+            return None
+        else:
+            return penalizer.cumulated_repetition_penalties
+
+    def staged_penalty_rows(
+        self,
+        requests: list[SchedulerRequest],
+        rows: list[int],
+        device: torch.device,
+        dtype: torch.dtype,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        key: PenaltyRowsKey = (
+            tuple(
+                (sched_req.request_id, sched_req.data.decode_prep_epoch)
+                for sched_req in requests
+            ),
+            tuple(rows),
+        )
+        if self.penalty_rows_key == key and self.penalty_rows is not None:
+            return self.penalty_rows
+        else:
+            pass
+        row_index = async_h2d(rows, dtype=torch.int64, device=device)
+        penalties = async_h2d(
+            [
+                float(requests[row_idx].data.req.sampling_params.repetition_penalty)
+                for row_idx in rows
+            ],
+            dtype=dtype,
+            device=device,
+        )
+        self.penalty_rows_key = key
+        self.penalty_rows = (row_index, penalties)
+        return self.penalty_rows
+
+    def stage_feedback_buffers(
+        self, forward_batch: ForwardBatch | None, requests: list[SchedulerRequest]
+    ) -> list[torch.Tensor]:
         batch_size = len(requests)
         if batch_size == 0:
-            return
+            return []
         else:
             pass
         decode_feedback_embedding = self.model.decode_feedback_embedding
@@ -348,24 +599,13 @@ class Qwen3TTSModelRunner(ModelRunner):
         feedback_rows: list[torch.Tensor] = []
         text_rows: list[torch.Tensor] = []
         for sched_req in requests:
-            data: Qwen3TTSSGLangRequestData = sched_req.data
-            inputs = QwenTalkerModelRunner.peek_next_decode_inputs(data)
-            if inputs is None:
-                raise RuntimeError(
-                    f"Qwen3-TTS decode for {sched_req.request_id} has no queued "
-                    "feedback embedding"
-                )
-            else:
-                pass
-            feedback, text = inputs
+            feedback, text = self.peek_lookahead_decode_inputs(sched_req)
             feedback_rows.append(
                 QwenTalkerModelRunner.decode_row(feedback, device=device, dtype=dtype)
             )
             text_rows.append(
                 QwenTalkerModelRunner.decode_row(text, device=device, dtype=dtype)
             )
-            QwenTalkerModelRunner.pop_next_decode_inputs(data)
-
         with torch.no_grad():
             target = weight[:batch_size]
             torch.stack(feedback_rows, dim=0, out=target)
@@ -373,12 +613,38 @@ class Qwen3TTSModelRunner(ModelRunner):
             # note(ratish): the history outlives the buffer, a retracted request
             # replays it in its re-prefill.
             history = target.detach().clone()
-        for row_idx, sched_req in enumerate(requests):
-            QwenTalkerModelRunner.append_decode_input_history(
-                sched_req.data, history[row_idx]
-            )
         # During graph decode, input_ids carries staged embedding row ids.
         input_ids[:batch_size].copy_(row_ids)
+        return [history[row_idx] for row_idx in range(batch_size)]
+
+    @staticmethod
+    def peek_lookahead_decode_inputs(
+        sched_req: SchedulerRequest,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        data: Qwen3TTSSGLangRequestData = sched_req.data
+        if data.inflight_feedback is None:
+            feedback = QwenTalkerModelRunner.peek_left(data.pending_feedback_queue)
+            text_offset = 0
+        else:
+            feedback = data.inflight_feedback
+            text_offset = 1
+        if feedback is None:
+            raise RuntimeError(
+                f"Qwen3-TTS decode for {sched_req.request_id} has no queued "
+                "feedback embedding"
+            )
+        else:
+            pass
+        text_queue = data.pending_text_queue
+        if len(text_queue) > text_offset:
+            return feedback, text_queue[text_offset]
+        elif data.thinker_chunks_done:
+            return feedback, data.tts_pad_embed
+        else:
+            raise RuntimeError(
+                f"Qwen3-TTS decode for {sched_req.request_id} has no queued text "
+                "embedding"
+            )
 
     def decode_row_ids(self, batch_size: int, input_ids: torch.Tensor) -> torch.Tensor:
         cached = self.row_ids_cache

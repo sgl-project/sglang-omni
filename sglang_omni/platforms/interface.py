@@ -264,6 +264,10 @@ class OmniPlatform(DeviceMixin):
     def enable_tts_predictor_graph(self) -> bool:
         return True
 
+    def enable_tts_async_decode(self) -> bool:
+        """Whether Qwen3-TTS decodes one step ahead of its host bookkeeping by default."""
+        return False
+
     def enable_tts_vocoder_fast_path(self) -> bool:
         """Whether the Qwen3-TTS vocoder takes its device fast path by default:
         asynchronous decode on a priority stream, and the codec decode graphs its

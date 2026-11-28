@@ -176,6 +176,8 @@ class Qwen3TTSSGLangRequestData(SGLangARRequestData):
     subtalker_sampling_seed: int = field(default_factory=new_qwen3_tts_sampling_seed)
     engine_start_s: float = 0.0
     decode_prep_epoch: int | None = None
+    inflight_feedback: torch.Tensor | None = None
+    inflight_codec_id: torch.Tensor | None = None
 
 
 @dataclass
