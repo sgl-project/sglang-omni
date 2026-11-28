@@ -1,0 +1,8 @@
+audio8_tts
+
+The model architecture is inspired by the DualAR design used in Fish Audio
+S2 Pro.
+
+The codec implementation is derived from modeling_arktts_codec.py in
+Edge0/Audio8-TTS-Realistic-Air, revision 6bf7a980759d8022a66922ee975dab99229a2dd9,
+under the Apache License, Version 2.0.

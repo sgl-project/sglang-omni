@@ -1,0 +1,2 @@
+config_cls: Audio8TTSPipelineConfig
+model_path: Edge0/Audio8-TTS-Realistic-Air
