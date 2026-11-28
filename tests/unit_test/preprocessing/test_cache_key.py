@@ -159,6 +159,49 @@ def test_hash_media_item_tensor_digest_matches_whole_buffer(tensor) -> None:
     assert cache_key.hash_media_item(tensor) == expected
 
 
+@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float8_e4m3fn])
+@pytest.mark.parametrize("transpose", [False, True])
+def test_media_cache_hashes_tensor_dtypes_without_numpy_support(dtype, transpose):
+    tensor = torch.arange(24).reshape(6, 4).to(dtype)
+    if transpose:
+        tensor = tensor.T
+    else:
+        pass
+    raw_bytes = tensor.contiguous().view(torch.uint8).numpy().tobytes()
+    digest = xxhash.xxh3_64(raw_bytes).hexdigest()
+    expected = f"pt:{tensor.dtype}|{tuple(tensor.shape)}:{digest}"
+
+    assert cache_key.compute_media_cache_key(tensor, prefix="image") == (
+        f"image:{cache_key.hash_joined([expected])}"
+    )
+    assert cache_key.hash_media_item(tensor) == cache_key.hash_media_item(
+        tensor.contiguous()
+    )
+    changed = tensor.float()
+    changed[0, 0] = 8.0
+    assert cache_key.hash_media_item(tensor) != cache_key.hash_media_item(
+        changed.to(dtype)
+    )
+
+
+@pytest.mark.parametrize(
+    "tensor",
+    [
+        torch.tensor(1.0),
+        torch.empty(0, 3),
+        torch.tensor([True, False]),
+        torch.tensor([1 + 2j, 3 - 4j]),
+        torch.arange(8, dtype=torch.float64),
+    ],
+)
+def test_tensor_raw_byte_hash_keeps_existing_dtype_keys(tensor):
+    expected = (
+        f"pt:{tensor.dtype}|{tuple(tensor.shape)}:"
+        f"{xxhash.xxh3_64(tensor.numpy().tobytes()).hexdigest()}"
+    )
+    assert cache_key.hash_media_item(tensor) == expected
+
+
 @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32])
 def test_prompt_row_cache_keys_follow_row_content(dtype) -> None:
     rows = (torch.arange(32).reshape(4, 8) * 7 - 50).to(dtype)
