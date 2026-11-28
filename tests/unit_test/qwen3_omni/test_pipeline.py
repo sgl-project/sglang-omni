@@ -2448,6 +2448,7 @@ def test_qwen_visual_cache_key_tracks_decoded_content(
         return [media["video"]], [2.0], None
 
     pre.processor = Processor()
+    pre.thread_processors = mod.ThreadProcessors(pre.processor, copies=0)
     monkeypatch.setattr(mod, "ensure_image_list_async", image_loader)
     monkeypatch.setattr(mod, "ensure_video_list_async", video_loader)
 
@@ -2544,6 +2545,7 @@ def run_video_request(
         return [frames], [2.0], None
 
     pre.processor = Processor()
+    pre.thread_processors = preprocessor_mod.ThreadProcessors(pre.processor, copies=0)
     monkeypatch.setattr(preprocessor_mod, "ensure_video_list_async", video_loader)
     monkeypatch.setattr(preprocessor_mod, "compute_video_cache_key", video_cache_key)
     payload = StagePayload(
