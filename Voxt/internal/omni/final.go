@@ -52,7 +52,8 @@ type finalRequest struct {
 	// pieceEnd is the sample a piece of the live session's recording ends
 	// at (0: not a piece): the session decodes it from its Final's start
 	// and moves that start here.
-	pieceEnd int
+	pieceEnd    int
+	onCandidate func(string)
 }
 
 // finalResult is a request's answer.
@@ -87,6 +88,10 @@ func (r finalRequest) body(model string) (*bytes.Buffer, string) {
 	}
 	if r.maxTokens > 0 {
 		field("max_new_tokens", itoa(r.maxTokens))
+	}
+	if r.onCandidate != nil {
+		field("include_transcript_candidates", "true")
+	} else {
 	}
 	field("stop_at_end_of_text", "true")
 	field("stop_on_token_loop", "true")
@@ -186,49 +191,69 @@ func transcribeTimed(ctx context.Context, l *lease, r finalRequest, stall time.D
 			}
 			return *done, nil
 		}
-		res, err := parseEvent(payload)
+		res, candidate, err := parseEvent(payload)
 		if err != nil {
 			return finalResult{}, err
 		}
-		if res != nil {
+		if candidate != nil && done == nil && r.onCandidate != nil {
+			r.onCandidate(*candidate)
+		} else if res != nil {
 			done = res
+		} else {
 		}
 	}
 }
 
-// parseEvent reads one server-sent event: the result for
-// transcript.text.done, nil for others, an error for "error". Only the
-// error's code is kept: messages may echo the request.
-func parseEvent(payload string) (*finalResult, error) {
-	var ev struct {
-		Type     string `json:"type"`
-		Text     string `json:"text"`
-		Segments []struct {
-			Start   float64 `json:"start"`
-			End     float64 `json:"end"`
-			Speaker string  `json:"speaker"`
-			Text    string  `json:"text"`
-		} `json:"segments"`
-		Metadata *struct {
-			Tokens      *int     `json:"generated_token_count"`
-			Language    *string  `json:"language"`
-			Finish      string   `json:"finish_reason"`
-			WindowTexts []string `json:"window_texts"`
-		} `json:"generation_metadata"`
-		Error *struct {
-			Type string `json:"type"`
-			Code string `json:"code"`
-		} `json:"error"`
-	}
-	if err := json.Unmarshal([]byte(payload), &ev); err != nil || ev.Type == "" {
-		return nil, &asr.Error{Kind: asr.KindProtocol, Provider: Provider, Detail: "an unreadable transcription event"}
+type finalEventEnvelope struct {
+	Type     string          `json:"type"`
+	Text     json.RawMessage `json:"text"`
+	Segments []struct {
+		Start   float64 `json:"start"`
+		End     float64 `json:"end"`
+		Speaker string  `json:"speaker"`
+		Text    string  `json:"text"`
+	} `json:"segments"`
+	Metadata *struct {
+		Tokens      *int     `json:"generated_token_count"`
+		Language    *string  `json:"language"`
+		Finish      string   `json:"finish_reason"`
+		WindowTexts []string `json:"window_texts"`
+	} `json:"generation_metadata"`
+	Error *struct {
+		Type string `json:"type"`
+		Code string `json:"code"`
+	} `json:"error"`
+}
+
+// parseEvent reads one server-sent event. Malformed candidates are advisory
+// and leave the authoritative Final path untouched.
+func parseEvent(payload string) (*finalResult, *string, error) {
+	var ev finalEventEnvelope
+	err := json.Unmarshal([]byte(payload), &ev)
+	if err != nil {
+		if ev.Type == "transcript.text.candidate" {
+			return nil, nil, nil
+		} else {
+			return nil, nil, &asr.Error{Kind: asr.KindProtocol, Provider: Provider, Detail: "an unreadable transcription event"}
+		}
+	} else if ev.Type == "" {
+		return nil, nil, &asr.Error{Kind: asr.KindProtocol, Provider: Provider, Detail: "an unreadable transcription event"}
+	} else {
 	}
 	switch ev.Type {
 	case "transcript.text.done":
-		r := &finalResult{text: ev.Text, segments: ev.Segments}
+		var text string
+		if len(ev.Text) > 0 {
+			if err := json.Unmarshal(ev.Text, &text); err != nil {
+				return nil, nil, &asr.Error{Kind: asr.KindProtocol, Provider: Provider, Detail: "an unreadable transcription event"}
+			} else {
+			}
+		} else {
+		}
+		r := &finalResult{text: text, segments: ev.Segments}
 		if m := ev.Metadata; m != nil {
 			if m.Tokens == nil || m.Finish == "" {
-				return nil, &asr.Error{Kind: asr.KindProtocol, Provider: Provider, Detail: "the generation metadata is incomplete"}
+				return nil, nil, &asr.Error{Kind: asr.KindProtocol, Provider: Provider, Detail: "the generation metadata is incomplete"}
 			}
 			r.tokens, r.length = *m.Tokens, m.Finish == "length"
 			r.windowTexts = m.WindowTexts
@@ -236,15 +261,21 @@ func parseEvent(payload string) (*finalResult, error) {
 				r.language = *m.Language
 			}
 		}
-		return r, nil
+		return r, nil, nil
+	case "transcript.text.candidate":
+		var candidate string
+		if err := json.Unmarshal(ev.Text, &candidate); err != nil {
+			return nil, nil, nil
+		}
+		return nil, &candidate, nil
 	case "error":
 		code := "error"
 		if ev.Error != nil && ev.Error.Code != "" {
 			code = ev.Error.Code
 		}
-		return nil, &asr.Error{Kind: asr.KindServer, Provider: Provider, Code: code, Detail: "the transcription failed"}
+		return nil, nil, &asr.Error{Kind: asr.KindServer, Provider: Provider, Code: code, Detail: "the transcription failed"}
 	}
-	return nil, nil
+	return nil, nil, nil
 }
 
 // stallOr is a transport error's *asr.Error, killing a stalled server.

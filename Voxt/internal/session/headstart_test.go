@@ -195,7 +195,8 @@ func TestHeadStartLateCandidateAfterCapture(t *testing.T) {
 	releaseResolve := func() { resolveOnce.Do(func() { close(resolveGate) }) }
 	t.Cleanup(releaseResolve)
 	streamer := &fakeStreamer{
-		final: transcript, silent: true, candidates: []string{transcript},
+		final: transcript, silent: true,
+		candidates:  []string{transcript},
 		openStarted: make(chan struct{}, 1),
 		finishGate:  finishGate, finishStarted: make(chan struct{}, 1),
 	}

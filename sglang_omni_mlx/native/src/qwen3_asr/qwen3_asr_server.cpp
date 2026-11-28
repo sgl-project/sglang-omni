@@ -9,6 +9,7 @@
 #include <mutex>
 #include <stdexcept>
 #include <string>
+#include <utility>
 
 #include "common/asr_service.h"
 #include "qwen3_asr/realtime.h"
@@ -34,11 +35,21 @@ public:
   asr_service::Transcription
   Prepare(std::vector<float> samples,
           const asr_service::FormFields &form) const override {
+    return PrepareWithCandidates(std::move(samples), form, {});
+  }
+
+  asr_service::Transcription PrepareWithCandidates(
+      std::vector<float> samples, const asr_service::FormFields &form,
+      omni_common::CandidatePublisher candidate_publisher) const override {
     // note (XXXXRT666): a request does not wait behind a session's shadow
     // Final, which is only background work.
     qwen3_asr::NoteForegroundRequest();
     CancelShadowFinals();
     TranscriptionOptions options;
+    if (candidate_publisher && samples.size() <= qwen3_asr::kMaxChunkSamples) {
+      options.candidate_publisher = std::move(candidate_publisher);
+    } else {
+    }
     const auto language = asr_service::TextField(form, "language");
     options.language = language.has_value()
                            ? qwen3_asr::NormalizeLanguage(*language)

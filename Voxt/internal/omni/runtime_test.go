@@ -635,7 +635,7 @@ func TestUnload(t *testing.T) {
 	}
 	f.rt.Unload(ASRFast)
 	f.rt.Unload("nothing")
-	if _, _, err := a.final(ctx, l, tone(time.Second, 0.3), "", bias{}, prior{}); err != nil {
+	if _, _, err := a.final(ctx, l, tone(time.Second, 0.3), "", bias{}, prior{}, nil); err != nil {
 		t.Fatalf("the use in progress failed: %v", err)
 	}
 	l.release()

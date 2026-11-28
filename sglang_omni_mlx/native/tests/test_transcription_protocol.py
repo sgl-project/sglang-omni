@@ -4,12 +4,14 @@
 from __future__ import annotations
 
 import json
+import time
 from pathlib import Path
 
 import pytest
 from native_server import SupervisedServer, multipart_form, silent_wav, sse_payloads
 
 FRAME_COUNT = 1600
+CANDIDATE_FINISH_TIMEOUT_SECONDS = 0.2  # Leaves 50 ms below the heartbeat.
 SEGMENT = {"start": 0.5, "end": 1.5, "speaker": "S01", "text": str(FRAME_COUNT)}
 
 
@@ -103,6 +105,7 @@ def test_speaker_segments_come_with_the_text(
         ({}, silent_wav(FRAME_COUNT, sample_rate=8000), "audio must be 16 kHz mono"),
         ({}, silent_wav(FRAME_COUNT, channel_count=2), "audio must be 16 kHz mono"),
         ({"include_generation_metadata": "true"}, silent_wav(FRAME_COUNT), "include_generation_metadata requires stream=true"),
+        ({"include_transcript_candidates": "true"}, silent_wav(FRAME_COUNT), "include_transcript_candidates requires stream=true"),
         ({"max_new_tokens": "ten"}, silent_wav(FRAME_COUNT), "max_new_tokens must be an integer"),
     ],
 )  # fmt: skip
@@ -139,7 +142,12 @@ def test_a_disconnected_stream_cancels_its_transcription(
 ) -> None:
     """A client that leaves a streamed request must not hold the worker."""
     boundary, body = multipart_form(
-        {"outcome": "block", "stream": "true"}, silent_wav(FRAME_COUNT)
+        {
+            "outcome": "block",
+            "stream": "true",
+            "include_transcript_candidates": "true",
+        },
+        silent_wav(FRAME_COUNT),
     )
     client = asr_server.open_request(
         "/v1/audio/transcriptions", f"multipart/form-data; boundary={boundary}", body
@@ -153,6 +161,63 @@ def test_a_disconnected_stream_cancels_its_transcription(
     queued.close()
     asr_server.wait_for_request_states({})
     assert asr_server.post_form({}, silent_wav(FRAME_COUNT)).status == 200
+
+
+def test_a_candidate_is_sent_before_the_authoritative_final(
+    asr_server: SupervisedServer,
+) -> None:
+    """A candidate published before Final must not wait for the heartbeat."""
+    boundary, body = multipart_form(
+        {
+            "outcome": "candidate_window",
+            "stream": "true",
+            "include_transcript_candidates": "true",
+        },
+        silent_wav(FRAME_COUNT),
+    )
+    client = asr_server.open_request(
+        "/v1/audio/transcriptions", f"multipart/form-data; boundary={boundary}", body
+    )
+    response = bytearray()
+    while b"data: [DONE]" not in response:
+        chunk = client.recv(4096)
+        assert chunk
+        response.extend(chunk)
+    client.close()
+
+    body = bytes(response).split(b"\r\n\r\n", 1)[1]
+    payloads = sse_payloads(body)
+    assert [json.loads(payload).get("type") for payload in payloads[:-1]] == [
+        "transcript.text.candidate",
+        "transcript.text.done",
+    ]
+    assert json.loads(payloads[0]) == {
+        "type": "transcript.text.candidate",
+        "text": "provisional transcript",
+    }
+    assert payloads[2] == "[DONE]"
+
+
+def test_candidate_enabled_stream_finishes_without_a_candidate(
+    asr_server: SupervisedServer,
+) -> None:
+    """An unpublished candidate must not leave the writer asleep until heartbeat."""
+    started_at = time.monotonic()
+    response = asr_server.post_form(
+        {
+            "outcome": "no_candidate_window",
+            "stream": "true",
+            "include_transcript_candidates": "true",
+        },
+        silent_wav(FRAME_COUNT),
+    )
+    assert time.monotonic() - started_at < CANDIDATE_FINISH_TIMEOUT_SECONDS
+    assert response.status == 200
+    payloads = sse_payloads(response.body)
+    assert [json.loads(payload)["type"] for payload in payloads[:-1]] == [
+        "transcript.text.done"
+    ]
+    assert payloads[-1] == "[DONE]"
 
 
 def test_shutdown_cancels_a_running_transcription(

@@ -235,14 +235,22 @@ func TestFinalPrior(t *testing.T) {
 			t.Fatal(err)
 		}
 		defer l.release()
-		if _, _, err := a.final(ctx, l, tone(130*time.Second, 0.3), tc.lang, bias{}, tc.known); err != nil {
+		candidateCount := 0
+		candidatePublisher := func(string) { candidateCount++ }
+		if _, _, err := a.final(ctx, l, tone(130*time.Second, 0.3), tc.lang, bias{}, tc.known, candidatePublisher); err != nil {
 			t.Fatal(err)
+		}
+		if candidateCount != 0 {
+			t.Errorf("published %d candidates from a multi-chunk Final", candidateCount)
 		}
 		finals := f.records("final")
 		if len(finals) < 2 {
 			t.Fatalf("130 s of audio in %d requests", len(finals))
 		}
 		for i, r := range finals {
+			if r.Fields["include_transcript_candidates"] != "" {
+				t.Errorf("multi-chunk Final %d requested candidates: %v", i, r.Fields)
+			}
 			if r.Fields["guessed_text"] != "" || r.Fields["guess_auto_language"] != "" ||
 				(r.Fields["realtime_session"] == "s") != (i == 0) {
 				t.Errorf("language %q, chunk %d: %v", tc.lang, i, r.Fields)

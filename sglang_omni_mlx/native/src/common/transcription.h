@@ -15,6 +15,8 @@
 
 namespace omni_common {
 
+using CandidatePublisher = std::function<void(const std::string &)>;
+
 struct SpeakerSegment {
   double start_seconds = 0.0;
   double end_seconds = 0.0;

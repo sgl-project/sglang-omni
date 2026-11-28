@@ -184,6 +184,17 @@ func final(o Opts, w http.ResponseWriter, r *http.Request) {
 	if o.TokenLimit {
 		finish = "length"
 	}
+	if fields["include_transcript_candidates"] == "true" {
+		if o.MalformedCandidate {
+			_, _ = io.WriteString(w, `data: {"type":"transcript.text.candidate","text":{"invalid":true}}`+"\n\n")
+		} else if o.Candidate != "" {
+			candidate, _ := json.Marshal(map[string]string{"type": "transcript.text.candidate", "text": o.Candidate})
+			fmt.Fprintf(w, "data: %s\n\n", candidate)
+		} else {
+		}
+		flush()
+	} else {
+	}
 	metadata := map[string]any{"generated_token_count": 10, "language": language, "finish_reason": finish}
 	if o.WindowTexts != nil {
 		metadata["window_texts"] = o.WindowTexts

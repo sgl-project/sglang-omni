@@ -19,6 +19,7 @@
 // completion tokens and the reference's 44.1 kHz sample count as its prompt
 // tokens.
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <filesystem>
@@ -46,6 +47,10 @@ using speech_service::FieldOr;
 using speech_service::Json;
 
 constexpr auto kBlockPollInterval = std::chrono::milliseconds(10);
+constexpr auto kCandidateSendWindow =
+    std::chrono::milliseconds(200); // The 250 ms poller misses this candidate.
+constexpr auto kCandidateFinishWindow =
+    std::chrono::milliseconds(50); // Completes before the first heartbeat.
 // Unlike Voxt's 16 kHz input, so a test sees which rate a header reports.
 constexpr int kSpeechSampleRate = 24000;
 constexpr size_t kMaxRequestBodyBytes = 64 * 1024;
@@ -90,6 +95,12 @@ public:
   asr_service::Transcription
   Prepare(std::vector<float> samples,
           const asr_service::FormFields &form) const override {
+    return PrepareWithCandidates(std::move(samples), form, {});
+  }
+
+  asr_service::Transcription PrepareWithCandidates(
+      std::vector<float> samples, const asr_service::FormFields &form,
+      omni_common::CandidatePublisher candidate_publisher) const override {
     const std::string outcome =
         asr_service::TextField(form, "outcome").value_or("text");
     const std::optional<std::string> language =
@@ -97,7 +108,18 @@ public:
     const int max_new_tokens =
         asr_service::IntegerField(form, "max_new_tokens").value_or(0);
     return [outcome, language, max_new_tokens,
+            candidate_publisher = std::move(candidate_publisher),
             sample_count = samples.size()](const std::atomic<bool> &cancel) {
+      if (candidate_publisher && outcome == "no_candidate_window") {
+        std::this_thread::sleep_for(kCandidateFinishWindow);
+      } else if (candidate_publisher && outcome != "no_candidate") {
+        candidate_publisher("provisional transcript");
+        if (outcome == "candidate_window") {
+          std::this_thread::sleep_for(kCandidateSendWindow);
+        } else {
+        }
+      } else {
+      }
       if (outcome == "fail") {
         throw std::runtime_error("stub transcription failed");
       } else if (outcome == "block") {

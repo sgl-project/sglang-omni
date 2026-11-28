@@ -3,6 +3,7 @@
 
 #include <chrono>
 #include <cmath>
+#include <condition_variable>
 #include <cstring>
 #include <future>
 #include <iostream>
@@ -38,6 +39,53 @@ struct ServerState {
   TranscriptionWorker *worker = nullptr;
   const ServedModel *model = nullptr;
   std::string model_name;
+};
+
+class LatestCandidateMailbox {
+public:
+  void Publish(const std::string &text) {
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      if (!finished_) {
+        candidate_ = text;
+      } else {
+        return;
+      }
+    }
+    changed_.notify_one();
+  }
+
+  bool WaitForUpdate(std::chrono::milliseconds timeout) {
+    std::unique_lock<std::mutex> lock(mutex_);
+    return changed_.wait_for(
+        lock, timeout, [this] { return finished_ || candidate_.has_value(); });
+  }
+
+  std::optional<std::string> TakeLatest() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (finished_ || !candidate_.has_value()) {
+      return std::nullopt;
+    } else {
+    }
+    std::optional<std::string> candidate = std::move(candidate_);
+    candidate_.reset();
+    return candidate;
+  }
+
+  void Finish() {
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      finished_ = true;
+      candidate_.reset();
+    }
+    changed_.notify_one();
+  }
+
+private:
+  std::mutex mutex_;
+  std::condition_variable changed_;
+  std::optional<std::string> candidate_;
+  bool finished_ = false;
 };
 
 // Speaker segments, for models that produce them.
@@ -113,35 +161,55 @@ int HandleTranscriptions(mg_connection *connection, void *data) {
     return BadRequest(connection, "file is required");
   } else {
   }
+  const bool stream = omni_common::FormFlag(TextField(*form, "stream"));
+  const bool include_generation_metadata =
+      omni_common::FormFlag(TextField(*form, "include_generation_metadata"));
+  const bool include_candidates =
+      omni_common::FormFlag(TextField(*form, "include_transcript_candidates"));
+  if (include_generation_metadata && !stream) {
+    return BadRequest(connection,
+                      "include_generation_metadata requires stream=true");
+  } else if (include_candidates && !stream) {
+    return BadRequest(connection,
+                      "include_transcript_candidates requires stream=true");
+  } else {
+  }
+
   Transcription transcription;
+  std::shared_ptr<LatestCandidateMailbox> mailbox;
   try {
-    transcription = state->model->Prepare(
-        omni_common::DecodeWav(form->at("file").value), *form);
+    std::vector<float> samples = omni_common::DecodeWav(form->at("file").value);
+    if (include_candidates) {
+      mailbox = std::make_shared<LatestCandidateMailbox>();
+      omni_common::CandidatePublisher candidate_publisher =
+          [mailbox](const std::string &text) { mailbox->Publish(text); };
+      transcription = state->model->PrepareWithCandidates(
+          std::move(samples), *form, std::move(candidate_publisher));
+    } else {
+      transcription = state->model->Prepare(std::move(samples), *form);
+    }
   } catch (const std::invalid_argument &error) {
     return BadRequest(connection, error.what());
   } catch (const std::out_of_range &) {
     return BadRequest(connection, "a numeric field is out of range");
   }
-  const bool stream = omni_common::FormFlag(TextField(*form, "stream"));
-  const bool include_generation_metadata =
-      omni_common::FormFlag(TextField(*form, "include_generation_metadata"));
-  if (include_generation_metadata && !stream) {
-    return BadRequest(connection,
-                      "include_generation_metadata requires stream=true");
-  } else {
-  }
   const CancelFlag cancel = omni_server::NewCancelFlag();
   auto promise = std::make_shared<std::promise<TranscriptionResult>>();
   std::future<TranscriptionResult> future = promise->get_future();
-  state->worker->Submit(std::move(transcription), cancel,
-                        [promise](std::optional<TranscriptionResult> result,
-                                  std::exception_ptr error) {
-                          if (error) {
-                            promise->set_exception(error);
-                          } else {
-                            promise->set_value(std::move(*result));
-                          }
-                        });
+  state->worker->Submit(
+      std::move(transcription), cancel,
+      [promise, mailbox](std::optional<TranscriptionResult> result,
+                         std::exception_ptr error) {
+        if (error) {
+          promise->set_exception(error);
+        } else {
+          promise->set_value(std::move(*result));
+        }
+        if (mailbox != nullptr) {
+          mailbox->Finish();
+        } else {
+        }
+      });
   if (!stream) {
     try {
       const TranscriptionResult result = future.get();
@@ -162,9 +230,51 @@ int HandleTranscriptions(mg_connection *connection, void *data) {
       omni_common::FormFlag(TextField(*form, "preview"))
           ? kPreviewHeartbeatInterval
           : kHeartbeatInterval;
-  while (future.wait_for(heartbeat_interval) != std::future_status::ready) {
-    if (mg_write(connection, ":\n\n", 3) <= 0) {
-      cancel->store(true);
+  if (mailbox == nullptr) {
+    while (future.wait_for(heartbeat_interval) != std::future_status::ready) {
+      if (mg_write(connection, ":\n\n", 3) <= 0) {
+        cancel->store(true);
+      } else {
+      }
+    }
+  } else {
+    bool disconnected = false;
+    while (!disconnected && future.wait_for(std::chrono::milliseconds(0)) !=
+                                std::future_status::ready) {
+      const bool notified = mailbox->WaitForUpdate(heartbeat_interval);
+      if (future.wait_for(std::chrono::milliseconds(0)) ==
+          std::future_status::ready) {
+        break;
+      } else {
+      }
+      if (notified) {
+        const std::optional<std::string> candidate = mailbox->TakeLatest();
+        if (candidate.has_value()) {
+          const std::string candidate_event = Json{
+              {"type", "transcript.text.candidate"},
+              {"text", *candidate}}.dump();
+          if (future.wait_for(std::chrono::milliseconds(0)) ==
+              std::future_status::ready) {
+            break;
+          } else {
+          }
+          if (!WriteSse(connection, candidate_event)) {
+            cancel->store(true);
+            mailbox->Finish();
+            disconnected = true;
+          } else {
+          }
+        } else {
+        }
+      } else if (mg_write(connection, ":\n\n", 3) <= 0) {
+        cancel->store(true);
+        mailbox->Finish();
+        disconnected = true;
+      } else {
+      }
+    }
+    if (disconnected) {
+      future.wait();
     } else {
     }
   }

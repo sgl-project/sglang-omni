@@ -48,6 +48,7 @@ struct TranscriptionOptions {
   // prefix, or a Final's live preview), checked in the prompt's pass and kept
   // while greedy decoding agrees; those past the token budget are left out.
   std::vector<int> guessed_token_ids;
+  omni_common::CandidatePublisher candidate_publisher;
 };
 
 // The canonical prompt name for a Qwen3-ASR language code or name. Like
