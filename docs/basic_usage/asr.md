@@ -131,7 +131,7 @@ whichever endpoint shape the pipeline implements:
   or server VAD, and read `transcription.segment` events until
   `transcription.completed`. Session options, partial-update semantics, and
   rollback behavior are documented in the
-  [Qwen3-ASR cookbook](../cookbook/qwen3_asr.md#live-pcm-transcription).
+  [Qwen3-ASR cookbook](../cookbook/qwen3_asr.md#realtime-transcription-websocket).
 - **`/v1/realtime?model=...`** — Nemotron 3.5 ASR uses this native path. Send
   mono 16 kHz PCM16 and read text output; it has no VAD, manual commit, language
   field, or `max_new_tokens`.
@@ -199,7 +199,7 @@ with open("tests/data/query_to_cars.wav", "rb") as audio_file:
 
 A complete WebSocket client that appends PCM packets, commits a segment, and
 reads the completed transcript is in the
-[Qwen3-ASR cookbook](../cookbook/qwen3_asr.md#live-pcm-transcription).
+[Qwen3-ASR cookbook](../cookbook/qwen3_asr.md#realtime-transcription-websocket).
 The session takes PCM16 packets as they arrive, so decode other formats first.
 
 ## Request Parameters

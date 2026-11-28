@@ -188,3 +188,105 @@ torch 2.11.0+cu130, sglang 0.5.16, transformers 5.12.1, model snapshot
 `49652ce3ea5a7720…`. The current-side numbers were produced at this
 branch's commit; note the fingerprint's `git.dirty` flag also counts
 untracked run-output directories.
+
+## Scheduling defaults
+
+Async decode is enabled by default, allowing the shared one-step-lookahead path
+to overlap host-side result processing with the next GPU decode forward. Without
+a draft it covers every decode batch size, even a single request; with the
+DFlash draft a single request decodes synchronously (see [DFlash configuration](../cookbook/qwen3_asr.md#dflash-speculative-decoding)).
+Use `--asr.factory.enable_async_decode false` to disable it, or set the
+crossover with `--asr.factory.async_decode_min_batch_size`.
+The request builders also use the shared LM prefill-admission gate: prefill
+starts when 16 built requests are ready or after the oldest ready request waits
+40 ms. Once request-build work drains, a ready prefill is released immediately
+if decode is idle; while decode is active, it continues coalescing until the
+same request target or deadline. By default with a DFlash draft, a ready
+prefill is released as soon as request-build work drains, whether or not decode
+is active; set `--asr.factory.prefill_coalesce_after_builds_during_decode true`
+to keep coalescing during decode.
+
+## Capacity sweep
+
+These measurements predate the default DFlash rollout. They explain the request-build and capacity defaults; they are not a benchmark of the current DFlash configuration.
+
+The request-build, admission, and CUDA-graph policy defaults come from a
+measured sweep (issue #1324 Q-PR5): `request_build_max_workers` {2, 4, 8} ×
+`request_build_max_pending` {16, 32, 64} × `max_running_requests` {16, 32, 64}
+with matching CUDA-graph coverage, each configuration a full SeedTTS EN
+concurrency sweep (1–64, three repeats plus warmup) on one 141 GB GPU with the
+pre-LM encoder enabled and its embedding cache disabled (unique-input regime).
+Requests/s by client concurrency:
+
+| config (workers/pending/running) | c=8 | c=16 | c=32 | c=64 | shed at c=64 |
+|---|---:|---:|---:|---:|---:|
+| 2 / 16 / 32 | 39.1 | 47.5 | 52.3 | 51.0 | 704/3264 |
+| 4 / 16 / 32 | 47.6 | 60.3 | 70.4 | 55.4 | 301/3264 |
+| 8 / 16 / 32 | 48.5 | 75.6 | 89.7 | 64.6 | 173/3264 |
+| 8 / 16 / 16 | 57.6 | 75.4 | 42.2 | 46.7 | 250/3264 |
+| 8 / 32 / 32 | 57.7 | 76.5 | 87.1 | 65.1 | 0 |
+| 8 / 64 / 32 | 55.2 | 76.6 | 87.9 | 64.7 | 0 |
+| **8 / 32 / 64 (default)** | 57.4 | 77.0 | 90.2 | 96.8 | 0 |
+| 8 / 64 / 64 | 57.0 | 74.3 | 88.8 | 100.3 | 0 |
+
+Reading, and the resulting defaults:
+
+- **Build workers scale monotonically to 8** at every concurrency ≥ 8 and cost
+  nothing at concurrency 1 (0.099–0.101 s mean everywhere), so 8 is the
+  default. Those workers do CPU request construction (decode audio,
+  optional mel FFT) and submit encoder work asynchronously. When no extra
+  builds are queued, the request builder waits for encode and returns a
+  ready request like the sync path; when pending+backlog exceeds the
+  worker pool, it returns a deferred admission so workers can pull the
+  backlog. A cache hit still skips mel extraction entirely.
+- **Pending 16 → 32 removes all concurrency-64 shedding** and lifts
+  concurrency-8 throughput ~19 %; 64 adds nothing further. 32 is the default.
+- **`max_running_requests` 16 collapses concurrency 32** (queue-bound) with no
+  light-load latency benefit, so there is no latency-first case for lowering
+  it. The default is 64 because it unlocks the concurrency-64 regime (+~50 %
+  requests/s, zero shedding), at the price of larger CUDA-graph and KV memory.
+  On memory-constrained GPUs, use the memory-conservative override:
+
+```bash
+sgl-omni serve --model-path Qwen/Qwen3-ASR-1.7B \
+  --asr.engine.max_running_requests 32
+```
+
+- Corpus WER stayed 0.0122 for every configuration at every level.
+
+## Long-audio capacity
+
+For the four configurable limits and their defaults, see [Long Audio](../cookbook/qwen3_asr.md#long-audio).
+
+The last knob is the aggregate guard. Each admitted upload holds its decoded
+waveform (float32 at 16 kHz, about 230 MB for an hour) and drives up to
+`max_concurrent_chunks` engine requests, so:
+
+- decoded waveforms held at once are at most
+  `max_concurrent_long_audio_requests × max_total_audio_s × 16000 × 4` bytes
+  (decoding itself has transient peaks above that);
+- engine slots long audio can take together are at most
+  `max_concurrent_long_audio_requests × max_concurrent_chunks`.
+
+The default keeps that product at half of `--asr.engine.max_running_requests`
+so short requests always have slots left. Setting the knob explicitly to a
+value whose product reaches `max_running_requests` logs a warning at startup:
+it is not an error, since extra chunks only queue in the engine, but short
+requests then wait behind long audio whenever it is saturated. Raising
+`max_running_requests` instead also resizes CUDA graph capture, so treat it
+as the GPU capacity knob and this one as the long-audio share of it.
+
+The model properties are ClassVars on `Qwen3ASRPipelineConfig`; no
+configuration path reaches them:
+
+| Name | Value | Meaning |
+|---|---|---|
+| `allow_audio_chunking` | `true` | Qwen3-ASR transcribes an isolated chunk correctly, so chunking is on. |
+| `max_native_clip_s` | `1200` | Longest clip the model takes as one request (its native limit). Streaming cannot chunk, so this is the streaming cutoff; the Torch MPS compatibility path resolves it to its qualified 60-second cap. |
+| `min_tail_s` | `0.5` | Shortest final chunk worth transcribing; if the tail would be shorter, we move the previous cut earlier to absorb it. This matches the model's own minimum input length. |
+
+Note: Raising `audio_chunking.max_audio_clip_s` also resizes the encoder CUDA-graph bucket
+ladder, which is derived from the chunk length: a longer chunk means more and
+larger captured graphs, and their static buffers stay resident for the life of
+the server (roughly 6.6 KB per token of ladder ceiling; at 1,200s the ceiling
+is 124,800 tokens). Budget for that when you raise the flag on small GPUs.

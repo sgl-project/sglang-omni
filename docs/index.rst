@@ -239,6 +239,7 @@ Community & Resources
    developer_reference/reference_encode_service.md
    developer_reference/profiler.md
    developer_reference/qwen3_asr_concurrency_profile.md
+   developer_reference/qwen3_asr_dflash_benchmarks.md
    developer_reference/full_duplex_guide.md
    developer_reference/tts_bench.md
    developer_reference/tts_model_integration.md
