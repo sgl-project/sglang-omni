@@ -62,17 +62,38 @@ def test_every_wav_the_parser_read_decodes_unchanged(subtype: str) -> None:
     np.testing.assert_array_equal(decoded, parsed)
 
 
-@pytest.mark.parametrize("sample_rate", [0, 2**31])
-def test_a_g711_wav_with_an_unreadable_sample_rate_raises_value_error(
-    sample_rate: int,
-) -> None:
+def test_a_g711_wav_with_an_unreadable_sample_rate_raises_value_error() -> None:
     """Every caller of the parser falls back on ValueError, so a malformed header must not escape as another error."""
     data = encode_audio(tone(1), "WAV", "ULAW", SAMPLE_RATE)
     rate_at = data.index(b"fmt ") + 12
-    malformed = data[:rate_at] + struct.pack("<I", sample_rate) + data[rate_at + 4 :]
+    malformed = data[:rate_at] + struct.pack("<I", 2**31) + data[rate_at + 4 :]
 
     with pytest.raises(ValueError, match="Unreadable G.711 WAV"):
         parse_wav_bytes(malformed)
+
+
+@pytest.mark.parametrize(
+    "subtype", ["PCM_U8", "PCM_16", "PCM_32", "FLOAT", "DOUBLE", "ULAW", "ALAW"]
+)
+def test_wav_parser_rejects_zero_sample_rate(subtype: str) -> None:
+    data = encode_audio(tone(1), "WAV", subtype, SAMPLE_RATE)
+    rate_at = data.index(b"fmt ") + 12
+    malformed = data[:rate_at] + bytes(4) + data[rate_at + 4 :]
+
+    with pytest.raises(ValueError, match="Invalid WAV sample rate"):
+        parse_wav_bytes(malformed, source="zero-rate.wav")
+
+
+@pytest.mark.parametrize(
+    "subtype", ["PCM_U8", "PCM_16", "PCM_32", "FLOAT", "DOUBLE", "ULAW", "ALAW"]
+)
+def test_wav_parser_rejects_zero_channels(subtype: str) -> None:
+    data = encode_audio(tone(1), "WAV", subtype, SAMPLE_RATE)
+    channels_at = data.index(b"fmt ") + 10
+    malformed = data[:channels_at] + bytes(2) + data[channels_at + 2 :]
+
+    with pytest.raises(ValueError, match="Invalid WAV channel count"):
+        parse_wav_bytes(malformed, source="zero-channels.wav")
 
 
 def test_wav_whose_header_states_no_data_decodes_to_its_end() -> None:
