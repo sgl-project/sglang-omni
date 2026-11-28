@@ -125,9 +125,9 @@ final class CaptureRun: @unchecked Sendable {
     private var resampler: MonoResampler?
     private var inputFormat: AVAudioFormat?
     private var framer: PCMFramer
-    /// A sample of the converted stream (framer's count) and its capture
-    /// time in host ms, from the latest buffer that had one. On the queue.
-    private var hostAnchor: (sample: Int, ms: Double)?
+    /// The converted stream's (framer's count) capture times, from the
+    /// buffers' time stamps. On the queue.
+    private var host: HostAnchor
     /// Added to the device's host times so they say when the sound was in
     /// the air: minus the input's latency, plus the output's for the tap.
     /// Under lock.
@@ -164,6 +164,7 @@ final class CaptureRun: @unchecked Sendable {
         self.onEnd = onEnd
         rate = max(8000, params.sampleRate ?? 16000)
         framer = PCMFramer(sampleRate: rate, frameMs: params.frameMs ?? 100, levelHz: params.levelHz ?? 20)
+        host = HostAnchor(sampleRate: rate)
         if let m = params.maxSeconds, m > 0 { maxSamples = Int(m * Double(rate)) } else { maxSamples = nil }
     }
 
@@ -178,7 +179,7 @@ final class CaptureRun: @unchecked Sendable {
                 let now = monotonicMs()
                 systemClock = SystemCaptureClock(sampleRate: rate, startedAt: now)
                 // The silence padded before the tap's first buffer is timed from here.
-                hostAnchor = (0, AVAudioTime.seconds(forHostTime: mach_absolute_time()) * 1000 + lock.withLock { hostShiftMs })
+                host.set(AVAudioTime.seconds(forHostTime: mach_absolute_time()) * 1000 + lock.withLock { hostShiftMs }, at: 0)
                 sendStarted(at: now)
                 startSystemSilenceTimer()
             }
@@ -238,6 +239,7 @@ final class CaptureRun: @unchecked Sendable {
         guard let res = MonoResampler(inputRate: format.sampleRate, rate: rate) else {
             throw RPCError(Code.deviceUnavailable, "cannot convert \(Int(format.sampleRate)) Hz")
         }
+        let shift = -ioLatencyMs(device, input: true) // Core Audio queries, outside the lock the IO thread takes
         let gen: Int = lock.withLock {
             generation += 1
             callbacksThisEngine = 0
@@ -245,7 +247,7 @@ final class CaptureRun: @unchecked Sendable {
             deviceID = device
             deviceUID = stringProperty(device, kAudioDevicePropertyDeviceUID) ?? ""
             usingDefault = uid == nil
-            hostShiftMs = -ioLatencyMs(device, input: true)
+            hostShiftMs = shift
             resampler = res
             inputFormat = format
             return generation
@@ -302,6 +304,7 @@ final class CaptureRun: @unchecked Sendable {
             tap.stop()
             throw RPCError(Code.deviceUnavailable, "cannot convert \(Int(tap.format.sampleRate)) Hz")
         }
+        let shift = ioLatencyMs(tap.deviceID, input: false)
         let gen: Int = lock.withLock {
             generation += 1
             callbacksThisEngine = 0
@@ -309,7 +312,7 @@ final class CaptureRun: @unchecked Sendable {
             deviceID = tap.deviceID
             deviceUID = tap.outputUID
             usingDefault = true
-            hostShiftMs = ioLatencyMs(tap.deviceID, input: false)
+            hostShiftMs = shift
             resampler = res
             inputFormat = tap.format
             return generation
@@ -492,10 +495,15 @@ final class CaptureRun: @unchecked Sendable {
         guard let res = lock.withLock({ gen == generation ? resampler : nil }) else { return }
         sendStarted(at: at)
         guard let converted = res.convert(buffer), let samples = converted.floatChannelData?[0] else { return }
-        if let missing = systemClock?.silenceBeforeBuffer(at: at, samples: Int(converted.frameLength), written: framer.samplesSeen) {
+        let room = hostMs.flatMap { host.room(before: $0, at: framer.samplesSeen) }
+        if let missing = systemClock?.silenceBeforeBuffer(at: at, samples: Int(converted.frameLength), written: framer.samplesSeen, limit: room) {
             padSystemSilence(missing)
         }
-        if let hostMs { hostAnchor = (framer.samplesSeen, hostMs) }
+        if let hostMs {
+            // After a restart or a dropout, the samples before it go out on their own times.
+            if host.breaks(hostMs, at: framer.samplesSeen), let last = framer.flush() { emit([last], []) }
+            host.set(hostMs, at: framer.samplesSeen)
+        }
         let (fs, levels) = framer.push(UnsafeBufferPointer(start: samples, count: Int(converted.frameLength)))
         emit(fs, levels)
         if let maxSamples, framer.samplesSeen >= maxSamples {
@@ -525,7 +533,7 @@ final class CaptureRun: @unchecked Sendable {
             if firstFrameMs == nil { firstFrameMs = ((monotonicMs() - t0) * 10).rounded() / 10 }
             frames += 1
             // The frame's time from the latest timed buffer (the padded silence's too).
-            let hostMs = hostAnchor.map { $0.ms + Double(f.offset - $0.sample) * 1000 / Double(rate) }
+            let hostMs = host.ms(at: f.offset)
             out.notify(Method.capturePCM, PCMParams(job: job, seq: f.seq, offset: f.offset, data: f.pcm, hostMs: hostMs))
         }
     }

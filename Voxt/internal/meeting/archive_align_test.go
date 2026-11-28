@@ -67,6 +67,60 @@ func TestArchiveLateTrackAndClockJumps(t *testing.T) {
 	})
 }
 
+// A period starts at its first frame, whichever track gives it: what the
+// other track captured before is cut. At the start the microphone loses
+// what it heard before the system's first frame; after a pause that added
+// the microphone (Subtitles switched to Meeting), its first frames do not
+// run back into the period before.
+func TestArchivePeriodStartsAtItsFirstFrame(t *testing.T) {
+	a := newArchive(t.TempDir())
+	write := archiveWriter(t, a)
+	write(SourceSystem, 5, 100, 1060)
+	write(SourceMic, 1, 100, 1000) // 60 ms before the period's start
+	if err := a.Close(); err != nil {
+		t.Fatal(err)
+	}
+	checkArchive(t, a, map[Source]string{
+		SourceMic:    "1×40 0×60",
+		SourceSystem: "5×100",
+	})
+
+	a = newArchive(t.TempDir())
+	write = archiveWriter(t, a)
+	write(SourceSystem, 5, 100, 1000)
+	if err := a.NewPeriod(); err != nil {
+		t.Fatal(err)
+	}
+	write(SourceSystem, 6, 100, 90_200)
+	write(SourceMic, 1, 100, 89_968) // all before the period: dropped
+	write(SourceMic, 2, 100, 90_068)
+	write(SourceMic, 3, 100, 90_168) // its first 32 ms are before
+	write(SourceMic, 4, 100, 90_268)
+	if err := a.Close(); err != nil {
+		t.Fatal(err)
+	}
+	checkArchive(t, a, map[Source]string{
+		SourceMic:    "0×100 3×68 4×100",
+		SourceSystem: "5×100 6×100 0×68",
+	})
+}
+
+// A file that cannot be padded at a resume does not keep the period
+// before: the next frames are not placed a whole pause later.
+func TestArchiveNewPeriodAfterAFailedPad(t *testing.T) {
+	a := newArchive(t.TempDir())
+	write := archiveWriter(t, a)
+	write(SourceMic, 1, 100, 1000)
+	write(SourceSystem, 5, 50, 1000)
+	a.w[SourceSystem].f.Close()
+	if err := a.NewPeriod(); err == nil {
+		t.Fatal("padding a closed file did not fail")
+	}
+	write(SourceMic, 6, 100, 90_000)
+	_ = a.Close() // the closed file fails again
+	checkArchive(t, a, map[Source]string{SourceMic: "1×100 6×100"})
+}
+
 // archiveWriter writes ms of the value v to src, captured at the host time at.
 func archiveWriter(t *testing.T, a *Archive) func(src Source, v int16, ms int, at float64) {
 	return func(src Source, v int16, ms int, at float64) {

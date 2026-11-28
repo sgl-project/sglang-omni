@@ -16,10 +16,10 @@ import (
 // Archive writes per-source WAV files under a meeting folder. Frames with
 // a capture time (PCMParams.HostMS) are placed by it, so the same
 // position in every file is the same moment: the first timed frame of a
-// period (the meeting's start, each resume) sets the origin, a gap is
-// padded with silence and an overlap is cut, and Close pads the files to
-// one length (a track the meeting stopped, by a change of mode, goes on
-// in silence).
+// period (the meeting's start, each resume) sets the origin (what another
+// track captured before it is cut), a gap is padded with silence and an
+// overlap is cut, and Close pads the files to one length (a track the
+// meeting stopped, by a change of mode, goes on in silence).
 type Archive struct {
 	dir string
 	mu  sync.Mutex
@@ -68,31 +68,55 @@ func (a *Archive) WriteAt(src Source, pcm []byte, hostMS float64) error {
 			a.origin = hostMS
 		}
 		want := a.base + int64(math.Round((hostMS-a.origin)*asr.SampleRate/1000))
-		switch d := want - w.samples; {
-		case d > archiveSlack && want-a.longest() <= archiveMaxGap:
-			if err := w.silence(d); err != nil {
-				return err
+		// Else a clock gone wrong: appended as it comes.
+		if want-w.samples >= -archiveMaxGap && want-a.longest() <= archiveMaxGap {
+			if want < a.base {
+				// Before the period's first frame (the other track's): that
+				// part is cut, so a period never runs into the one before.
+				skip := a.base - want
+				if skip >= int64(len(pcm)/2) {
+					return nil
+				}
+				pcm, want = pcm[2*skip:], a.base
 			}
-		case d < -archiveSlack && d >= -archiveMaxGap:
-			pcm = pcm[2*min(-d, int64(len(pcm)/2)):]
+			switch d := want - w.samples; {
+			case d > archiveSlack:
+				if err := w.silence(d); err != nil {
+					return err
+				}
+			case d < -archiveSlack:
+				pcm = pcm[2*min(-d, int64(len(pcm)/2)):]
+			}
 		}
 	}
 	return w.append(pcm)
 }
 
 // NewPeriod starts a period after a pause: every file is padded to the
-// longest one, where the period's first timed frame lands.
+// longest one, where the period's first timed frame lands. A file that
+// cannot be padded still gets the new period (its frames are cut or
+// padded from where it ends).
 func (a *Archive) NewPeriod() error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	var first error
+	if a.timed {
+		first = a.padLocked()
+	}
+	a.base, a.origin = a.longest(), 0
+	return first
+}
+
+// padLocked pads every file to the longest one.
+func (a *Archive) padLocked() error {
+	var first error
 	longest := a.longest()
 	for _, w := range a.w {
-		if err := w.silence(longest - w.samples); err != nil {
-			return err
+		if err := w.silence(longest - w.samples); err != nil && first == nil {
+			first = err
 		}
 	}
-	a.base, a.origin = longest, 0
-	return nil
+	return first
 }
 
 // longest is the end of the longest file, in samples (the period's base
@@ -135,12 +159,7 @@ func (a *Archive) Close() error {
 	defer a.mu.Unlock()
 	var first error
 	if a.timed {
-		longest := a.longest()
-		for _, w := range a.w {
-			if err := w.silence(longest - w.samples); err != nil && first == nil {
-				first = err
-			}
-		}
+		first = a.padLocked()
 	}
 	for _, w := range a.w {
 		if err := w.finalize(); err != nil && first == nil {
@@ -169,12 +188,21 @@ func (w *wavWriter) append(pcm []byte) error {
 	return err
 }
 
-// silence appends n samples of silence (none for n ≤ 0).
+// silence appends n samples of silence (none for n ≤ 0), in blocks of 16 s:
+// a track that joins an hour in pads an hour.
 func (w *wavWriter) silence(n int64) error {
-	zeros := make([]byte, 2*min(max(n, 0), asr.SampleRate))
+	if n <= 0 {
+		return nil
+	}
+	if _, err := w.f.Seek(0, io.SeekEnd); err != nil {
+		return err
+	}
+	zeros := make([]byte, 2*min(n, 16*asr.SampleRate))
 	for n > 0 {
 		k := min(n, int64(len(zeros)/2))
-		if err := w.append(zeros[:2*k]); err != nil {
+		written, err := w.f.Write(zeros[:2*k])
+		w.samples += int64(written / 2)
+		if err != nil {
 			return err
 		}
 		n -= k

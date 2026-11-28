@@ -29,7 +29,8 @@ func stringProperty(_ object: AudioObjectID, _ selector: AudioObjectPropertySele
 /// How long sound takes between a device's host time stamps and the air,
 /// in ms: the device's, its safety offset's and its first stream's latency,
 /// plus the IO buffer for an output (written a buffer ahead). Measured on a
-/// MacBook's speakers and microphone, the two sum to the echo's lag.
+/// MacBook's speakers and microphone, the two sum to the echo's lag. 0 when
+/// unknown, or past maxIOLatencyMs (a driver's nonsense).
 func ioLatencyMs(_ device: AudioObjectID, input: Bool) -> Double {
     let scope = input ? kAudioDevicePropertyScopeInput : kAudioDevicePropertyScopeOutput
     var rate = 0.0
@@ -38,16 +39,23 @@ func ioLatencyMs(_ device: AudioObjectID, input: Bool) -> Double {
     _ = property(device, kAudioDevicePropertyLatency, scope: scope, &latency)
     _ = property(device, kAudioDevicePropertySafetyOffset, scope: scope, &safety)
     if !input { _ = property(device, kAudioDevicePropertyBufferFrameSize, &buffer) }
-    var address = AudioObjectPropertyAddress(mSelector: kAudioDevicePropertyStreams, mScope: scope, mElement: kAudioObjectPropertyElementMain)
-    var size: UInt32 = 0
-    if AudioObjectGetPropertyDataSize(device, &address, 0, nil, &size) == noErr, size >= UInt32(MemoryLayout<AudioObjectID>.size) {
-        var stream = AudioObjectID(0)
-        size = UInt32(MemoryLayout<AudioObjectID>.size)
-        if AudioObjectGetPropertyData(device, &address, 0, nil, &size, &stream) == noErr {
-            _ = property(stream, kAudioStreamPropertyLatency, &streamLatency)
-        }
+    if let stream = objectList(device, kAudioDevicePropertyStreams, scope: scope).first {
+        _ = property(stream, kAudioStreamPropertyLatency, &streamLatency)
     }
-    return Double(latency + safety + buffer + streamLatency) * 1000 / rate
+    let ms = (Double(latency) + Double(safety) + Double(buffer) + Double(streamLatency)) * 1000 / rate
+    return ms <= maxIOLatencyMs ? ms : 0
+}
+
+/// AirPlay's is about 2 s.
+private let maxIOLatencyMs = 5000.0
+
+private func objectList(_ object: AudioObjectID, _ selector: AudioObjectPropertySelector, scope: AudioObjectPropertyScope) -> [AudioObjectID] {
+    var address = AudioObjectPropertyAddress(mSelector: selector, mScope: scope, mElement: kAudioObjectPropertyElementMain)
+    var size: UInt32 = 0
+    guard AudioObjectGetPropertyDataSize(object, &address, 0, nil, &size) == noErr else { return [] }
+    var ids = [AudioObjectID](repeating: 0, count: Int(size) / MemoryLayout<AudioObjectID>.size)
+    guard !ids.isEmpty, AudioObjectGetPropertyData(object, &address, 0, nil, &size, &ids) == noErr else { return [] }
+    return Array(ids.prefix(Int(size) / MemoryLayout<AudioObjectID>.size))
 }
 
 private func inputChannelCount(_ device: AudioObjectID) -> Int {
