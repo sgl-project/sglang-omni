@@ -33,7 +33,8 @@ ASCEND_RT_VISIBLE_DEVICES=0 sgl-omni serve \
 
 - Both checkpoints run the backbone and the AudioVAE decoder on one NPU device. Tiny keeps `preprocessing` on CPU; dense 0.5B runs it on the NPU device.
 - `tts_engine` uses SGLang's `ascend` attention backend and PyTorch sampling. Decode graphs stay enabled; prefill graph capture is disabled because a multi-request prefill replay reuses one request's batch metadata on Ascend.
-- The fused flow-matching head and `torch.compile` stay off on NPU.
+- The fused flow-matching head runs on NPU for both checkpoints (it is bit-exact against the module path); `torch.compile` stays off.
+- The configuration uses `max_running_requests: 64`; lower it for the 0.5B checkpoint if the device runs out of memory.
 - On the tiny (Ling V3 MoE) checkpoint, `routed_scaling_factor` is folded into the top-k routing weights when the model is built. The Ascend fused MoE runner does not apply the factor, and the model layer applies it only on A2A paths, so without the fold the MoE output is smaller by that factor.
 - Validated on Ascend 910.
 
