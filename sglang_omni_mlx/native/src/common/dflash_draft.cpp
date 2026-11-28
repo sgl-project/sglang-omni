@@ -295,6 +295,9 @@ DraftStatistics DFlashDraft::Decode(
     const std::atomic<bool> &cancel, DraftPolicy policy,
     std::vector<KVCache> &caches, std::vector<KVCache> &draft_caches,
     int *accepted_guess_count, int *verified_guess_count) const {
+  const auto decode_started = std::chrono::steady_clock::now();
+  auto decode_rounds_started = decode_started;
+  DraftStatistics statistics;
   if (accepted_guess_count != nullptr) {
     *accepted_guess_count = 0;
   }
@@ -361,6 +364,10 @@ DraftStatistics DFlashDraft::Decode(
             {1, prompt_count + prompt_guess_count, prompt_hidden.shape(2)})),
         -1);
     mx::eval(predicted);
+    decode_rounds_started = std::chrono::steady_clock::now();
+    statistics.prefill_ms = std::chrono::duration<double, std::milli>(
+                                decode_rounds_started - decode_started)
+                                .count();
     const uint32_t *predicted_ids = predicted.data<uint32_t>();
     int accepted_count = 0;
     while (!finished && accepted_count < prompt_guess_count &&
@@ -396,7 +403,6 @@ DraftStatistics DFlashDraft::Decode(
   } else {
   }
   DraftBackoff backoff(plain_seconds_per_token_);
-  DraftStatistics statistics;
   while (!finished) {
     if (cancel.load()) {
       throw GenerationCancelled();
@@ -570,6 +576,10 @@ DraftStatistics DFlashDraft::Decode(
       }
     }
   }
+  statistics.decode_rounds_ms =
+      std::chrono::duration<double, std::milli>(
+          std::chrono::steady_clock::now() - decode_rounds_started)
+          .count();
   return statistics;
 }
 

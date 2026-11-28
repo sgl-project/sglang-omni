@@ -21,8 +21,7 @@
 
 namespace moss {
 
-// One decode's steady-clock stamps, logged as a moss_preview_timing event.
-struct DecodeTiming;
+using DecodeTiming = omni_common::MossPreviewTiming;
 
 class MossRealtimeSession : public omni_server::RealtimeConnection {
 public:

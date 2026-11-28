@@ -228,6 +228,10 @@ public:
       ends_.store(clock_.Now());
       omni_common::TranscriptionResult result;
       result.text = "text";
+      result.prompt_embeddings_ms = 1.5;
+      result.prefill_ms = 2.5;
+      result.decode_rounds_ms = 3.5;
+      result.chunk_result_ms = 4.5;
       return result;
     };
   }
@@ -534,6 +538,11 @@ void TestTimingLines() {
             "both decode the pending audio");
     Require(line.at("min_preview_samples") == kGateSamples,
             "the line carries the first-preview gate");
+    Require(line.at("prompt_embeddings_ms") == 1.5 &&
+                line.at("prefill_ms") == 2.5 &&
+                line.at("decode_rounds_ms") == 3.5 &&
+                line.at("chunk_result_ms") == 4.5,
+            "the line carries the transcription's stage durations");
     Require(!line.contains("text") && !line.contains("segments"),
             "a timing line carries no transcript");
     for (size_t stage = 1; stage < std::size(stamps); ++stage) {

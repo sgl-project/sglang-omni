@@ -18,23 +18,7 @@ using omni_common::SpeakerSegmentsJson;
 using omni_common::StripUnicodeWhitespace;
 using omni_common::TranscriptionResult;
 
-// No prompt, transcript or speaker content. A stage's cost is the difference
-// of two consecutive stamps.
-struct DecodeTiming {
-  int window_id = 0;
-  std::string kind;
-  int audio_sample_count = 0;
-  // The append, stop or finished decode that made this decode due.
-  int64_t append_at_ms = 0;
-  int64_t decision_at_ms = 0;
-  int64_t submit_at_ms = 0;
-  int64_t transcribe_started_at_ms = 0;
-  int64_t transcribe_at_ms = 0;
-  int64_t publish_at_ms = 0;
-  int verify_round_count = 0;
-  int proposed_draft_token_count = 0;
-  int accepted_draft_token_count = 0;
-};
+using omni_common::MossPreviewTimingJson;
 
 namespace {
 
@@ -62,23 +46,6 @@ int64_t SteadyClockMilliseconds(std::chrono::steady_clock::time_point time) {
 
 int64_t NowSteadyClockMilliseconds() {
   return SteadyClockMilliseconds(std::chrono::steady_clock::now());
-}
-
-nlohmann::ordered_json DecodeTimingJson(const DecodeTiming &timing) {
-  return {{"event", "moss_preview_timing"},
-          {"window_id", timing.window_id},
-          {"kind", timing.kind},
-          {"audio_sample_count", timing.audio_sample_count},
-          {"append_at_ms", timing.append_at_ms},
-          {"decision_at_ms", timing.decision_at_ms},
-          {"submit_at_ms", timing.submit_at_ms},
-          {"transcribe_started_at_ms", timing.transcribe_started_at_ms},
-          {"transcribe_at_ms", timing.transcribe_at_ms},
-          {"publish_at_ms", timing.publish_at_ms},
-          {"min_preview_samples", kMinPreviewSamples},
-          {"verify_round_count", timing.verify_round_count},
-          {"proposed_draft_token_count", timing.proposed_draft_token_count},
-          {"accepted_draft_token_count", timing.accepted_draft_token_count}};
 }
 
 } // namespace
@@ -326,6 +293,7 @@ std::shared_ptr<DecodeTiming> MossRealtimeSession::StartDecodeTiming(
   timing->window_id = decode.window_id;
   timing->kind = decode.kind == DecodeKind::kPreview ? "preview" : "final";
   timing->audio_sample_count = static_cast<int>(decode.samples.size());
+  timing->min_preview_samples = kMinPreviewSamples;
   timing->append_at_ms = SteadyClockMilliseconds(due_at);
   timing->decision_at_ms = SteadyClockMilliseconds(decided_at);
   return timing;
@@ -378,9 +346,13 @@ void MossRealtimeSession::PublishWithTiming(const Decode &decode,
   timing.verify_round_count = result.verify_round_count;
   timing.proposed_draft_token_count = result.proposed_draft_token_count;
   timing.accepted_draft_token_count = result.accepted_draft_token_count;
+  timing.prompt_embeddings_ms = result.prompt_embeddings_ms;
+  timing.prefill_ms = result.prefill_ms;
+  timing.decode_rounds_ms = result.decode_rounds_ms;
+  timing.chunk_result_ms = result.chunk_result_ms;
   Publish(decode, result);
   timing.publish_at_ms = NowSteadyClockMilliseconds();
-  std::cerr << DecodeTimingJson(timing).dump() << "\n";
+  std::cerr << MossPreviewTimingJson(timing).dump() << "\n";
 }
 
 void MossRealtimeSession::Flush() {

@@ -3,6 +3,7 @@
 // decoded one 30 s window at a time.
 #pragma once
 
+#include <chrono>
 #include <cstddef>
 #include <functional>
 #include <optional>
@@ -40,6 +41,10 @@ struct TranscriptionResult {
   int verify_round_count = 0;
   int proposed_draft_token_count = 0;
   int accepted_draft_token_count = 0;
+  double prompt_embeddings_ms = 0.0;
+  double prefill_ms = 0.0;
+  double decode_rounds_ms = 0.0;
+  double chunk_result_ms = 0.0;
   // Ordered text of the windows of a request cut into several.
   std::vector<std::string> window_texts;
   // Audio tokens a live session had already encoded.
@@ -54,6 +59,50 @@ struct TranscriptionResult {
   // detection.
   int accepted_guess_token_count = 0;
 };
+
+// Realtime preview timing without prompt, transcript or speaker content.
+// The *_at_ms fields are absolute steady_clock milliseconds, not stage
+// durations: a stage's cost is the difference of two consecutive fields
+// (e.g. publish_at_ms - transcribe_at_ms is the publish cost).
+struct MossPreviewTiming {
+  int window_id = 0;
+  std::string kind = "preview";
+  int audio_sample_count = 0;
+  int64_t append_at_ms = 0;
+  int64_t decision_at_ms = 0;
+  int64_t submit_at_ms = 0;
+  int64_t transcribe_started_at_ms = 0;
+  int64_t transcribe_at_ms = 0;
+  int64_t publish_at_ms = 0;
+  int min_preview_samples = 0;
+  int verify_round_count = 0;
+  int proposed_draft_token_count = 0;
+  int accepted_draft_token_count = 0;
+  double prompt_embeddings_ms = 0.0;
+  double prefill_ms = 0.0;
+  double decode_rounds_ms = 0.0;
+  double chunk_result_ms = 0.0;
+};
+
+// Offline Final timing without prompt, transcript or speaker content. Each
+// window is one chunk of the full request, not a realtime preview window.
+struct MossOfflineFinalTiming {
+  int window_id = 0;
+  int audio_sample_count = 0;
+  int64_t transcribe_started_at_ms = 0;
+  int64_t transcribe_at_ms = 0;
+  int verify_round_count = 0;
+  int proposed_draft_token_count = 0;
+  int accepted_draft_token_count = 0;
+  double prompt_embeddings_ms = 0.0;
+  double prefill_ms = 0.0;
+  double decode_rounds_ms = 0.0;
+  double chunk_result_ms = 0.0;
+};
+
+nlohmann::ordered_json MossPreviewTimingJson(const MossPreviewTiming &timing);
+nlohmann::ordered_json
+MossOfflineFinalTimingJson(const MossOfflineFinalTiming &timing);
 
 // Segments as the HTTP and realtime APIs send them: start, end, speaker, text,
 // and language, emotion and event when set.

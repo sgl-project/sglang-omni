@@ -46,6 +46,8 @@ struct DraftStatistics {
   int verify_round_count = 0;
   int proposed_token_count = 0;
   int accepted_token_count = 0;
+  double prefill_ms = 0.0;
+  double decode_rounds_ms = 0.0;
 };
 
 class DFlashDraft {

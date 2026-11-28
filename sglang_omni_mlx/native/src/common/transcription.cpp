@@ -10,6 +10,43 @@
 
 namespace omni_common {
 
+nlohmann::ordered_json MossPreviewTimingJson(const MossPreviewTiming &timing) {
+  return {{"event", "moss_preview_timing"},
+          {"window_id", timing.window_id},
+          {"kind", timing.kind},
+          {"audio_sample_count", timing.audio_sample_count},
+          {"append_at_ms", timing.append_at_ms},
+          {"decision_at_ms", timing.decision_at_ms},
+          {"submit_at_ms", timing.submit_at_ms},
+          {"transcribe_started_at_ms", timing.transcribe_started_at_ms},
+          {"transcribe_at_ms", timing.transcribe_at_ms},
+          {"publish_at_ms", timing.publish_at_ms},
+          {"min_preview_samples", timing.min_preview_samples},
+          {"verify_round_count", timing.verify_round_count},
+          {"proposed_draft_token_count", timing.proposed_draft_token_count},
+          {"accepted_draft_token_count", timing.accepted_draft_token_count},
+          {"prompt_embeddings_ms", timing.prompt_embeddings_ms},
+          {"prefill_ms", timing.prefill_ms},
+          {"decode_rounds_ms", timing.decode_rounds_ms},
+          {"chunk_result_ms", timing.chunk_result_ms}};
+}
+
+nlohmann::ordered_json
+MossOfflineFinalTimingJson(const MossOfflineFinalTiming &timing) {
+  return {{"event", "moss_offline_final_timing"},
+          {"window_id", timing.window_id},
+          {"audio_sample_count", timing.audio_sample_count},
+          {"transcribe_started_at_ms", timing.transcribe_started_at_ms},
+          {"transcribe_at_ms", timing.transcribe_at_ms},
+          {"verify_round_count", timing.verify_round_count},
+          {"proposed_draft_token_count", timing.proposed_draft_token_count},
+          {"accepted_draft_token_count", timing.accepted_draft_token_count},
+          {"prompt_embeddings_ms", timing.prompt_embeddings_ms},
+          {"prefill_ms", timing.prefill_ms},
+          {"decode_rounds_ms", timing.decode_rounds_ms},
+          {"chunk_result_ms", timing.chunk_result_ms}};
+}
+
 namespace {
 
 constexpr size_t kWindowSampleCount = 30 * kSampleRate;

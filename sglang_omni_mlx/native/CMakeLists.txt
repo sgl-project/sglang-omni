@@ -540,6 +540,24 @@ target_compile_options(audio_chunk_test PRIVATE -Wall -Wextra)
 set_target_properties(audio_chunk_test PROPERTIES
   BUILD_RPATH "${MLX_LIBRARY_DIRS};@loader_path")
 
+# The realtime session is compiled here against tests/doubles, whose
+# moss_transcriber.h loads no checkpoint; libmoss_asr's own objects are unused.
+add_executable(moss_preview_timing_test EXCLUDE_FROM_ALL tests/moss_preview_timing_test.cpp src/moss/moss_realtime.cpp)
+target_include_directories(moss_preview_timing_test PRIVATE tests/doubles)
+target_link_libraries(moss_preview_timing_test PRIVATE common)
+target_compile_options(moss_preview_timing_test PRIVATE -Wall -Wextra)
+set_target_properties(moss_preview_timing_test PROPERTIES
+  BUILD_RPATH "${MLX_LIBRARY_DIRS};@loader_path")
+
+# Compile the real batch transcription against in-memory model and tokenizer
+# doubles; no checkpoint is read.
+add_executable(moss_offline_final_timing_test EXCLUDE_FROM_ALL tests/moss_offline_final_timing_test.cpp src/moss/moss_transcriber.cpp)
+target_include_directories(moss_offline_final_timing_test BEFORE PRIVATE tests/batch_doubles)
+target_link_libraries(moss_offline_final_timing_test PRIVATE common)
+target_compile_options(moss_offline_final_timing_test PRIVATE -Wall -Wextra)
+set_target_properties(moss_offline_final_timing_test PROPERTIES
+  BUILD_RPATH "${MLX_LIBRARY_DIRS};@loader_path")
+
 add_executable(tokenizer_preference_test EXCLUDE_FROM_ALL tests/tokenizer_preference_test.cpp)
 target_link_libraries(tokenizer_preference_test PRIVATE common)
 target_compile_options(tokenizer_preference_test PRIVATE -Wall -Wextra)
