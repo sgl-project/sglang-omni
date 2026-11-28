@@ -8,13 +8,15 @@ import signal
 import threading
 import weakref
 from collections.abc import Awaitable, Callable, Coroutine
+from dataclasses import replace
 from pathlib import Path
 from traceback import format_exception
 from types import FrameType, SimpleNamespace
-from typing import ClassVar
+from typing import ClassVar, Literal
 from unittest.mock import AsyncMock, Mock
 
 import httpx
+import msgspec
 import pytest
 import uvicorn
 from fastapi import Depends, FastAPI
@@ -26,6 +28,7 @@ from sglang_omni.config.schema import (
     CustomVoiceConfig,
     EndpointsConfig,
     EngineStageConfig,
+    FactoryArgs,
     PipelineConfig,
     ProcessConfig,
     StageConfig,
@@ -36,6 +39,8 @@ from sglang_omni.config.topology import (
 )
 from sglang_omni.pipeline.stage_workers import StageLaunchConfig, StageWorkerProcessSpec
 from sglang_omni.profiler.event_recorder import get_recorder
+from sglang_omni.proto.admin import ADMIN_PD_KV_LAYOUT
+from sglang_omni.proto.kv_transfer import PDStageKVLayout
 from sglang_omni.serve import launcher
 from sglang_omni.serve.openai_api import ServerStatus
 from sglang_omni.serve.protocol import (
@@ -50,7 +55,12 @@ from sglang_omni.serve.server_warmup import (
 )
 from sglang_omni.serve.speech_to_text import SpeechToTextForm, parse_speech_to_text_form
 from sglang_omni.serve.transcriptions import TRANSCRIPTIONS_ENDPOINT
-from tests.unit_test.fixtures.pipeline_fakes import FakeMpContext, FakeRelay
+from tests.unit_test.fixtures.pipeline_fakes import (
+    FakeMpContext,
+    FakeRelay,
+    FakeScheduler,
+)
+from tests.unit_test.pipeline.test_kv_transfer import Receiver, make_pool
 
 
 def noop_factory():
@@ -59,6 +69,25 @@ def noop_factory():
 
 def failing_factory():
     raise RuntimeError("factory boom")
+
+
+class PDKVLayoutProbe(FakeScheduler):
+    def __init__(
+        self,
+        pd_role: Literal["prefill", "decode"],
+        page_size: int,
+        pool_id: str,
+        extra_pool_id: str | None = None,
+    ) -> None:
+        super().__init__()
+        self.pd_partner_stage = "decode" if pd_role == "prefill" else None
+        pool = replace(make_pool(pool_id), page_size=page_size)
+        receiver = Receiver((0,)) if pd_role == "decode" else None
+        self.kv_registrations = ((pool, receiver),)
+        if extra_pool_id is not None:
+            self.kv_registrations += ((make_pool(extra_pool_id), receiver),)
+        else:
+            pass
 
 
 class FakeControlPlane:
@@ -343,6 +372,109 @@ async def test_mp_runner_startup_failure_includes_child_factory_traceback(
     with pytest.raises(RuntimeError, match="factory boom"):
         await runner.start(timeout=30.0)
 
+    assert list(tmp_path.iterdir()) == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    (
+        "decode_replicas",
+        "decode_page_size",
+        "decode_pool_id",
+        "extra_pool_id",
+        "startup_error",
+    ),
+    [
+        (
+            1,
+            2,
+            "decode:kv",
+            None,
+            "KV layouts do not match between 'prefill' and 'decode'",
+        ),
+        (2, 1, "decode:kv", None, None),
+        (
+            2,
+            1,
+            "decode@r0:kv",
+            None,
+            "Decode stage 'decode@r0' registered KV pool 'decode@r0:kv', expected 'decode:kv'",
+        ),
+        (1, 1, "decode:kv", "extra:kv", "PD stage must register exactly one KV pool"),
+    ],
+)
+async def test_mp_runner_validates_pd_pair_at_startup(
+    tmp_path: Path,
+    decode_replicas: int,
+    decode_page_size: int,
+    decode_pool_id: str,
+    extra_pool_id: str | None,
+    startup_error: str | None,
+) -> None:
+    config = PipelineConfig(
+        model_path="model",
+        entry_stage="prefill",
+        stages=[
+            StageConfig(
+                name="prefill",
+                process="prefill",
+                factory_path=f"{__name__}.PDKVLayoutProbe",
+                factory=FactoryArgs(
+                    pd_role="prefill", page_size=1, pool_id="prefill:kv"
+                ),
+                next="decode",
+            ),
+            StageConfig(
+                name="decode",
+                process="decode",
+                factory_path=f"{__name__}.PDKVLayoutProbe",
+                factory=FactoryArgs(
+                    pd_role="decode",
+                    page_size=decode_page_size,
+                    pool_id=decode_pool_id,
+                    extra_pool_id=extra_pool_id,
+                ),
+                terminal=True,
+            ),
+        ],
+        processes={"decode": ProcessConfig(num_replicas=decode_replicas)},
+        endpoints=EndpointsConfig(base_path=str(tmp_path)),
+    )
+    runner = mp_runner.MultiProcessPipelineRunner(config)
+
+    try:
+        if startup_error is None:
+            await runner.start(timeout=30.0)
+            assert set(runner.stage_control_endpoints) == {
+                "prefill",
+                "decode@r0",
+                "decode@r1",
+            }
+            response = await runner.coordinator.admin(ADMIN_PD_KV_LAYOUT)
+            assert response["success"]
+            reports = {
+                result["stage"]: msgspec.convert(result["data"], type=PDStageKVLayout)
+                for result in response["results"]
+            }
+            decode = PDStageKVLayout(
+                role="decode", pool_id="decode:kv", layout=make_pool("decode:kv").layout
+            )
+            assert reports == {
+                "prefill": PDStageKVLayout(
+                    role="prefill",
+                    pool_id="prefill:kv",
+                    layout=make_pool("prefill:kv").layout,
+                    partner_stage="decode",
+                ),
+                "decode@r0": decode,
+                "decode@r1": decode,
+            }
+        else:
+            with pytest.raises(RuntimeError, match=startup_error):
+                await runner.start(timeout=30.0)
+            assert not runner.started
+    finally:
+        await runner.stop()
     assert list(tmp_path.iterdir()) == []
 
 

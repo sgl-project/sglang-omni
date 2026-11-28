@@ -5,6 +5,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+from typing import Literal
 
 import msgspec
 
@@ -15,6 +16,8 @@ class KVBufferSpec:
 
     name: str
     bytes_per_page: int
+    dtype: str | None = None
+    token_shape: tuple[int, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -24,23 +27,25 @@ class KVPoolLayout:
     layout_id: str
     page_size: int
     buffers: tuple[KVBufferSpec, ...]
+    cache_dtype: str | None = None
 
     def compatible_with(self, other: "KVPoolLayout") -> bool:
         """Return whether pages can be copied without a layout transform."""
 
-        if self.layout_id != other.layout_id or self.page_size != other.page_size:
-            return False
-        else:
-            pass
-        if len(self.buffers) != len(other.buffers):
-            return False
-        else:
-            pass
-        return all(
-            source.name == destination.name
-            and source.bytes_per_page == destination.bytes_per_page
-            for source, destination in zip(self.buffers, other.buffers, strict=True)
+        return (
+            self.layout_id == other.layout_id
+            and self.page_size == other.page_size
+            and self.cache_dtype == other.cache_dtype
+            and self.buffers == other.buffers
         )
+
+
+@dataclass(frozen=True)
+class PDStageKVLayout:
+    role: Literal["prefill", "decode"]
+    pool_id: str
+    layout: KVPoolLayout
+    partner_stage: str | None = None
 
 
 @dataclass(frozen=True)

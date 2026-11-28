@@ -65,6 +65,7 @@ class KVPool:
     layout_id: str
     page_size: int
     buffers: tuple[KVBufferRegion, ...]
+    cache_dtype: str | None = None
 
     def __post_init__(self) -> None:
         devices = {buffer.tensor.device for buffer in self.buffers}
@@ -82,10 +83,13 @@ class KVPool:
         return KVPoolLayout(
             layout_id=self.layout_id,
             page_size=self.page_size,
+            cache_dtype=self.cache_dtype,
             buffers=tuple(
                 KVBufferSpec(
                     name=buffer.name,
                     bytes_per_page=buffer.bytes_per_page,
+                    dtype=str(buffer.tensor.dtype),
+                    token_shape=tuple(buffer.tensor.shape[1:]),
                 )
                 for buffer in self.buffers
             ),

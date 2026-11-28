@@ -23,6 +23,7 @@ from dataclasses import replace
 from functools import partial
 from typing import Awaitable, Callable, Literal, Protocol
 
+import msgspec
 import torch
 
 from sglang_omni.comm import stage_io
@@ -62,6 +63,8 @@ from sglang_omni.proto import (
     StreamMessage,
     SubmitMessage,
 )
+from sglang_omni.proto.admin import ADMIN_PD_KV_LAYOUT
+from sglang_omni.proto.kv_transfer import PDStageKVLayout
 from sglang_omni.proto.messages import StreamChunkBatchMessage
 from sglang_omni.proto.request import RoutedPayloads
 from sglang_omni.proto.session import SessionOperation, find_session_operation
@@ -1369,6 +1372,33 @@ class Stage:
 
     async def run_admin_operation(self, operation: AdminOperation) -> AdminResult:
         try:
+            if operation.action == ADMIN_PD_KV_LAYOUT and self.comm.kv_pools:
+                if len(self.comm.kv_pools) != 1:
+                    raise ValueError(
+                        "PD stage must register exactly one KV pool, "
+                        f"got {sorted(self.comm.kv_pools)}"
+                    )
+                else:
+                    pass
+                (pool,) = self.comm.kv_pools.values()
+                layout = PDStageKVLayout(
+                    role=(
+                        "decode"
+                        if pool.pool_id in self.comm.kv_receivers
+                        else "prefill"
+                    ),
+                    pool_id=pool.pool_id,
+                    layout=pool.layout,
+                    partner_stage=getattr(self.scheduler, "pd_partner_stage", None),
+                )
+                return self.admin_result(
+                    operation,
+                    success=True,
+                    message="ok",
+                    data=msgspec.to_builtins(layout),
+                )
+            else:
+                pass
             handler = getattr(self.scheduler, "admin", None)
             if handler is None:
                 return self.admin_result(
@@ -1707,11 +1737,6 @@ class Stage:
             to_stage = self.resolve_target_instance(
                 transfer.request_id, transfer.to_stage
             )
-            target_pool_id = (
-                transfer.target_pool_id
-                if to_stage == transfer.to_stage
-                else f"{to_stage}:kv"
-            )
             metadata = {
                 **transfer.metadata,
                 "replica_bindings": self.replica_bindings.get(transfer.request_id),
@@ -1723,7 +1748,7 @@ class Stage:
                 request_id=transfer.request_id,
                 source_pool_id=transfer.source_pool_id,
                 source_page_indices=transfer.source_page_indices,
-                target_pool_id=target_pool_id,
+                target_pool_id=transfer.target_pool_id,
                 to_stage=to_stage,
                 metadata=metadata,
                 transfer_id=transfer.transfer_id,
