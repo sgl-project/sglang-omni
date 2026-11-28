@@ -79,6 +79,7 @@ class MiniCPMODuplexSampling(BaseModel):
     greedy: bool = False
     temperature: float = Field(default=0.7, ge=0, le=2)
     top_k: int = Field(default=20, ge=-1)
+    enable_compact_top_k: bool = False
     top_p: float = Field(default=0.8, gt=0, le=1)
     repetition_penalty: float = Field(default=1.05, ge=1)
     listen_prob_scale: float = Field(default=1.0, ge=0)

@@ -82,6 +82,7 @@ def disabled_or_positive_top_k(top_k: int) -> int:
 class SamplingConfig(TypedDict, total=False):
     temperature: Annotated[float, Field(ge=0, le=2)]
     top_k: Annotated[int, Field(ge=-1)]
+    enable_compact_top_k: bool
     top_p: Annotated[float, Field(gt=0, le=1)]
     repetition_penalty: Annotated[float, Field(ge=1)]
     listen_prob_scale: Annotated[float, Field(ge=0)]
