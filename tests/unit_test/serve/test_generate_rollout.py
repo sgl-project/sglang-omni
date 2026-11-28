@@ -322,6 +322,31 @@ def test_generate_rejects_invalid_stop_type() -> None:
     assert client.requests == []
 
 
+@pytest.mark.parametrize("stop", ["", [""], ["\n", ""]], ids=["str", "list", "mixed"])
+@pytest.mark.parametrize("stage", [None, "thinker"], ids=["request", "stage"])
+def test_generate_rejects_an_empty_stop_string(
+    stop: str | list[str], stage: str | None
+) -> None:
+    """An empty stop string in sampling_params or stage_sampling was accepted and generated."""
+    client = RolloutClient(text_result())
+    tc = TestClient(create_app(client, model_name="qwen3-omni"))
+    if stage is None:
+        body = {"prompt": "hi", "sampling_params": {"stop": stop}}
+        stop_loc = ["body", "sampling_params", "stop"]
+    else:
+        body = {"prompt": "hi", "stage_sampling": {stage: {"stop": stop}}}
+        stop_loc = ["body", "stage_sampling", stage, "stop"]
+
+    resp = tc.post("/generate", json=body)
+
+    assert resp.status_code == 422
+    [error] = resp.json()["detail"]
+    assert error["loc"] == stop_loc
+    assert error["type"] == "value_error"
+    assert "stop strings must not be empty" in error["msg"]
+    assert client.requests == []
+
+
 def test_generate_rejects_message_without_role_or_content() -> None:
     client = RolloutClient(text_result())
     tc = TestClient(create_app(client, model_name="qwen3-omni"))

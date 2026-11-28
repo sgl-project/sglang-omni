@@ -1433,6 +1433,26 @@ def test_chat_answer_excludes_the_matched_stop_string() -> None:
     assert response.json()["choices"][0]["message"]["content"] == "1, 2"
 
 
+@pytest.mark.parametrize("stream", [False, True], ids=["buffered", "streamed"])
+@pytest.mark.parametrize("stop", ["", [""], [", 3", ""]], ids=["str", "list", "mixed"])
+def test_chat_rejects_an_empty_stop_string(stop: str | list[str], stream: bool) -> None:
+    """An empty stop string was accepted and answered 200 with an empty completion."""
+    app = create_app(Client(TextDeltaCoordinator(["1, 2"])), model_name="qwen3-omni")
+    body = {
+        "messages": [{"role": "user", "content": "count"}],
+        "stop": stop,
+        "stream": stream,
+    }
+
+    response = TestClient(app).post("/v1/chat/completions", json=body)
+
+    assert response.status_code == 422
+    [error] = response.json()["detail"]
+    assert error["loc"] == ["body", "stop"]
+    assert error["type"] == "value_error"
+    assert "stop strings must not be empty" in error["msg"]
+
+
 @pytest.mark.parametrize(
     ("deltas", "stop", "expected"),
     [

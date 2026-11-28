@@ -428,7 +428,7 @@ The streamed WAV chunks carry the same 44.1 kHz speech as the non-streaming repl
 | `top_k` | `-1` | Thinker sampling. |
 | `min_p` | `0.0` | Thinker sampling. |
 | `repetition_penalty` | `1.0` | Thinker sampling. |
-| `stop` | `[]` | Stop string or list of stop strings. |
+| `stop` | `[]` | Stop string or list of stop strings. An empty string is refused with 422. |
 | `seed` | `null` | Forwarded as `sampling_seed`. |
 | `stream` | `false` | Use with the streaming speech pipeline for audio chunks. |
 | `audio.format` | `wav` | Chat-completions audio format. |
