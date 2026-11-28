@@ -1952,10 +1952,10 @@ def test_top_k_and_top_p_filter_each_row_of_a_batch() -> None:
 
 
 @pytest.mark.parametrize("greedy", [True, False])
-def test_one_step_moves_token_ids_to_the_host_exactly_twice(
+def test_one_step_moves_token_ids_to_the_host_once(
     monkeypatch: pytest.MonkeyPatch, greedy: bool
 ) -> None:
-    """A step costs two Python-level transfers, not two per row, and never a multinomial sync."""
+    """A step has one Python-level transfer, not one per sampling stage or row."""
     transfers: list[str] = []
     multinomial_calls: list[int] = []
     original_item = torch.Tensor.item
@@ -1988,7 +1988,7 @@ def test_one_step_moves_token_ids_to_the_host_exactly_twice(
         [unit_request(state) for state in states],
     )
 
-    assert transfers == ["tolist", "tolist"]
+    assert transfers == ["tolist"]
     assert multinomial_calls == []
     assert token_ids.tolist() == [PLAIN_TOKEN_ID] * len(states)
     assert [state.generated_history for state in states] == [[PLAIN_TOKEN_ID]] * len(

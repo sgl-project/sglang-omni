@@ -136,7 +136,7 @@ class MiniCPMOThinkerModelRunner(OfflineThinkerModelRunner):
                 data.thinker_state.force_listen_counter += 1
             else:
                 pass
-        return torch.tensor(token_ids, dtype=torch.long, device=logits.device)
+        return token_ids
 
     # note (Junnan Li): FULL capture must match decode graphs and retain talker conditioning.
     def requested_capture_hidden_mode_prefill(
