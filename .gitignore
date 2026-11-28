@@ -72,3 +72,6 @@ target/
 # CPU installer lock/backup
 .pyproject.cpu.lock
 .pyproject.cpu.bak
+
+# The XPU baseline serialises recordings through a sidecar lock next to its file.
+scripts/xpu/*.json.lock
