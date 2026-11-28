@@ -129,11 +129,14 @@ def _validate_pcm(
         return AudioValidation(False, "PCM bytes are empty")
     if len(body) % PCM_SAMPLE_WIDTH:
         return AudioValidation(False, "PCM bytes are not aligned to 16-bit samples")
-    if require_min_audio and len(body) < MIN_PCM_AUDIO_BYTES:
+    duration_s = duration_from_audio_bytes(
+        body, response_format="pcm", sample_rate=sample_rate
+    )
+    if require_min_audio and duration_s < MIN_GENERATED_AUDIO_DURATION_S:
         return AudioValidation(
             False,
             "PCM audio is shorter than the minimum generated-audio duration "
-            f"(bytes={len(body)}, minimum={MIN_PCM_AUDIO_BYTES})",
+            f"(duration={duration_s:.6f}s, minimum={MIN_GENERATED_AUDIO_DURATION_S}s)",
         )
     if _printable_ascii_ratio(body) >= MAX_PRINTABLE_ASCII_RATIO:
         return AudioValidation(False, "PCM bytes look like printable placeholder text")
@@ -141,11 +144,7 @@ def _validate_pcm(
         return AudioValidation(False, "PCM bytes contain only zero-amplitude samples")
     return AudioValidation(
         True,
-        duration_s=duration_from_audio_bytes(
-            body,
-            response_format="pcm",
-            sample_rate=sample_rate,
-        ),
+        duration_s=duration_s,
     )
 
 
