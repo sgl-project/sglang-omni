@@ -49,8 +49,6 @@ inline void WaitFor(std::future<void> &event, const std::string &message) {
 class TestSignal {
 public:
   TestSignal() = default;
-  TestSignal(const TestSignal &) = delete;
-  TestSignal &operator=(const TestSignal &) = delete;
 
   void Notify(std::exception_ptr error = nullptr) {
     const std::shared_ptr<State> state = state_;

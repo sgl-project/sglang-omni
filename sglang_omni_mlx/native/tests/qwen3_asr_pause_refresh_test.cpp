@@ -4,9 +4,7 @@
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
-#include <cstdlib>
 #include <exception>
-#include <execinfo.h>
 #include <functional>
 #include <future>
 #include <iostream>
@@ -209,8 +207,8 @@ void DrainWorker(TranscriptionWorker &worker, TestSignal &drained) {
   worker.Submit(
       [](const std::atomic<bool> &) { return TranscriptionResult{}; },
       NewCancelFlag(),
-      [&worker, &drained](std::optional<TranscriptionResult>,
-                          std::exception_ptr error) {
+      [&worker, drained](std::optional<TranscriptionResult>,
+                         std::exception_ptr error) {
         if (error != nullptr) {
           drained.Notify(error);
           return;
@@ -218,8 +216,8 @@ void DrainWorker(TranscriptionWorker &worker, TestSignal &drained) {
         worker.Submit(
             [](const std::atomic<bool> &) { return TranscriptionResult{}; },
             NewCancelFlag(),
-            [&drained](std::optional<TranscriptionResult>,
-                       std::exception_ptr marker_error) {
+            [drained](std::optional<TranscriptionResult>,
+                      std::exception_ptr marker_error) {
               drained.Notify(marker_error);
             });
       });
@@ -1008,12 +1006,6 @@ void TestPauseRefreshRequiresSessionOptIn() {
 } // namespace qwen3_asr::tests
 
 int main() {
-  std::set_terminate([] {
-    void *frames[64];
-    const int frame_count = backtrace(frames, 64);
-    backtrace_symbols_fd(frames, frame_count, 2);
-    std::abort();
-  });
   try {
     std::cerr << "TestAdmissionPolicy\n";
     qwen3_asr::tests::TestAdmissionPolicy();
