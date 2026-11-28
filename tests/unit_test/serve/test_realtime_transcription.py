@@ -17,6 +17,7 @@ from sglang_omni.audio import vad as vad_module
 from sglang_omni.audio.vad import StatelessVAD, StreamingVAD, VADConfig, VADEvent
 from sglang_omni.client import CompletionResult, GenerateRequest
 from sglang_omni.config import RealtimeTranscriptionConfig
+from sglang_omni.models.qwen3_asr.streaming import Qwen3ASRStreamingStrategy
 from sglang_omni.serve.realtime import transcription_session as session_module
 from sglang_omni.serve.realtime.transcription_session import (
     RealtimeTranscriptionSession,
@@ -828,4 +829,42 @@ async def test_session_update_sets_the_decode_interval(
     )
     assert websocket.events[-1]["error"]["code"] == "session_active"
     assert session.settings.decode_interval_ms == 500
+    await session.teardown()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("language", ["Klingon", "  "])
+async def test_session_update_refuses_a_language_the_model_cannot_take(
+    monkeypatch: pytest.MonkeyPatch, language: str
+) -> None:
+    """A session.update with a language hint Qwen3-ASR refuses is answered with invalid_language and changes nothing."""
+    session, websocket = vad_session(monkeypatch)
+    session.strategy = Qwen3ASRStreamingStrategy()
+    vad = session.vad
+    before = session.session_object()
+
+    await session.dispatch(
+        {
+            "type": "session.update",
+            "session": {
+                "language": language,
+                "decode_interval_ms": 500,
+                "turn_detection": None,
+            },
+        }
+    )
+
+    assert websocket.events[-1]["type"] == "error"
+    assert websocket.events[-1]["error"]["type"] == "invalid_request_error"
+    assert websocket.events[-1]["error"]["code"] == "invalid_language"
+    assert websocket.events[-1]["error"]["message"].startswith("Unsupported language:")
+    assert session.session_object() == before
+    assert session.vad is vad
+
+    await session.dispatch(
+        {"type": "session.update", "session": {"language": "Spanish"}}
+    )
+
+    assert websocket.events[-1]["type"] == "session.updated"
+    assert session.settings.language == "Spanish"
     await session.teardown()

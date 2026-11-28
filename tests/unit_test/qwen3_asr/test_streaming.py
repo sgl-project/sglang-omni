@@ -165,6 +165,17 @@ def test_qwen_strategy_waits_for_unfixed_chunks_before_using_prefix() -> None:
     assert third.extra_params["_asr_streaming_prefix_text"] == "hello world"
 
 
+@pytest.mark.parametrize("language", ["Klingon", ""])
+def test_qwen_strategy_refuses_a_language_hint_the_request_builder_refuses(
+    language: str,
+) -> None:
+    """A realtime segment state is not created for a language hint Qwen3-ASR cannot take."""
+    with pytest.raises(ValueError, match="Unsupported language"):
+        Qwen3ASRStreamingStrategy().create_state(
+            model_name="qwen3-asr", language=language
+        )
+
+
 def test_qwen_strategy_skips_prefix_until_language_is_known() -> None:
     strategy = Qwen3ASRStreamingStrategy()
     state = strategy.create_state(model_name="qwen3-asr", language=None)

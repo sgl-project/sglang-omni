@@ -16,7 +16,10 @@ from sglang.srt.managers.schedule_batch import (
 from sglang.srt.sampling.sampling_params import SamplingParams
 from transformers import PreTrainedTokenizerBase, WhisperFeatureExtractor
 
-from sglang_omni.models.hy_simulmt.streaming import TranslationTurn
+from sglang_omni.models.hy_simulmt.streaming import (
+    TranslationTurn,
+    check_source_language,
+)
 from sglang_omni.preprocessing.transcription import prepare_audio
 from sglang_omni.proto.request import StagePayload
 from sglang_omni.scheduling.sglang_backend.request_data import SGLangARRequestData
@@ -87,10 +90,7 @@ class HySimulMTRequestBuilder:
         else:
             pass
         source_language = parameters.get("language")
-        if source_language not in (None, "en", "zh"):
-            raise ValueError("Hy-SimulMT supports Chinese (zh) and English (en)")
-        else:
-            pass
+        check_source_language(source_language)
         default_target = "zh" if source_language == "en" else "en"
         if parameters.get("task") == "translate":
             default_target = "en"

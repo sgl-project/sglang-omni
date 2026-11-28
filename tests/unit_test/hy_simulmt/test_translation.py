@@ -211,6 +211,17 @@ def test_native_stage_parameters_preserve_translation_direction_and_history(
     assert len(request.req.multimodal_inputs.mm_items) == 2
 
 
+@pytest.mark.parametrize("language", ["fr", "", "EN"])
+def test_realtime_state_refuses_a_source_language_other_than_en_or_zh(
+    language: str,
+) -> None:
+    """A realtime segment state is not created for a source language Hy-SimulMT cannot translate."""
+    with pytest.raises(ValueError, match="Chinese \\(zh\\) and English \\(en\\)"):
+        HySimulMTStreamingStrategy().create_state(
+            model_name="translation", language=language
+        )
+
+
 def test_realtime_history_is_committed_after_success_and_final_flush_is_complete() -> (
     None
 ):
