@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # The fast checks, the same locally and in Voxt CI: gofmt, MyGo's vet and
-# internal/archtest (file sizes, import layering, view files).
+# internal/archtest (file sizes, function complexity, import layering, view
+# files).
 # Run from anywhere: scripts/check.sh
 set -euo pipefail
 cd "$(dirname "$0")/.."
