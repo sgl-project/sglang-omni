@@ -207,7 +207,11 @@ def test_key_none_bypasses_cache() -> None:
     assert stats["entries"] == 0
 
 
-def test_exception_propagates_to_all_waiters_and_does_not_poison() -> None:
+@pytest.mark.parametrize("failure_type", [ValueError, TimeoutError])
+def test_exception_propagates_to_all_waiters_and_does_not_poison(
+    failure_type: type[Exception],
+) -> None:
+    """A failed shared encode must report only the requesting caller's context."""
     release = threading.Event()
     entered = threading.Event()
     worker_count = 4
@@ -226,20 +230,22 @@ def test_exception_propagates_to_all_waiters_and_does_not_poison() -> None:
             entered.set()
             assert release.wait(timeout=5)
             if call == 1:
-                raise ValueError("boom")
+                raise failure_type("boom")
             return torch.tensor([9], dtype=torch.long)
 
     hook = FlakyHook()
     service = ReferenceEncodeService(hook, max_items=16, max_bytes=1024)
-    errors: list[Exception] = []
+    errors: dict[int, Exception] = {}
 
-    def worker() -> None:
+    def worker(index: int) -> None:
         try:
-            service.get_or_encode("flaky", desc="flaky")
+            service.get_or_encode("flaky", desc=f"caller-{index}")
         except Exception as exc:
-            errors.append(exc)
+            errors[index] = exc
 
-    threads = [threading.Thread(target=worker) for _ in range(worker_count)]
+    threads = [
+        threading.Thread(target=worker, args=(index,)) for index in range(worker_count)
+    ]
     for thread in threads:
         thread.start()
     assert entered.wait(timeout=5)
@@ -249,11 +255,13 @@ def test_exception_propagates_to_all_waiters_and_does_not_poison() -> None:
         thread.join(timeout=5)
 
     assert len(errors) == 4
-    assert all(isinstance(error, ValueError) for error in errors)
-    assert all(str(error) == "boom" for error in errors)
-    if hasattr(errors[0], "__notes__"):
-        assert "Reference encode context: flaky" in errors[0].__notes__
-    assert len({id(error) for error in errors}) == len(errors)
+    assert all(isinstance(error, failure_type) for error in errors.values())
+    assert all(str(error) == "boom" for error in errors.values())
+    for index, error in errors.items():
+        assert error.__notes__ == [f"Reference encode context: caller-{index}"]
+        assert error.__cause__ is None
+        assert error.__context__ is None
+    assert len({id(error) for error in errors.values()}) == len(errors)
     assert service.stats()["entries"] == 0
     result = service.get_or_encode("flaky")
     assert torch.equal(result, torch.tensor([9], dtype=torch.long))

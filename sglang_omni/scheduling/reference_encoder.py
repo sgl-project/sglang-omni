@@ -380,13 +380,17 @@ class ReferenceEncodeService(Generic[InputT, ArtifactT, StoredT, RawInputT]):
             pass
         if follower_fut is not None:
             try:
-                stored = follower_fut.result(timeout=self.timeout_s)
+                shared_exception = follower_fut.exception(timeout=self.timeout_s)
             except concurrent.futures.TimeoutError as exc:
                 self.add_exception_note(exc, desc)
                 raise
-            except BaseException as exc:
-                self.add_exception_note(exc, desc)
-                raise fresh_exception(exc) from exc
+            if shared_exception is not None:
+                caller_exception = fresh_exception(shared_exception)
+                self.add_exception_note(caller_exception, desc)
+                raise caller_exception
+            else:
+                pass
+            stored = follower_fut.result()
             return self._hook.load_artifact(stored)  # noqa: leading-underscore
         else:
             pass
@@ -402,11 +406,12 @@ class ReferenceEncodeService(Generic[InputT, ArtifactT, StoredT, RawInputT]):
                     pass
                 self.inflight.pop(cache_key, None)
         except BaseException as exc:
+            shared_exception = fresh_exception(exc)
             self.add_exception_note(exc, desc)
             with self.lock:
                 self.inflight.pop(cache_key, None)
                 self.failed += 1
-            leader_fut.set_exception(exc)
+            leader_fut.set_exception(shared_exception)
             raise
         leader_fut.set_result(stored)
         self.maybe_log()
