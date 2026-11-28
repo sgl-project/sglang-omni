@@ -19,7 +19,7 @@ from sglang_omni.proto.session import (
     TimedChunk,
 )
 from sglang_omni.serve.realtime.constants import CLOSE_REASON_INTERNAL
-from sglang_omni.serve.realtime.output import OutputEvent, TurnFailure
+from sglang_omni.serve.realtime.output import AudioDelta, OutputEvent, TurnFailure
 from sglang_omni.serve.realtime.schema import SessionConfiguration
 from sglang_omni.serve.realtime.task_cleanup import cancel_local_tasks
 from sglang_omni.serve.realtime.types import (
@@ -59,7 +59,7 @@ class OutputConverter(Protocol):
 
 
 class CoordinatorAdapter(InteractionAdapter):
-    """Publish output after unit success."""
+    """Publish unit output after success, or publish audio as it arrives when enabled."""
 
     def __init__(
         self,
@@ -69,6 +69,7 @@ class CoordinatorAdapter(InteractionAdapter):
         output_converter: OutputConverter,
         input_sample_rate_hz: int | None = None,
         atomic_consumption: bool = False,
+        deliver_partial_audio: bool = False,
         limits: SessionLimits | None = None,
     ) -> None:
         if not atomic_consumption:
@@ -87,6 +88,8 @@ class CoordinatorAdapter(InteractionAdapter):
         self.unit_completion: asyncio.Future[int] | None = None
         self.unit_output_events: list[OutputEvent] = []
         self.unit_output_bytes = 0
+        self.unit_output_count = 0
+        self.deliver_partial_audio = deliver_partial_audio
         self.output_sink: OutputSink | None = None
         self.reader_error: Exception | None = None
         self.is_closing = False
@@ -120,12 +123,15 @@ class CoordinatorAdapter(InteractionAdapter):
     def reset_unit_outputs(self) -> None:
         self.unit_output_events.clear()
         self.unit_output_bytes = 0
+        self.unit_output_count = 0
 
     async def read_session_outputs(self) -> None:
         assert self.session_identity is not None and self.output_sink is not None
         try:
             async for output in self.client.session_outputs(self.session_identity):
-                if (
+                if self.is_closing:
+                    return
+                elif (
                     self.active_unit is None
                     or output.input_seq != self.active_unit.index
                 ):
@@ -142,11 +148,11 @@ class CoordinatorAdapter(InteractionAdapter):
                     else:
                         pass
                 else:
+                    audio_prefix_count = 0
                     for event in self.output_converter(output):
                         event_size_bytes = len(repr(event).encode())
                         if (
-                            len(self.unit_output_events)
-                            >= self.limits.max_output_chunks
+                            self.unit_output_count >= self.limits.max_output_chunks
                             or self.unit_output_bytes + event_size_bytes
                             > self.limits.max_output_bytes
                         ):
@@ -157,6 +163,18 @@ class CoordinatorAdapter(InteractionAdapter):
                             pass
                         self.unit_output_events.append(event)
                         self.unit_output_bytes += event_size_bytes
+                        self.unit_output_count += 1
+                        if self.deliver_partial_audio and isinstance(event, AudioDelta):
+                            audio_prefix_count = len(self.unit_output_events)
+                        else:
+                            pass
+                    if audio_prefix_count:
+                        audio_prefix = self.unit_output_events[:audio_prefix_count]
+                        del self.unit_output_events[:audio_prefix_count]
+                        for event in audio_prefix:
+                            await self.output_sink(event, self.active_unit)
+                    else:
+                        pass
             if not self.is_closing:
                 raise RuntimeError("session output stream closed")
             else:
@@ -223,6 +241,10 @@ class CoordinatorAdapter(InteractionAdapter):
 
     async def close(self) -> None:
         self.is_closing = True
+        if self.unit_completion is not None:
+            self.unit_completion.cancel()
+        else:
+            pass
         try:
             if self.session_identity is not None:
                 await self.client.close_session(self.session_identity)

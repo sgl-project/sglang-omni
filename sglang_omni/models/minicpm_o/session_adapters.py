@@ -2,7 +2,7 @@
 """MiniCPM-o unit conversion for the shared session runtime."""
 
 from array import array
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 import torch
 from sglang.srt.layers.rotary_embedding.base import RotaryEmbedding
@@ -445,6 +445,7 @@ class DeliveredUnit:
 
     unit_index: int
     audio_end_ms: float
+    is_partial: bool = False
 
 
 @dataclass(kw_only=True)
@@ -464,14 +465,18 @@ class Reply:
 
     @property
     def last_delivered_unit(self) -> int:
-        return self.delivered_units[-1].unit_index
+        latest = self.delivered_units[-1]
+        if latest.is_partial:
+            return self.played_through_unit(latest.audio_end_ms)
+        else:
+            return latest.unit_index
 
     def played_through_unit(self, audio_end_ms: float) -> int:
         """The last delivered unit whose audio had fully ended at audio_end_ms, so a position inside a unit rounds down; the unit before the first one when none had."""
         played_unit_indices = [
             unit.unit_index
             for unit in self.delivered_units
-            if unit.audio_end_ms <= audio_end_ms
+            if not unit.is_partial and unit.audio_end_ms <= audio_end_ms
         ]
         if played_unit_indices:
             return played_unit_indices[-1]
@@ -480,7 +485,8 @@ class Reply:
 
 
 class OutputConverter:
-    def __init__(self) -> None:
+    def __init__(self, *, deliver_partial_audio: bool = False) -> None:
+        self.deliver_partial_audio = deliver_partial_audio
         self.reply: Reply | None = None
         self.serial: int = 0
 
@@ -554,6 +560,7 @@ class OutputConverter:
         value = output.payload
         reply = self.reply
         events: list[OutputEvent] = []
+        is_partial = self.deliver_partial_audio and value.get("is_partial_unit", False)
         if (
             reply is not None
             and reply.is_open
@@ -579,6 +586,7 @@ class OutputConverter:
             delivered_unit = DeliveredUnit(
                 unit_index=output.input_seq,
                 audio_end_ms=samples_to_ms(reply.audio_samples, OUTPUT_SAMPLE_RATE),
+                is_partial=is_partial,
             )
             if (
                 reply.delivered_units
@@ -602,6 +610,17 @@ class OutputConverter:
                 )
             else:
                 pass
+        elif (
+            reply is not None
+            and reply.is_open
+            and reply.delivered_units
+            and reply.delivered_units[-1].unit_index == output.input_seq
+            and reply.delivered_units[-1].is_partial
+            and not is_partial
+        ):
+            reply.delivered_units[-1] = replace(
+                reply.delivered_units[-1], is_partial=False
+            )
         else:
             pass
         if value["end_of_turn"] or output.eos:
@@ -689,7 +708,10 @@ def build_realtime_deployment(
                     ),
                 },
             ),
-            output_converter=OutputConverter(),
+            output_converter=OutputConverter(
+                deliver_partial_audio=config.speech.deliver_partial_audio,
+            ),
+            deliver_partial_audio=config.speech.deliver_partial_audio,
             input_sample_rate_hz=SAMPLE_RATE,
             atomic_consumption=True,
         )

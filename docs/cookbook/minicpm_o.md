@@ -77,6 +77,10 @@ python playground/realtime/app.py --api-base http://127.0.0.1:8000 --port 8080
 
 Once the terminal prints `Running on`, open <http://localhost:8080> and click **Start talking**; the camera can be turned on during the call. Open the page through `localhost`, or the browser will not grant microphone access. Settings, the protocol, and benchmarking are in the [Full-Duplex Guide](../developer_reference/full_duplex_guide.md#native-full-duplex-minicpm-o).
 
+### Partial audio delivery
+
+Set `--speech.stream_decode_chunks true --speech.deliver_partial_audio true` with the session variant to let realtime clients receive synthesized audio before the input unit finishes. Both options default to false. Early audio may already have reached the client if the rest of the unit fails.
+
 ### Realtime-Venus checkpoints
 
 [Realtime-Venus](https://huggingface.co/inclusionAI/Realtime-Venus) provides two MiniCPM-o 4.5 fine-tuned checkpoints: Realtime-Venus-Omni for audio-video calls and Realtime-Venus-Audio for audio-only conversations. Both keep the MiniCPM-o weight layout and serve with the commands on this page.

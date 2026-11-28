@@ -18,11 +18,12 @@ from sglang_omni.models.minicpm_o.native_config import (
     DEFAULT_SPEECH_SETTINGS,
     MiniCPMODuplexPipelineConfig,
     MiniCPMODuplexSampling,
+    MiniCPMODuplexSpeech,
 )
 from sglang_omni.models.minicpm_o.native_stages import PerceptionHooks, SpeechHooks
 from sglang_omni.models.minicpm_o.session_adapters import build_realtime_deployment
 from sglang_omni.proto.request import OmniRequest
-from sglang_omni.proto.session import SessionIdentity, TimedChunk
+from sglang_omni.proto.session import SessionIdentity, SessionLimits, TimedChunk
 from sglang_omni.proto.streams import CONTROL, INTERRUPT, SESSION_CONTROL, TRUNCATE
 from sglang_omni.serve.realtime.negotiation import SessionNegotiation
 from sglang_omni.serve.realtime.output import (
@@ -34,7 +35,7 @@ from sglang_omni.serve.realtime.output import (
     TextFinished,
 )
 from sglang_omni.serve.realtime.schema import JsonObject, SessionConfiguration
-from sglang_omni.serve.realtime.types import InteractionAdapter, Unit
+from sglang_omni.serve.realtime.types import InteractionAdapter, OutputBudgetError, Unit
 from tests.unit_test.fixtures.session_client import FakeSessionClient
 from tests.unit_test.serve.test_realtime_reference_audio import wav_reference
 
@@ -130,15 +131,31 @@ class VoiceCoordinator(FakeSessionClient):
 
 async def open_adapter(
     coordinator: VoiceCoordinator,
+    *,
+    deliver_partial_audio: bool = False,
+    output_received: asyncio.Event | None = None,
+    limits: SessionLimits | None = None,
 ) -> tuple[InteractionAdapter, list[OutputEvent]]:
     deployment = build_realtime_deployment(
-        Client(coordinator), MiniCPMODuplexPipelineConfig(model_path="unused")
+        Client(coordinator),
+        MiniCPMODuplexPipelineConfig(
+            model_path="unused",
+            speech=MiniCPMODuplexSpeech(deliver_partial_audio=deliver_partial_audio),
+        ),
     )
     adapter = deployment.adapter_factory()
+    if limits is not None:
+        adapter.limits = limits
+    else:
+        pass
     events: list[OutputEvent] = []
 
     async def record(event: OutputEvent, unit: Unit | None = None) -> None:
         events.append(event)
+        if output_received is not None and isinstance(event, AudioDelta):
+            output_received.set()
+        else:
+            pass
 
     await adapter.open("session", SESSION_CONFIG, record)
     return adapter, events
@@ -625,3 +642,108 @@ def test_stage_reference_precedence_is_per_session(
     assert [
         call.kwargs["reference_audio"] for call in runtime.open_session.call_args_list
     ] == [b"output", b"input", b"default"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cancel_before_final_audio", [True, False])
+async def test_partial_audio_cancel_and_truncate_use_complete_units(
+    cancel_before_final_audio: bool,
+) -> None:
+    coordinator = VoiceCoordinator()
+    audio_received = asyncio.Event()
+    adapter, events = await open_adapter(
+        coordinator, deliver_partial_audio=True, output_received=audio_received
+    )
+    try:
+        await run_unit(adapter, coordinator, 0, 1, voice(HEARD_PCM))
+        audio_received.clear()
+        processing = asyncio.create_task(adapter.process(unit(1)))
+        await asyncio.sleep(0)
+        coordinator.voice(1, 1, {**voice(TAIL_PCM), "is_partial_unit": True})
+        await asyncio.wait_for(audio_received.wait(), timeout=5)
+        assert events[-1] == AudioDelta(FIRST_RESPONSE, FIRST_ITEM, TAIL_PCM)
+        assert not processing.done()
+
+        if cancel_before_final_audio:
+            await adapter.cancel()
+            await adapter.truncate(FIRST_ITEM, 15.0)
+            assert coordinator.controlled == [interrupt_of_turn_1(0)]
+            coordinator.voice(1, 1, voice(TAIL_PCM, end_of_turn=True))
+            coordinator.done(1)
+            await asyncio.wait_for(processing, timeout=5)
+            assert [event.pcm for event in events if isinstance(event, AudioDelta)] == [
+                HEARD_PCM,
+                TAIL_PCM,
+            ]
+            assert isinstance(events[-1], ResponseFinished)
+            assert events[-1].status == "cancelled"
+        else:
+            audio_received.clear()
+            coordinator.voice(1, 1, voice(TAIL_PCM))
+            await asyncio.wait_for(audio_received.wait(), timeout=5)
+            assert not processing.done()
+            coordinator.done(1)
+            await asyncio.wait_for(processing, timeout=5)
+            await adapter.cancel()
+            await adapter.truncate(FIRST_ITEM, 15.0)
+            assert coordinator.controlled == [
+                interrupt_of_turn_1(1),
+                truncate_of_turn_1(15.0, 0),
+            ]
+    finally:
+        await adapter.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "end", ["failure", "event_budget", "byte_budget", "disconnect"]
+)
+async def test_partial_audio_does_not_complete_failed_or_closed_unit(end: str) -> None:
+    coordinator = VoiceCoordinator()
+    audio_received = asyncio.Event()
+    limits = {
+        "event_budget": SessionLimits(max_output_chunks=2),
+        "byte_budget": SessionLimits(
+            max_output_bytes=sum(
+                len(repr(event).encode())
+                for event in (
+                    ResponseStarted(FIRST_RESPONSE),
+                    AudioDelta(FIRST_RESPONSE, FIRST_ITEM, TAIL_PCM),
+                )
+            )
+        ),
+    }.get(end)
+    adapter, events = await open_adapter(
+        coordinator,
+        deliver_partial_audio=True,
+        output_received=audio_received,
+        limits=limits,
+    )
+    try:
+        processing = asyncio.create_task(adapter.process(unit(0)))
+        await asyncio.sleep(0)
+        coordinator.voice(0, 1, {**voice(TAIL_PCM), "is_partial_unit": True})
+        await asyncio.wait_for(audio_received.wait(), timeout=5)
+        assert not processing.done()
+        if end == "failure":
+            coordinator.fail(RuntimeError("speech failed"))
+            with pytest.raises(RuntimeError, match="speech failed"):
+                await asyncio.wait_for(processing, timeout=5)
+        elif end == "disconnect":
+            await adapter.close()
+            with pytest.raises(asyncio.CancelledError):
+                await asyncio.wait_for(processing, timeout=5)
+        else:
+            coordinator.voice(0, 1, voice(TAIL_PCM))
+            coordinator.done(0)
+            with pytest.raises(OutputBudgetError, match="output budget"):
+                await asyncio.wait_for(processing, timeout=5)
+        assert events == [
+            ResponseStarted(FIRST_RESPONSE),
+            AudioDelta(FIRST_RESPONSE, FIRST_ITEM, TAIL_PCM),
+        ]
+    finally:
+        if not coordinator.closed.is_set():
+            await adapter.close()
+        else:
+            pass
