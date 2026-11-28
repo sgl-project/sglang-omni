@@ -18,6 +18,7 @@ from sglang_omni.audio.vad import StatelessVAD, StreamingVAD, VADConfig, VADEven
 from sglang_omni.client import CompletionResult, GenerateRequest
 from sglang_omni.config import RealtimeTranscriptionConfig
 from sglang_omni.serve.realtime import transcription_session as session_module
+from sglang_omni.serve.realtime.events import TurnDetection
 from sglang_omni.serve.realtime.transcription_session import (
     RealtimeTranscriptionSession,
 )
@@ -828,4 +829,88 @@ async def test_session_update_sets_the_decode_interval(
     )
     assert websocket.events[-1]["error"]["code"] == "session_active"
     assert session.settings.decode_interval_ms == 500
+    await session.teardown()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("server_vad", "turn_detection", "code"),
+    [
+        (True, {"type": "semantic_vad"}, "unsupported_turn_detection"),
+        (False, {"type": "server_vad"}, "unsupported_turn_detection"),
+        (
+            True,
+            {
+                "type": "server_vad",
+                "prefix_padding_ms": 600,
+                "silence_duration_ms": 500,
+            },
+            "invalid_turn_detection",
+        ),
+    ],
+)
+async def test_rejected_session_update_changes_no_setting(
+    monkeypatch: pytest.MonkeyPatch,
+    server_vad: bool,
+    turn_detection: dict[str, str | int],
+    code: str,
+) -> None:
+    """A session.update refused for its turn_detection also leaves language and decode interval unchanged."""
+    if server_vad:
+        session, websocket = vad_session(monkeypatch)
+    else:
+        session, websocket = no_vad_session()
+    vad = session.vad
+    before = session.session_object()
+
+    await session.dispatch(
+        {
+            "type": "session.update",
+            "session": {
+                "language": "English",
+                "decode_interval_ms": 500,
+                "turn_detection": turn_detection,
+            },
+        }
+    )
+
+    assert websocket.events[-1]["type"] == "error"
+    assert websocket.events[-1]["error"]["code"] == code
+    assert session.session_object() == before
+    assert session.vad is vad
+    await session.teardown()
+
+
+@pytest.mark.asyncio
+async def test_failed_vad_build_changes_no_setting(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A session.update whose new VAD fails to build leaves every setting and the old VAD untouched."""
+    session, websocket = vad_session(monkeypatch)
+    vad = session.vad
+    assert vad is not None
+    model = vad.model
+    assert isinstance(model, FakeSpeechModel)
+    before = session.session_object()
+
+    def fail_to_build(turn_detection: TurnDetection | None) -> StatelessVAD | None:
+        raise RuntimeError("VAD model failed to load")
+
+    monkeypatch.setattr(session, "new_vad", fail_to_build)
+    await session.dispatch(
+        {
+            "type": "session.update",
+            "session": {
+                "language": "English",
+                "decode_interval_ms": 500,
+                "turn_detection": {"type": "server_vad", "silence_duration_ms": 800},
+            },
+        }
+    )
+
+    assert websocket.events[-1]["type"] == "error"
+    assert websocket.events[-1]["error"]["code"] == "internal_error"
+    assert session.session_object() == before
+    assert session.vad is vad
+    assert model.reset_calls == 0
     await session.teardown()
