@@ -260,6 +260,26 @@ func TestFinal(t *testing.T) {
 	if _, ok := finals[0].Fields["language"]; !ok {
 		t.Error("no language")
 	}
+	if slices.Contains(launches[0].Args, "--realtime-profile") {
+		t.Errorf("profiling is on by default: %q", args)
+	}
+}
+
+func TestRealtimeProfileLaunchArgs(t *testing.T) {
+	t.Setenv("VOXTNEW_REALTIME_PROFILE", "1")
+	f := newFake(t, omnitest.Opts{}, nil)
+	a := f.asr(t, ASRFast)
+	if _, err := a.Transcribe(context.Background(), asr.FileRequest{Audio: tone(time.Second, 0.3), Format: "pcm"}); err != nil {
+		t.Fatal(err)
+	}
+	launches := f.records("launch")
+	if len(launches) != 1 {
+		t.Fatalf("%d launches", len(launches))
+	}
+	index := slices.Index(launches[0].Args, "--realtime-profile")
+	if index < 0 || index+1 >= len(launches[0].Args) || launches[0].Args[index+1] != "1" {
+		t.Errorf("launch args %q do not enable realtime profiling", launches[0].Args)
+	}
 }
 
 // TestLanguageHintLogged: the log says which language hint each request

@@ -73,6 +73,9 @@ func spawn(cfg Config, spec Spec, dir, draft string, cacheLimit bool) (*process,
 		}
 	}
 	args = append(args, spec.launchArgs(cacheLimit)...)
+	if spec.Kind == kindQwen3ASR && os.Getenv("VOXTNEW_REALTIME_PROFILE") == "1" {
+		args = append(args, "--realtime-profile", "1")
+	}
 	if draft != "" {
 		args = append(args, "--draft-model-path", draft)
 		if spec.Kind == kindQwen3ASR {

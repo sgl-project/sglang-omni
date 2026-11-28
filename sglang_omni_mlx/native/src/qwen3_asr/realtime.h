@@ -26,6 +26,8 @@ struct RealtimeSettings {
   int decode_interval_samples = 0;
   int first_decode_samples = 0;
   int max_segment_samples = 0;
+  // Content-free decode timings are opt-in for the profiling harness.
+  bool profile = false;
 };
 
 RealtimeSettings MakeRealtimeSettings(int decode_interval_ms,
@@ -141,12 +143,15 @@ private:
   // note (chenye): Builds refresh or final options through end_sample and
   // increments the segment decode count.
   TranscriptionOptions DecodeOptions(Segment &segment, long end_sample);
+  std::shared_ptr<RealtimeDecodeTiming>
+  NewDecodeTiming(const Segment &segment, std::string kind, long end_sample,
+                  int audio_sample_count) const;
   // note (chenye): Finals snapshot shared reuse on the worker; refreshes update
   // it.
-  omni_server::Transcription Decode(std::vector<float> samples,
-                                    TranscriptionOptions options,
-                                    std::shared_ptr<RefreshReuse> reuse,
-                                    bool snapshot_reuse) const;
+  omni_server::Transcription
+  Decode(std::vector<float> samples, TranscriptionOptions options,
+         std::shared_ptr<RefreshReuse> reuse, bool snapshot_reuse,
+         std::shared_ptr<RealtimeDecodeTiming> timing = nullptr) const;
   void ApplyResult(Segment &segment,
                    const omni_common::TranscriptionResult &result,
                    long end_sample);
@@ -165,6 +170,7 @@ private:
   omni_server::TranscriptionWorker &worker_;
   const Qwen3ASRTranscriber &transcriber_;
   const RealtimeSettings settings_;
+  const uint64_t profile_session_id_ = 0;
 
   // Session state; refreshes finish on the worker thread.
   std::mutex mutex_;

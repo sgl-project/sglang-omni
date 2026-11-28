@@ -5,6 +5,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 ## [Unreleased]
 
 ### Added
+- **Qwen realtime profiling separates queueing from decoding**: setting `VOXTNEW_REALTIME_PROFILE=1` logs content-free submission, execution-start and finish timestamps for preview and Final decodes, with session and segment ids and sample counts. It is off by default and records no audio, prompt or transcript.
 - **Anthropic's Messages API** (#4747, Language models → Anthropic → Advanced → API format): Chat Completions stays the default. With Messages, Prompt caching can keep Voxt's instructions on Anthropic's side for a few minutes, so the requests after the first cost less; it is off unless you turn it on, and what you dictate is not cached.
 
 ### Changed
@@ -17,6 +18,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 ### 中文
 
 #### 新增
+- **Qwen 实时识别计时区分排队和解码**：设置 `VOXTNEW_REALTIME_PROFILE=1` 后，预览和最终解码会记录提交、开始执行和结束的时间戳，以及会话号、段号和样本数；不含音频、提示词或转写文本。默认关闭。
 - **Anthropic 的 Messages API**（#4747，语言模型 → Anthropic → 高级 → API 格式）：默认仍是 Chat Completions。选 Messages 后可以打开“提示词缓存”，Anthropic 会把 Voxt 的指令保留几分钟，之后的请求费用更低；默认关，你说的内容不会被缓存。
 
 #### 变更
