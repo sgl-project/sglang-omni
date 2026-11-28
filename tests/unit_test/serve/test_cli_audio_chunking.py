@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import pytest
+from pydantic import ValidationError
 
 from sglang_omni.config import PipelineConfig
 from sglang_omni.config.manager import ConfigManager
@@ -15,6 +16,7 @@ from sglang_omni.config.runtime import (
     resolve_stage_factory_kwargs,
     resolve_stage_typed_kwargs,
 )
+from sglang_omni.config.schema import AudioChunkingConfig
 from sglang_omni.models.higgs_tts.config import HiggsTtsPipelineConfig
 from sglang_omni.models.qwen3_asr.config import Qwen3ASRPipelineConfig
 from sglang_omni.models.whisper_asr.config import WhisperASRPipelineConfig
@@ -86,3 +88,33 @@ def test_model_owned_fields_are_not_reachable_paths():
     manager = ConfigManager(Qwen3ASRPipelineConfig(model_path="dummy"))
     with pytest.raises(ValueError, match="allow_audio_chunking"):
         manager.merge_config({"audio_chunking.allow_audio_chunking": "1"})
+
+
+@pytest.mark.parametrize("field", ["max_audio_clip_s", "max_total_audio_s"])
+@pytest.mark.parametrize("value", [float("inf"), float("-inf"), float("nan")])
+def test_nonfinite_chunk_durations_are_rejected(field, value):
+    values = {field: value}
+    if field == "max_audio_clip_s":
+        values["max_total_audio_s"] = None
+    with pytest.raises(ValidationError):
+        AudioChunkingConfig(**values)
+
+
+@pytest.mark.parametrize("field", ["max_audio_clip_s", "max_total_audio_s"])
+@pytest.mark.parametrize("value", ["inf", "-inf", "nan"])
+def test_nonfinite_dotted_chunk_durations_are_rejected(field, value):
+    manager = ConfigManager(Qwen3ASRPipelineConfig(model_path="dummy"))
+    with pytest.raises(ValidationError):
+        manager.merge_config({f"audio_chunking.{field}": value})
+
+
+def test_explicit_unbounded_total_duration_keeps_finite_chunks():
+    manager = ConfigManager(Qwen3ASRPipelineConfig(model_path="dummy"))
+    merged = manager.merge_config(
+        {
+            "audio_chunking.max_audio_clip_s": "45",
+            "audio_chunking.max_total_audio_s": None,
+        }
+    )
+    assert merged.audio_chunking.max_total_audio_s is None
+    assert merged.resolved_audio_chunking.chunk_samples(16000) == 45 * 16000
