@@ -50,6 +50,25 @@ func TestTranslateFallback(t *testing.T) {
 	}
 }
 
+// TestTranslateFallbackWalksEveryBackup: Translate uses the same whole
+// priority queue as Transcribe when both the primary and first backup fail.
+func TestTranslateFallbackWalksEveryBackup(t *testing.T) {
+	boom := errors.New("503 overloaded")
+	main, first, second := &fakeLLM{err: boom}, &fakeLLM{err: boom}, &fakeLLM{text: "早安"}
+	h := newHarness(t, &fakeFile{text: "x"}, main, func(c *Config, _ *settings.Settings) { c.Select = &fakeSelector{text: "Good morning"} })
+	h.fallbacks, h.fallbackIDs = []LLM{first, second}, []string{"openai", "custom"}
+	if _, err := h.m.Start(StartRequest{Kind: store.KindTranslate, Target: slack}); err != nil {
+		t.Fatal(err)
+	}
+	end := h.rec.wait(t)
+	if end.State != Done || end.Result != "早安" || end.LLM.ID != "custom" || end.Problem != nil {
+		t.Fatalf("end %+v", end)
+	}
+	if len(main.requests()) != 1 || len(first.requests()) != 1 || len(second.requests()) != 1 {
+		t.Fatalf("requests: primary %d, first backup %d, second backup %d; want one each", len(main.requests()), len(first.requests()), len(second.requests()))
+	}
+}
+
 func TestTranslateTarget(t *testing.T) {
 	s := settings.Defaults()
 	for _, tc := range []struct {

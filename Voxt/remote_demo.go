@@ -15,6 +15,10 @@ func (host *meetingDemoHost) testRemoteProvider(kind, id string) {
 	host.record("testRemoteProvider %s %s", kind, id)
 }
 
+func (host *meetingDemoHost) moveRemoteProvider(kind, id, targetID string) {
+	host.record("moveRemoteProvider %s %s %s", kind, id, targetID)
+}
+
 func (host *meetingDemoHost) chooseLLMWait(value string) { host.record("chooseLLMWait %q", value) }
 func (host *meetingDemoHost) setLLMSwitch(on bool)       { host.record("setLLMSwitch %t", on) }
 

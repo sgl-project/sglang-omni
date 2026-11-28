@@ -5,6 +5,7 @@ type remoteCardsActions interface {
 	openRemoteProvider(kind, id string)
 	testRemoteProvider(kind, id string)
 	openModelAssignment(kind, id string)
+	moveRemoteProvider(kind, id, targetID string)
 }
 
 type remoteWaitActions interface {

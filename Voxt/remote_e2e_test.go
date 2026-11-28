@@ -5,6 +5,7 @@ package main
 // models page's dialog saving a setup and its key.
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -12,13 +13,16 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/sgl-project/sglang-omni/Voxt/internal/helper/helpertest"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/helper/proto"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/hotkey"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/llm"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/local"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/providers"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/session"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 )
@@ -276,5 +280,215 @@ func TestDialogTestWithoutKey(t *testing.T) {
 	}
 	if !strings.HasPrefix(info, want) {
 		t.Errorf("the ⓘ says %q", info)
+	}
+}
+
+// TestRemoteProviderPriorityDrag: dragging a configured service onto
+// another changes their backup priority in both directions and saves the
+// order, without opening the service's dialog.
+func TestRemoteProviderPriorityDrag(t *testing.T) {
+	useKeys(t, &memKeys{m: map[string]string{}})
+	a, _, tt := newTestApp(t)
+	tt.SetSize(1200, 900)
+	a.updateSettings(func(s *settings.Settings) {
+		s.Providers.LLM = []settings.Provider{
+			{ID: "ollama"},
+			{ID: llm.Custom, Endpoint: "http://127.0.0.1:8080/v1", Model: "qwen3"},
+		}
+	})
+	a.navigate(remotePath)
+	frames(tt)
+	ids := func(list []settings.Provider) []string {
+		out := make([]string, len(list))
+		for i, provider := range list {
+			out[i] = provider.ID
+		}
+		return out
+	}
+	drag := func(fromID, toID string, want []string) {
+		t.Helper()
+		from, fromOK := tt.Find(lookupService(local.LLM, fromID).name)
+		to, toOK := tt.Find(lookupService(local.LLM, toID).name)
+		if !fromOK || !toOK {
+			t.Fatalf("cannot find provider cards %q and %q", fromID, toID)
+		}
+		fromX, fromY := from.X+from.W/2, from.Y+from.H/2
+		toX, toY := to.X+to.W/2, to.Y+to.H/2
+		tt.Press(fromX, fromY)
+		tt.Move(toX, toY)
+		frames(tt)
+		tt.Release(toX, toY)
+		frames(tt)
+		if a.provDlg.open {
+			t.Fatal("a priority drag opened the provider dialog")
+		}
+		if got := ids(a.prefs.Providers.LLM); !slices.Equal(got, want) {
+			t.Fatalf("provider order after dragging %s onto %s = %q, want %q", fromID, toID, got, want)
+		}
+		eventually(t, "the dragged provider order to be saved", func() bool {
+			return slices.Equal(ids(a.settings.Get().Providers.LLM), want)
+		})
+	}
+	drag(llm.Custom, "ollama", []string{llm.Custom, "ollama"})
+	drag(llm.Custom, "ollama", []string{"ollama", llm.Custom})
+}
+
+type firstSettingsUpdateBlocker struct {
+	settings.Service
+	firstStarted chan struct{}
+	releaseFirst chan struct{}
+	updates      atomic.Int32
+}
+
+func (b *firstSettingsUpdateBlocker) Update(ctx context.Context, update func(*settings.Settings)) error {
+	if b.updates.Add(1) == 1 {
+		close(b.firstStarted)
+		<-b.releaseFirst
+	}
+	return b.Service.Update(ctx, update)
+}
+
+// Rapid successive drags preserve their final priority even when the second save finishes first.
+func TestRemoteProviderRapidDragsSaveInDropOrder(t *testing.T) {
+	a, _, _ := newTestApp(t)
+	initial := []settings.Provider{{ID: "ollama"}, {ID: "deepseek"}, {ID: "openai"}}
+	if err := a.settings.Update(context.Background(), func(s *settings.Settings) {
+		s.Providers.LLM = slices.Clone(initial)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	a.prefs.Providers.LLM = slices.Clone(initial)
+	blocker := &firstSettingsUpdateBlocker{
+		Service:      a.settings,
+		firstStarted: make(chan struct{}),
+		releaseFirst: make(chan struct{}),
+	}
+	a.settings = blocker
+	firstDragDone := make(chan struct{})
+	go func() {
+		a.moveRemoteProvider("llm", "ollama", "openai")
+		close(firstDragDone)
+	}()
+	select {
+	case <-blocker.firstStarted:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the first drag did not reach the settings service")
+	}
+	a.moveRemoteProvider("llm", "deepseek", "ollama")
+	close(blocker.releaseFirst)
+	select {
+	case <-firstDragDone:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the drag saves did not finish")
+	}
+	want := []string{"openai", "ollama", "deepseek"}
+	for name, got := range map[string][]settings.Provider{
+		"live":  a.prefs.Providers.LLM,
+		"saved": a.settings.Get().Providers.LLM,
+	} {
+		ids := make([]string, len(got))
+		for i, provider := range got {
+			ids[i] = provider.ID
+		}
+		if !slices.Equal(ids, want) {
+			t.Errorf("%s provider order = %q, want %q", name, ids, want)
+		}
+	}
+}
+
+// An older save's notification must not restore priority after a later drag.
+func TestRemoteProviderRapidDragNotificationsStayInDropOrder(t *testing.T) {
+	a, _, _ := newTestApp(t)
+	initial := []settings.Provider{{ID: "ollama"}, {ID: "deepseek"}, {ID: "openai"}}
+	if err := a.settings.Update(context.Background(), func(s *settings.Settings) {
+		s.Providers.LLM = slices.Clone(initial)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	firstPublishStarted := make(chan struct{})
+	releaseFirstPublish := make(chan struct{})
+	secondPublished := make(chan struct{})
+	var publishCount atomic.Int32
+	store, err := settings.Open(context.Background(), a.lib.store.Documents(), func(ev settings.Changed) {
+		switch publishCount.Add(1) {
+		case 1:
+			close(firstPublishStarted)
+			<-releaseFirstPublish
+		case 2:
+			close(secondPublished)
+		}
+		a.settingsChanged(ev.Old, ev.New)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	a.settings = store
+	a.prefs = store.Get()
+	firstSaveDone := make(chan struct{})
+	go func() {
+		a.moveRemoteProvider("llm", "ollama", "openai")
+		close(firstSaveDone)
+	}()
+	select {
+	case <-firstPublishStarted:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the first drag save did not publish")
+	}
+	a.moveRemoteProvider("llm", "deepseek", "ollama")
+	secondPublishedBeforeRelease := false
+	select {
+	case <-secondPublished:
+		secondPublishedBeforeRelease = true
+	default:
+	}
+	close(releaseFirstPublish)
+	select {
+	case <-firstSaveDone:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the drag saves did not finish")
+	}
+	if secondPublishedBeforeRelease {
+		t.Error("the second drag save started before the first publish returned")
+	}
+	want := []string{"openai", "ollama", "deepseek"}
+	for name, got := range map[string][]settings.Provider{
+		"live":  a.prefs.Providers.LLM,
+		"saved": store.Get().Providers.LLM,
+	} {
+		ids := make([]string, len(got))
+		for i, provider := range got {
+			ids[i] = provider.ID
+		}
+		if !slices.Equal(ids, want) {
+			t.Errorf("%s provider order = %q, want %q", name, ids, want)
+		}
+	}
+}
+
+// Duplicate saved IDs must not become duplicate failover entries or UI keys.
+func TestRemoteProviderDuplicateIDsKeepFirst(t *testing.T) {
+	a, _, _ := newTestApp(t)
+	if err := a.settings.Update(context.Background(), func(s *settings.Settings) {
+		s.Providers.LLM = []settings.Provider{
+			{ID: "ollama", Model: "first"},
+			{ID: "ollama", Model: "second"},
+			{ID: "deepseek"},
+		}
+	}); err != nil {
+		t.Fatal(err)
+	}
+	a.prefs = a.settings.Get()
+	ready := providers.Ready(a.prefs, func(string) bool { return true })
+	if len(ready) != 2 || ready[0].Model != "first" {
+		t.Fatalf("ready providers = %+v, want the first ollama then deepseek", ready)
+	}
+	var configured []remoteServiceStateInput
+	for _, service := range a.remoteCardsStateInput(local.LLM).Services {
+		if service.Configured {
+			configured = append(configured, service)
+		}
+	}
+	if len(configured) != 2 || configured[0].Setup.Model != "first" {
+		t.Fatalf("configured cards = %+v, want the first ollama then deepseek", configured)
 	}
 }

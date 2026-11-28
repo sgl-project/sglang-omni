@@ -296,6 +296,19 @@ func TestRetry(t *testing.T) {
 			t.Fatalf("entry %+v, %v", out, err)
 		}
 	})
+	t.Run("transcribe walks every backup", func(t *testing.T) {
+		model := &fakeLLM{err: errors.New("boom")}
+		h, e := retryHarness(t, &fakeFile{text: "hello aura link"}, model, false)
+		first, second := &fakeLLM{err: errors.New("boom")}, &fakeLLM{text: "Hello, VoxtNew."}
+		h.fallbacks, h.fallbackIDs = []LLM{first, second}, []string{"openai", "custom"}
+		out, err := h.m.Retry(context.Background(), RetryRequest{Entry: e})
+		if err != nil || out.Status != store.StatusDone || out.Result != "Hello, VoxtNew." || out.LLMProvider != "custom" || out.LLMModel != "custom" {
+			t.Fatalf("entry %+v, %v", out, err)
+		}
+		if len(model.requests()) != 1 || len(first.requests()) != 1 || len(second.requests()) != 1 {
+			t.Fatalf("requests: primary %d, first backup %d, second backup %d; want one each", len(model.requests()), len(first.requests()), len(second.requests()))
+		}
+	})
 	t.Run("no recording", func(t *testing.T) {
 		h, e := retryHarness(t, &fakeFile{text: "x"}, nil, false)
 		e.Audio = ""

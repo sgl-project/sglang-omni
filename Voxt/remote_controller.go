@@ -4,6 +4,9 @@ package main
 // builders and views. Shared Speech models callers keep these app facades.
 
 import (
+	"context"
+	"slices"
+
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/local"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/providers"
@@ -12,7 +15,26 @@ import (
 
 func (a *app) remoteCardsStateInput(kind local.Kind) remoteCardsStateInput {
 	input := remoteCardsStateInput{Kind: kind}
-	for _, sv := range services(kind) {
+	all := services(kind)
+	if kind == local.LLM {
+		byID := make(map[string]service, len(all))
+		for _, sv := range all {
+			byID[sv.id] = sv
+		}
+		ordered := make([]service, 0, len(all))
+		for _, provider := range a.prefs.Providers.LLM {
+			if sv, ok := byID[provider.ID]; ok {
+				ordered = append(ordered, sv)
+			}
+		}
+		for _, sv := range all {
+			if _, configured := providers.Setup(a.prefs, sv.id); !configured {
+				ordered = append(ordered, sv)
+			}
+		}
+		all = ordered
+	}
+	for _, sv := range all {
 		setup, configured := a.setupOf(kind, sv.id)
 		account := providers.Account(kind, sv.id)
 		mask, read := a.keyMasks[account]
@@ -77,6 +99,66 @@ func (a *app) testRemoteProvider(kind, id string) {
 	account := providers.Account(modelKind, id)
 	keys := a.keys
 	a.testProvider(modelKind, setup, func() (string, error) { return keys.Get(account) })
+}
+
+type remoteProviderMove struct {
+	id, targetID string
+}
+
+func applyRemoteProviderMove(s *settings.Settings, move remoteProviderMove) {
+	list := slices.Clone(s.Providers.LLM)
+	from := slices.IndexFunc(list, func(provider settings.Provider) bool { return provider.ID == move.id })
+	target := slices.IndexFunc(list, func(provider settings.Provider) bool { return provider.ID == move.targetID })
+	if from < 0 || target < 0 {
+		return
+	}
+	moving, movingDown := list[from], from < target
+	list = slices.Delete(list, from, from+1)
+	target = slices.IndexFunc(list, func(provider settings.Provider) bool { return provider.ID == move.targetID })
+	if movingDown {
+		target++
+	}
+	s.Providers.LLM = slices.Insert(list, target, moving)
+}
+
+func (a *app) moveRemoteProvider(kind, id, targetID string) {
+	if remoteKind(kind) != local.LLM || id == targetID {
+		return
+	}
+	move := remoteProviderMove{id: id, targetID: targetID}
+	a.providerOrderSaveMu.Lock()
+	a.providerOrderPending = append(a.providerOrderPending, move)
+	startSave := !a.providerOrderSaveRunning
+	a.providerOrderSaveRunning = true
+	a.providerOrderSaveMu.Unlock()
+	a.settingsRevision++
+	a.featureRevision++
+	applyRemoteProviderMove(&a.prefs, move)
+	if startSave {
+		st := a.settings
+		a.async(func() { a.saveRemoteProviderOrder(st) })
+	}
+}
+
+func (a *app) saveRemoteProviderOrder(st settings.Service) {
+	for {
+		a.providerOrderSaveMu.Lock()
+		pending := a.providerOrderPending
+		a.providerOrderPending = nil
+		if len(pending) == 0 {
+			a.providerOrderSaveRunning = false
+			a.providerOrderSaveMu.Unlock()
+			return
+		}
+		a.providerOrderSaveMu.Unlock()
+		if err := st.Update(context.Background(), func(s *settings.Settings) {
+			for _, move := range pending {
+				applyRemoteProviderMove(s, move)
+			}
+		}); err != nil {
+			a.post(func() { a.toast(i18n.T("Could not save the settings: %v", err)) })
+		}
+	}
 }
 
 func (a *app) chooseLLMWait(value string) {

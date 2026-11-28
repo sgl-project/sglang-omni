@@ -142,11 +142,11 @@ func Missing(p settings.Provider, hasKey bool) string {
 	return ""
 }
 
-// Ready lists the setups that can be used now, in the presets' order.
+// Ready lists the setups that can be used now, in the user's priority order.
 func Ready(s settings.Settings, hasKey func(id string) bool) []settings.Provider {
 	var out []settings.Provider
-	for _, pr := range llm.Presets() {
-		if p, ok := Setup(s, pr.ID); ok && Missing(p, hasKey(p.ID)) == "" {
+	for _, p := range s.Providers.LLM {
+		if Missing(p, hasKey(p.ID)) == "" {
 			out = append(out, p)
 		}
 	}

@@ -340,6 +340,28 @@ func TestTranscribeFallback(t *testing.T) {
 	})
 }
 
+// TestTranscribeFallbackWalksEveryBackup: a failure in the first backup
+// moves to the next one in priority order instead of returning raw text
+// while another configured model remains.
+func TestTranscribeFallbackWalksEveryBackup(t *testing.T) {
+	boom := errors.New("503 overloaded")
+	main, first, second := &fakeLLM{err: boom}, &fakeLLM{err: boom}, &fakeLLM{text: "Hello, VoxtNew."}
+	h := newHarness(t, &fakeFile{text: " hello aura link "}, main, nil)
+	h.fallbacks, h.fallbackIDs = []LLM{first, second}, []string{"openai", "custom"}
+	id := h.start()
+	h.speak(id, 5)
+	end := h.rec.wait(t)
+	if end.State != Done || end.Result != "Hello, VoxtNew." || end.LLM.ID != "custom" || end.Problem != nil {
+		t.Fatalf("end %+v", end)
+	}
+	if len(main.requests()) != 1 || len(first.requests()) != 1 || len(second.requests()) != 1 {
+		t.Fatalf("requests: primary %d, first backup %d, second backup %d; want one each", len(main.requests()), len(first.requests()), len(second.requests()))
+	}
+	if entries := h.hist.all(); len(entries) != 1 || entries[0].LLMProvider != "custom" {
+		t.Fatalf("history %+v", entries)
+	}
+}
+
 // TestTranscribeFallbackRethink: the fallback joins Transcribe's re-ask
 // loop. A level chosen in the preview (Rethink) still holds for the
 // fallback's request, and a Rethink while the fallback streams asks it

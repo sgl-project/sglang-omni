@@ -392,8 +392,7 @@ func TestLivePolishAdoptedFailureClearsDraftBeforeFallback(t *testing.T) {
 	fixture := newLiveSessionFixture(t, "spoken words.", model, clock, false)
 	fallback := &fakeLLM{text: "fallback cleaned answer"}
 	fixture.harness.m.mu.Lock()
-	fixture.run.svc.Fallback = fallback
-	fixture.run.svc.FallbackInfo = Model{ID: "ollama", Name: "Ollama", Model: "qwen3"}
+	fixture.run.svc.Fallbacks = []Fallback{{LLM: fallback, Info: Model{ID: "ollama", Name: "Ollama", Model: "qwen3"}}}
 	fixture.harness.m.mu.Unlock()
 	fixture.stopAndReleaseFinal(t, 300*time.Millisecond)
 	fixture.harness.rec.waitFor(t, "ASR Final", func(snapshot Snapshot) bool {
