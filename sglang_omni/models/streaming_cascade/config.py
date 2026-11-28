@@ -679,7 +679,7 @@ class StreamingCascadePipelineConfig(AudioSessionPipelineConfig):
                 assembled["stages"].append(
                     StageConfig(
                         name=name,
-                        process="cascade",
+                        process=name,
                         terminal=True,
                         factory_path="sglang_omni.models.streaming_cascade.session.create_scheduler",
                     )
