@@ -1301,9 +1301,7 @@ void RealtimeSession::MaybeStartRefresh(
       const DeferredHintState state = CheckDeferredHintState(
           deferred_pause_hint_->hint, deferred_pause_hint_->segment_id,
           segment.segment_id, deferred_pause_hint_->speech_epoch,
-          *speech_epoch_, segment.start_sample,
-          segment.last_submitted_refresh_end_sample,
-          minimum_new_speech_samples);
+          *speech_epoch_, segment.start_sample);
       if (state == DeferredHintState::kValid) {
         candidate = deferred_pause_hint_->hint;
         candidate_is_deferred = true;

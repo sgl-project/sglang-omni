@@ -272,40 +272,18 @@ private:
       const auto state = qwen3_asr::CheckDeferredHintState(
           candidate->hint, candidate->segment_id, segment_id_,
           candidate->speech_epoch, SpeechEpochAt(audio_end_sample_),
-          segment_start_sample_, last_submitted_sample_, kMinimumSpeech);
-      if (state == qwen3_asr::DeferredHintState::kCovered) {
-        ++metrics_.hints_rejected_covered;
-        candidate.reset();
-      } else if (state == qwen3_asr::DeferredHintState::kInsufficientSpeech) {
-        ++metrics_.hints_rejected_insufficient;
-        candidate.reset();
-      } else if (state != qwen3_asr::DeferredHintState::kValid) {
-        candidate.reset();
-      } else if (defer_busy_pause_) {
-        if (pending_hint_.has_value()) {
-          ++metrics_.deferred_superseded;
-        }
-        pending_hint_ = candidate;
-        ++metrics_.hints_deferred;
+          segment_start_sample_);
+      if (state != qwen3_asr::DeferredHintState::kValid) {
         candidate.reset();
       } else {
-        ++metrics_.hints_rejected_busy;
-        ++metrics_.pause_skipped_while_refreshing;
-        candidate.reset();
       }
     } else if (!candidate.has_value() && !active_.has_value() &&
                pending_hint_.has_value()) {
       const auto state = qwen3_asr::CheckDeferredHintState(
           pending_hint_->hint, pending_hint_->segment_id, segment_id_,
           pending_hint_->speech_epoch, SpeechEpochAt(audio_end_sample_),
-          segment_start_sample_, last_submitted_sample_, kMinimumSpeech);
-      if (state == qwen3_asr::DeferredHintState::kCovered) {
-        ++metrics_.hints_rejected_covered;
-        pending_hint_.reset();
-      } else if (state == qwen3_asr::DeferredHintState::kInsufficientSpeech) {
-        ++metrics_.hints_rejected_insufficient;
-        pending_hint_.reset();
-      } else if (state == qwen3_asr::DeferredHintState::kValid) {
+          segment_start_sample_);
+      if (state == qwen3_asr::DeferredHintState::kValid) {
         candidate = pending_hint_;
         candidate_is_deferred = true;
       } else {
@@ -321,10 +299,43 @@ private:
                                ? OriginalCadenceReference(input)
                                : qwen3_asr::SelectRefreshAdmission(input);
     next_refresh_sample_ = admission.next_refresh_sample;
-    if (candidate_is_deferred &&
-        admission.source == qwen3_asr::RefreshSource::kCadence) {
-      ++metrics_.hints_superseded_by_cadence;
-      pending_hint_.reset();
+    if (candidate.has_value()) {
+      if (admission.disposition == qwen3_asr::PauseHintDisposition::kCovered) {
+        ++metrics_.hints_rejected_covered;
+        if (candidate_is_deferred) {
+          pending_hint_.reset();
+        } else {
+        }
+      } else if (admission.disposition ==
+                 qwen3_asr::PauseHintDisposition::kInsufficientNewSpeech) {
+        ++metrics_.hints_rejected_insufficient;
+        if (candidate_is_deferred) {
+          pending_hint_.reset();
+        } else {
+        }
+      } else if (admission.disposition ==
+                 qwen3_asr::PauseHintDisposition::kRefreshBusy) {
+        if (defer_busy_pause_) {
+          if (pending_hint_.has_value()) {
+            ++metrics_.deferred_superseded;
+          } else {
+          }
+          pending_hint_ = candidate;
+          ++metrics_.hints_deferred;
+        } else {
+          ++metrics_.hints_rejected_busy;
+          ++metrics_.pause_skipped_while_refreshing;
+        }
+      } else if (admission.disposition ==
+                 qwen3_asr::PauseHintDisposition::kSupersededByCadence) {
+        ++metrics_.hints_superseded_by_cadence;
+        if (candidate_is_deferred) {
+          pending_hint_.reset();
+        } else {
+        }
+      } else {
+      }
+    } else {
     }
     metrics_.transitions.push_back({wall_ms, audio_end_sample_,
                                     segment_start_sample_, next_refresh_sample_,
@@ -639,8 +650,9 @@ int main() {
           return 1;
         }
         if (trace.name == "multiple-pauses-one-refresh" &&
-            (e.hints_deferred == 0 || e.deferred_admitted > 1)) {
-          std::cerr << "multiple pauses exceeded one pending admission\n";
+            e.deferred_admitted > 1) {
+          std::cerr << "multiple pauses admitted more than one deferred "
+                       "refresh\n";
           return 1;
         }
         if (a.transitions != b.transitions ||

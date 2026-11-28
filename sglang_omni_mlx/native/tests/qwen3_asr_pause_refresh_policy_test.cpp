@@ -83,6 +83,12 @@ void TestAdmissionPolicy() {
               admission.disposition ==
                   PauseHintDisposition::kInsufficientNewSpeech,
           "idle insufficient-speech hint was not attributed by the selector");
+  input.pause_hint_deferred = true;
+  admission = SelectRefreshAdmission(input);
+  Require(admission.source == RefreshSource::kNone &&
+              admission.disposition ==
+                  PauseHintDisposition::kInsufficientNewSpeech,
+          "deferred insufficient-speech hint bypassed selector attribution");
 
   input.pause_hint = PauseRefreshHint{0, 600 * kSampleRate / 1000};
   input.last_submitted_refresh_end_sample = 600 * kSampleRate / 1000;
@@ -90,6 +96,11 @@ void TestAdmissionPolicy() {
   Require(admission.source == RefreshSource::kNone &&
               admission.disposition == PauseHintDisposition::kCovered,
           "idle covered hint was not attributed by the selector");
+  input.pause_hint_deferred = true;
+  admission = SelectRefreshAdmission(input);
+  Require(admission.source == RefreshSource::kNone &&
+              admission.disposition == PauseHintDisposition::kCovered,
+          "deferred covered hint bypassed selector attribution");
 
   input = AdmissionInput();
   input.next_refresh_sample = 1400 * kSampleRate / 1000;
@@ -119,29 +130,18 @@ void TestAdmissionPolicy() {
 void TestDeferredHintState() {
   const PauseRefreshHint hint{300 * kSampleRate / 1000,
                               600 * kSampleRate / 1000};
-  const long minimum_new_speech_samples = kSampleRate / 5;
   const auto state = [&](int segment_id, long speech_epoch,
-                         long last_submitted_end, long segment_start) {
+                         long segment_start) {
     return CheckDeferredHintState(hint, 4, segment_id, 7, speech_epoch,
-                                  segment_start, last_submitted_end,
-                                  minimum_new_speech_samples);
+                                  segment_start);
   };
-  Require(state(4, 7, 100 * kSampleRate / 1000, 0) == DeferredHintState::kValid,
+  Require(state(4, 7, 0) == DeferredHintState::kValid,
           "a current deferred hint did not remain eligible");
-  Require(state(5, 7, 100 * kSampleRate / 1000, 0) ==
-              DeferredHintState::kSegmentChanged,
+  Require(state(5, 7, 0) == DeferredHintState::kSegmentChanged,
           "a segment rollover kept a deferred hint alive");
-  Require(state(4, 8, 100 * kSampleRate / 1000, 0) ==
-              DeferredHintState::kSpeechResumed,
+  Require(state(4, 8, 0) == DeferredHintState::kSpeechResumed,
           "a speech epoch change kept a deferred hint alive");
-  Require(state(4, 7, 600 * kSampleRate / 1000, 0) ==
-              DeferredHintState::kCovered,
-          "a covered deferred hint remained eligible");
-  Require(state(4, 7, 500 * kSampleRate / 1000, 0) ==
-              DeferredHintState::kInsufficientSpeech,
-          "insufficient deferred speech remained eligible");
-  Require(state(4, 7, 100 * kSampleRate / 1000, 400 * kSampleRate / 1000) ==
-              DeferredHintState::kInvalid,
+  Require(state(4, 7, 400 * kSampleRate / 1000) == DeferredHintState::kInvalid,
           "a hint before the new segment remained eligible");
 }
 

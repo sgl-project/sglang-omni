@@ -16,15 +16,13 @@ enum class DeferredHintState {
   kValid,
   kInvalid,
   kSegmentChanged,
-  kSpeechResumed,
-  kCovered,
-  kInsufficientSpeech
+  kSpeechResumed
 };
 
-inline DeferredHintState CheckDeferredHintState(
-    const PauseRefreshHint &hint, int hint_segment_id, int segment_id,
-    long hint_speech_epoch, long speech_epoch, long segment_start_sample,
-    long last_submitted_refresh_end_sample, long minimum_new_speech_samples) {
+inline DeferredHintState
+CheckDeferredHintState(const PauseRefreshHint &hint, int hint_segment_id,
+                       int segment_id, long hint_speech_epoch,
+                       long speech_epoch, long segment_start_sample) {
   if (hint_segment_id != segment_id) {
     return DeferredHintState::kSegmentChanged;
   } else {
@@ -38,17 +36,7 @@ inline DeferredHintState CheckDeferredHintState(
     return DeferredHintState::kInvalid;
   } else {
   }
-  if (hint.speech_end_sample <= last_submitted_refresh_end_sample) {
-    return DeferredHintState::kCovered;
-  } else {
-  }
-  const long first_new_speech_sample =
-      std::max({segment_start_sample, last_submitted_refresh_end_sample,
-                hint.speech_start_sample});
-  return hint.speech_end_sample - first_new_speech_sample >=
-                 minimum_new_speech_samples
-             ? DeferredHintState::kValid
-             : DeferredHintState::kInsufficientSpeech;
+  return DeferredHintState::kValid;
 }
 
 struct PauseHintConsumption {
@@ -118,10 +106,6 @@ inline PauseHintDisposition DeferredHintDisposition(DeferredHintState state) {
     return PauseHintDisposition::kSegmentRollover;
   case DeferredHintState::kSpeechResumed:
     return PauseHintDisposition::kSpeechResumption;
-  case DeferredHintState::kCovered:
-    return PauseHintDisposition::kCovered;
-  case DeferredHintState::kInsufficientSpeech:
-    return PauseHintDisposition::kInsufficientNewSpeech;
   case DeferredHintState::kValid:
     return PauseHintDisposition::kNone;
   }
@@ -152,6 +136,24 @@ struct RefreshAdmission {
   long next_refresh_sample = 0;
 };
 
+inline PauseHintDisposition
+PauseHintCoverageDisposition(const RefreshAdmissionInput &input) {
+  if (input.pause_hint->speech_end_sample <=
+      input.last_submitted_refresh_end_sample) {
+    return PauseHintDisposition::kCovered;
+  } else {
+  }
+  const long first_new_speech_sample = std::max(
+      {input.segment_start_sample, input.last_submitted_refresh_end_sample,
+       input.pause_hint->speech_start_sample});
+  if (input.pause_hint->speech_end_sample - first_new_speech_sample <
+      input.minimum_new_speech_samples) {
+    return PauseHintDisposition::kInsufficientNewSpeech;
+  } else {
+  }
+  return PauseHintDisposition::kNone;
+}
+
 inline RefreshAdmission
 SelectRefreshAdmission(const RefreshAdmissionInput &input) {
   RefreshAdmission admission;
@@ -170,19 +172,15 @@ SelectRefreshAdmission(const RefreshAdmissionInput &input) {
       admission.disposition = PauseHintDisposition::kCancelled;
     } else if (input.final_handoff) {
       admission.disposition = PauseHintDisposition::kFinalHandoff;
-    } else if (input.pause_hint->speech_end_sample <=
-               input.last_submitted_refresh_end_sample) {
-      admission.disposition = PauseHintDisposition::kCovered;
-    } else if (input.pause_hint->speech_end_sample -
-                   std::max({input.segment_start_sample,
-                             input.last_submitted_refresh_end_sample,
-                             input.pause_hint->speech_start_sample}) <
-               input.minimum_new_speech_samples) {
-      admission.disposition = PauseHintDisposition::kInsufficientNewSpeech;
-    } else if (input.audio_end_sample >= input.next_refresh_sample) {
-      admission.disposition = PauseHintDisposition::kSupersededByCadence;
     } else {
-      admission.disposition = PauseHintDisposition::kRefreshBusy;
+      admission.disposition = PauseHintCoverageDisposition(input);
+      if (admission.disposition == PauseHintDisposition::kNone) {
+        admission.disposition =
+            input.audio_end_sample >= input.next_refresh_sample
+                ? PauseHintDisposition::kSupersededByCadence
+                : PauseHintDisposition::kRefreshBusy;
+      } else {
+      }
     }
     return admission;
   }
@@ -221,17 +219,8 @@ SelectRefreshAdmission(const RefreshAdmissionInput &input) {
     admission.disposition = PauseHintDisposition::kSilent;
     return admission;
   }
-  if (input.pause_hint->speech_end_sample <=
-      input.last_submitted_refresh_end_sample) {
-    admission.disposition = PauseHintDisposition::kCovered;
-    return admission;
-  }
-  const long first_new_speech_sample = std::max(
-      {input.segment_start_sample, input.last_submitted_refresh_end_sample,
-       input.pause_hint->speech_start_sample});
-  if (input.pause_hint->speech_end_sample - first_new_speech_sample <
-      input.minimum_new_speech_samples) {
-    admission.disposition = PauseHintDisposition::kInsufficientNewSpeech;
+  admission.disposition = PauseHintCoverageDisposition(input);
+  if (admission.disposition != PauseHintDisposition::kNone) {
     return admission;
   }
   admission.source = input.pause_hint_deferred ? RefreshSource::kDeferredPause
