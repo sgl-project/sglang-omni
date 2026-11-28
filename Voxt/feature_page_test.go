@@ -347,6 +347,44 @@ func TestAutomaticNamesTheModelInUse(t *testing.T) {
 	check("/translate", "Target language for Translate", "Simplified Chinese")
 }
 
+// TestAutomaticSpeechLabelUsesLanguageGate: Automatic names the model the
+// session will open, not the first installed model the language gate removed.
+func TestAutomaticSpeechLabelUsesLanguageGate(t *testing.T) {
+	for _, tc := range []struct {
+		name, main, wantID, wantName string
+	}{
+		{"Japanese skips MTD", "ja", models.ASRAccurate, "Qwen3-ASR 1.7B (8bit)"},
+		{"Chinese keeps MTD", "zh", models.ASRMoss, "MOSS-Transcribe-Diarize"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			a, _, _ := newTestApp(t)
+			a.local = &automaticGateLocal{}
+			a.prefs.General.MainLanguage = tc.main
+			selected, ok := a.featureModel(local.ASR, hotkey.Transcribe)
+			if !ok || selected.ID != tc.wantID {
+				t.Fatalf("Automatic selected %+v, %v; want %s", selected, ok, tc.wantID)
+			}
+			state := a.featureModelsModel(hotkey.Transcribe)
+			want := "Automatic (now: " + tc.wantName + ")"
+			if state.ASR.Value != want || state.ASR.Options[0].Label != want {
+				t.Errorf("Automatic label = %q, option = %q; want %q", state.ASR.Value, state.ASR.Options[0].Label, want)
+			}
+		})
+	}
+
+	a, _, _ := newTestApp(t)
+	a.local = &automaticGateLocal{}
+	a.prefs.General.MainLanguage = "ja"
+	a.prefs.Features.Transcribe.ASR = models.ASRMoss
+	state := a.featureModelsModel(hotkey.Transcribe)
+	if state.ASR.Value != "MOSS-Transcribe-Diarize" {
+		t.Errorf("an explicit MTD choice = %q", state.ASR.Value)
+	}
+	if want := "Automatic (now: Qwen3-ASR 1.7B (8bit))"; state.ASR.Options[0].Label != want {
+		t.Errorf("Automatic option after an explicit MTD choice = %q, want %q", state.ASR.Options[0].Label, want)
+	}
+}
+
 // TestTranscribeEndWord: the word that ends a recording is Off, one of
 // Voxt 1.x's words or a typed one; the row shows only while Transcribe's
 // speech model streams.

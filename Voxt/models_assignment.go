@@ -114,6 +114,8 @@ func assignmentCurrentLabel(translator *i18n.Translator, input modelAssignmentSt
 	_, automatic := modelOptionsFor(translator, ready, ready)
 	current := assignmentModelID(&input.Settings, input.Kind, feature)
 	switch model, found := assignmentModelAt(ready, current); {
+	case current == "" && input.Kind == local.ASR && feature != hotkey.Meeting:
+		return automaticSpeechLabelFor(translator, input.Settings, input.Installed, feature)
 	case current == "":
 		return automatic
 	case found:

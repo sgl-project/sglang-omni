@@ -95,6 +95,13 @@ func modelOptionsFor(translator *i18n.Translator, ready, shown []local.Model) (o
 	return options, automatic
 }
 
+func automaticSpeechLabelFor(translator *i18n.Translator, prefs settings.Settings, installed []local.Model, feature string) string {
+	if model, ok := automaticSpeechChoice(prefs, local.ForFeature(installed, feature)); ok {
+		return translator.T("Automatic (now: %s)", model.Name)
+	}
+	return translator.T("Automatic")
+}
+
 func modelLabel(ready []local.Model, id, automatic string) string {
 	for _, model := range ready {
 		if model.ID == id {
@@ -107,6 +114,8 @@ func modelLabel(ready []local.Model, id, automatic string) string {
 func (a *app) syncFeatureModelControls(input featureModelsStateInput) {
 	f := featureOf(input.Settings, input.Feature)
 	optionsA, automaticA := modelOptions(input.ReadyASR, input.ShownASR)
+	automaticA = automaticSpeechLabelFor(i18n.CurrentTranslator(), input.Settings, input.ReadyASR, input.Feature)
+	optionsA[0] = automaticA
 	optionsL, automaticL := modelOptions(input.ReadyLLM, input.ReadyLLM)
 	fallback := input.Settings.Features.Translate.Fallback
 	seen := strings.Join([]string{f.ASR, f.LLM, fallback, strings.Join(optionsA, "\x00"), strings.Join(optionsL, "\x00")}, "\x01")

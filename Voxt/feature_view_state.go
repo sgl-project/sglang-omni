@@ -107,6 +107,8 @@ func buildFeatureModelsViewState(translator *i18n.Translator, input featureModel
 	f := featureOf(input.Settings, feature)
 	enhance := feature != hotkey.Transcribe || input.Settings.Features.Transcribe.Enhance
 	optionsA, automaticA := modelOptionsFor(translator, input.ReadyASR, input.ShownASR)
+	automaticA = automaticSpeechLabelFor(translator, input.Settings, input.ReadyASR, feature)
+	optionsA[0] = automaticA
 	optionsL, automaticL := modelOptionsFor(translator, input.ReadyLLM, input.ReadyLLM)
 	state := featureModelsViewState{
 		Prefix: uitext.FeaturePrefix(feature),
