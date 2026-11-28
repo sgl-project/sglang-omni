@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import base64
+import io
 import json
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 import pytest
+import soundfile
 from fastapi.testclient import TestClient
 
 from sglang_omni.client.audio import DEFAULT_SAMPLE_RATE, encode_wav
@@ -37,6 +39,48 @@ class RecordingSpeechClient:
             mime_type="audio/wav",
             format="wav",
         )
+
+
+@pytest.mark.parametrize("invalid_sample", [float("nan"), float("inf"), -float("inf")])
+def test_voice_upload_rejects_nonfinite_audio_without_replacing_voice(
+    invalid_sample: float, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Nonfinite float WAV uploads must not persist or replace a usable voice."""
+    monkeypatch.setenv("SPEAKER_SAMPLES_DIR", str(tmp_path))
+    client = TestClient(create_app(RecordingSpeechClient(), model_name="tts"))
+    original_upload = client.post(
+        "/v1/audio/voices",
+        data={"name": "Guide", "consent": "consent"},
+        files={"audio_sample": ("guide.wav", reference_wav(), "audio/wav")},
+    )
+    assert original_upload.status_code == 200
+    voice_path = tmp_path / "guide.safetensors"
+    original_voice_bytes = voice_path.read_bytes()
+    samples = np.full(DEFAULT_SAMPLE_RATE * 2, 0.1, dtype=np.float32)
+    samples[DEFAULT_SAMPLE_RATE] = invalid_sample
+    invalid_wav = io.BytesIO()
+    soundfile.write(
+        invalid_wav, samples, DEFAULT_SAMPLE_RATE, format="WAV", subtype="FLOAT"
+    )
+
+    for name in ("Invalid", "Guide"):
+        upload = client.post(
+            "/v1/audio/voices",
+            data={"name": name, "consent": "consent"},
+            files={
+                "audio_sample": ("invalid.wav", invalid_wav.getvalue(), "audio/wav")
+            },
+        )
+        assert upload.status_code == 400
+        assert upload.json()["error"]["param"] == "audio_sample"
+        assert "finite" in upload.json()["error"]["message"]
+        assert voice_path.read_bytes() == original_voice_bytes
+        assert not (tmp_path / "invalid.safetensors").exists()
+
+    assert client.get("/v1/audio/voices").json()["uploaded_voices"] == [
+        original_upload.json()
+    ]
+    assert list(tmp_path.glob("*.tmp")) == []
 
 
 @pytest.mark.asyncio
