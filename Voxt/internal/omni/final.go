@@ -49,6 +49,10 @@ type finalRequest struct {
 	layout    string
 	preview   bool  // a provisional request with faster disconnect detection
 	known     prior // what the live session has of the audio
+	// pieceEnd is the sample a piece of the live session's recording ends
+	// at (0: not a piece): the session decodes it from its Final's start
+	// and moves that start here.
+	pieceEnd int
 }
 
 // finalResult is a request's answer.
@@ -99,6 +103,9 @@ func (r finalRequest) body(model string) (*bytes.Buffer, string) {
 	}
 	if r.known.session != "" {
 		field("realtime_session", r.known.session)
+		if r.pieceEnd > 0 {
+			field("realtime_piece_end", itoa(r.pieceEnd))
+		}
 		if r.known.guessAutoLanguage && r.language == "" && r.known.text == "" && !r.preview {
 			field("guess_auto_language", "true")
 		}

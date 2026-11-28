@@ -46,6 +46,7 @@ from sglang.srt.managers.schedule_batch import (
     ScheduleBatch,
     retract_all,
 )
+from sglang.srt.managers.schedule_policy import PrefillAdder
 from sglang.srt.managers.scheduler import (
     PAUSE_WINDOWS_MAX,
     TEST_RETRACT,
@@ -107,6 +108,13 @@ from sglang_omni.proto.admin import (
 )
 from sglang_omni.proto.request import StagePayload
 from sglang_omni.proto.session import find_session_operation
+from sglang_omni.scheduling.beam_search import (
+    BeamPrefillAdder,
+    OmniBeamCoordinator,
+    beam_hypotheses,
+    install_encoder_beam_tail,
+    strip_encoder_beam_tail,
+)
 from sglang_omni.scheduling.generation_batch_policy import (
     CudaGraphBackend,
     get_prefill_cuda_graph_backend,
@@ -220,7 +228,6 @@ class UpstreamAbortSender(Generic[RequestDataT]):
         self.scheduler = scheduler
 
     def send_output(self, msg: object, req: Req | None = None) -> None:
-        del req
         if not isinstance(msg, AbortReq):
             raise RuntimeError(
                 f"Unexpected upstream scheduler IPC output: {type(msg).__name__}"
@@ -241,6 +248,10 @@ class UpstreamAbortSender(Generic[RequestDataT]):
             pass
 
         scheduler = self.scheduler
+        if req is not None and req.rid == request_id:
+            request_id = scheduler.request_id_for_row(req.rid)
+        else:
+            pass
         scheduler.emit_request_error(request_id, RuntimeError(message))
         scheduler.abort(request_id, defer_running_cleanup=False)
 
@@ -360,6 +371,8 @@ class OmniScheduler(Generic[RequestDataT]):
     async_decode_resolve_before_prefill: bool = False
     early_request_builds: bool = False
     draft_worker: BaseSpecWorker | None = None
+    # Installed by init_beam_coordinator; shared with the runner and the result processor.
+    beam_coordinator: OmniBeamCoordinator | None = None
     async_prefill: bool = False
     request_build_admission_wait_s: float = _REQUEST_BUILD_ADMISSION_WAIT_S
     enable_plain_fallback: bool = False
@@ -914,6 +927,7 @@ class OmniScheduler(Generic[RequestDataT]):
             self.enable_async_decode and self.draft_worker is None
         )
         model_runner.bind_execution_bridge(bridge)
+        model_runner.beam_coordinator = self.beam_coordinator
         if self.draft_worker is not None:
             self.tp_worker.speculative_target_worker.attach_runner(model_runner)
         else:
@@ -1166,6 +1180,24 @@ class OmniScheduler(Generic[RequestDataT]):
             abort_request=lambda request: self.abort(request.rid),
         )
 
+    def init_beam_coordinator(self) -> None:
+        """Install the beam coordinator that the result processor and the runner share."""
+        self.beam_coordinator = OmniBeamCoordinator(
+            model_config=self.model_config,
+            spec_algorithm=self.draft_algorithm,
+            dllm_enabled=self.dllm_config is not None,
+            max_req_len=self.max_req_len,
+            req_to_token_pool=self.req_to_token_pool,
+            token_to_kv_pool_allocator=self.token_to_kv_pool_allocator,
+            tree_cache=self.tree_cache,
+            future_map=self.plain_future_map,
+        )
+        install_encoder_beam_tail()
+        if self.model_runner is not None:
+            self.model_runner.beam_coordinator = self.beam_coordinator
+        else:
+            pass
+
     def self_check_during_idle(self) -> None:
         self.new_token_ratio_tracker.reset()
         idle_sleeper = self.idle_sleeper
@@ -1239,6 +1271,10 @@ class OmniScheduler(Generic[RequestDataT]):
             self.attn_tp_rank == 0 or self.enable_metrics_for_all_schedulers
         )
 
+    def request_id_for_row(self, row_id: str) -> str:
+        """Resolve a scheduler row id to its externally visible request id."""
+        return row_id
+
     def poll_request_timeout_aborts(self) -> tuple[RequestTimeoutAbort, ...]:
         now = time.perf_counter()
         timeout_aborts: list[RequestTimeoutAbort] = []
@@ -1250,7 +1286,7 @@ class OmniScheduler(Generic[RequestDataT]):
                 if 0 < entry_time < waiting_deadline:
                     timeout_aborts.append(
                         RequestTimeoutAbort(
-                            rid=queued_request.rid,
+                            rid=self.request_id_for_row(queued_request.rid),
                             abort_message="Request waiting timeout reached.",
                         )
                     )
@@ -1271,7 +1307,7 @@ class OmniScheduler(Generic[RequestDataT]):
                     ):
                         timeout_aborts.append(
                             RequestTimeoutAbort(
-                                rid=running_request.rid,
+                                rid=self.request_id_for_row(running_request.rid),
                                 abort_message="Request running timeout reached.",
                             )
                         )
@@ -2132,6 +2168,18 @@ class OmniScheduler(Generic[RequestDataT]):
             return
         else:
             pass
+        beam_search = req_data.beam_search
+        beam_error = (
+            None
+            if beam_search is None
+            else self.beam_coordinator.beam_request_error(req, beam_search)
+        )
+        if beam_error is not None:
+            self.emit_request_error(req_id, ValueError(beam_error))
+            self.abort(req_id)
+            return
+        else:
+            pass
         self.initialize_request_stream_state(req_data, payload)
         ingress = self.pending_stream_ingress.pop(req_id, None)
         if ingress is not None:
@@ -2154,14 +2202,25 @@ class OmniScheduler(Generic[RequestDataT]):
                 return
             else:
                 pass
-            if self._abort_on_queued_limit(req):  # noqa: leading-underscore
-                logger.warning(
-                    "Rejecting request %s: waiting queue is full "
-                    "(max_queued_requests=%s, waiting=%s)",
-                    req_id,
-                    self.max_queued_requests,
-                    len(self.waiting_queue),
-                )
+            request_rows = self.built_request_rows(req_data)
+            if len(request_rows) == 1:
+                if self._abort_on_queued_limit(req):  # noqa: leading-underscore
+                    logger.warning(
+                        "Rejecting request %s: waiting queue is full "
+                        "(max_queued_requests=%s, waiting=%s)",
+                        req_id,
+                        self.max_queued_requests,
+                        len(self.waiting_queue),
+                    )
+                    return
+                else:
+                    pass
+            elif (
+                self.max_queued_requests is not None
+                and len(self.waiting_queue) + len(request_rows)
+                > self.max_queued_requests
+            ):
+                self.reject_queue_full(payload)
                 return
             else:
                 pass
@@ -2171,12 +2230,33 @@ class OmniScheduler(Generic[RequestDataT]):
                 stage=None,
                 event_name="scheduler_queue_enter",
             )
-            req._coalesce_enqueue_t = (
-                time.perf_counter()
-            )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
-            req._omni_terminal_claimed = False  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
-            req.omni_data = req_data  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
-            self.waiting_queue.append(req)
+            enqueue_seconds = time.perf_counter()
+            for row_data in request_rows:
+                row = row_data.req
+                if row is not req:
+                    self.normalize_req_token_arrays(row)
+                    row.priority = req.priority
+                else:
+                    pass
+                if len(request_rows) > 1:
+                    row.time_stats.set_wait_queue_entry_time(enqueue_seconds)
+                else:
+                    pass
+                row._coalesce_enqueue_t = (
+                    enqueue_seconds  # noqa: leading-underscore  # upstream spelling
+                )
+                row._omni_terminal_claimed = (
+                    False  # noqa: leading-underscore  # upstream spelling
+                )
+                row.omni_data = (
+                    row_data  # noqa: leading-underscore  # upstream spelling
+                )
+            if beam_search is not None:
+                # Attached here, after the last early return, so a dropped request never holds a live group.
+                self.beam_coordinator.attach_group(req, beam_search)
+            else:
+                pass
+            self.waiting_queue.extend(row_data.req for row_data in request_rows)
             enqueued_unit = self.active_session_unit(req_id)
             if enqueued_unit is not None:
                 enqueued_unit.is_enqueued = True
@@ -2188,6 +2268,12 @@ class OmniScheduler(Generic[RequestDataT]):
         else:
             with self.request_admission_lock:
                 enqueue_if_live()
+
+    def built_request_rows(
+        self, request_data: RequestDataT | SGLangARRequestData
+    ) -> tuple[RequestDataT | SGLangARRequestData, ...]:
+        """Return the rows that must enter the waiting queue together."""
+        return (request_data,)
 
     def apply_prompt_cache_epoch(self, req: Req) -> None:
         cache_key = getattr(
@@ -2870,6 +2956,12 @@ class OmniScheduler(Generic[RequestDataT]):
         )
         return now_s - oldest_enqueue_s < self.prefill_coalesce_wait_s
 
+    def get_prefill_adder_class(self) -> type[PrefillAdder]:
+        if self.beam_coordinator is not None and self.beam_coordinator.has_live_groups:
+            return BeamPrefillAdder
+        else:
+            return _Upstream.get_prefill_adder_class(self)
+
     def get_new_batch_prefill(self, running_batch: ScheduleBatch) -> NextBatchPlan:
         if not self.enable_plain_fallback:
             return self.get_coalesced_batch_prefill(running_batch)
@@ -3501,12 +3593,17 @@ class OmniScheduler(Generic[RequestDataT]):
                     model_runner.on_request_finished(rid, data)
                 else:
                     pass
-                data.output_ids = list(
-                    req.output_ids
-                    if self.draft_worker is None
-                    or (self.enable_plain_fallback and data.decode_path == "plain")
-                    else req.output_ids_through_stop
-                )
+                if req.beam_group is not None:
+                    # A beam leader's own output ids are length placeholders; its group holds the N-best.
+                    data.beam_hypotheses = beam_hypotheses(req.beam_group)
+                    data.output_ids = list(data.beam_hypotheses[0].token_ids)
+                else:
+                    data.output_ids = list(
+                        req.output_ids
+                        if self.draft_worker is None
+                        or (self.enable_plain_fallback and data.decode_path == "plain")
+                        else req.output_ids_through_stop
+                    )
                 data.weight_version = get_serving().weight_version
                 if self.draft_worker is not None and req.spec_verify_ct > 0:
                     # note (detemmienation): every verify commits the bonus token, so the accept length counts it while the accept rate does not.
@@ -3837,7 +3934,13 @@ class OmniScheduler(Generic[RequestDataT]):
         executor.shutdown(wait=False, cancel_futures=True)
         self.request_build_executor = None
 
-    def abort(self, request_id: str, *, defer_running_cleanup: bool = True) -> None:
+    def abort(
+        self,
+        request_id: str,
+        *,
+        defer_running_cleanup: bool = True,
+        batch_to_abort: ScheduleBatch | None = None,
+    ) -> None:
         bridge = self.session_bridge
         if self.scheduler_thread_id != threading.get_ident() and (
             self.enable_overlap
@@ -3893,7 +3996,7 @@ class OmniScheduler(Generic[RequestDataT]):
             immediate_reqs = (
                 []
                 if running_abort or should_keep_session_rows
-                else self.mark_request_finished_immediately(request_id)
+                else self.mark_request_finished_immediately(request_id, batch_to_abort)
             )
             pending = self.pending_request_builds.pop(request_id, None)
             if pending is not None:
@@ -3923,6 +4026,10 @@ class OmniScheduler(Generic[RequestDataT]):
             waiting_queue = []
             for req in self.waiting_queue:
                 if req.rid == request_id:
+                    if req.beam_group is not None:
+                        self.beam_coordinator.retire_group(req)
+                    else:
+                        pass
                     detach_request_data(req)
                 else:
                     waiting_queue.append(req)
@@ -3945,6 +4052,10 @@ class OmniScheduler(Generic[RequestDataT]):
         self.prefill_end_done.discard(request_id)
         if not running_abort:
             for req in immediate_reqs:
+                if req.beam_group is not None:
+                    self.beam_coordinator.abort_group(req)
+                else:
+                    pass
                 self.release_request_kv_cache(req)
                 detach_request_data(req)
         else:
@@ -4419,7 +4530,7 @@ class OmniScheduler(Generic[RequestDataT]):
             for req in self.waiting_queue:
                 rid = req.rid
                 if rid is not None:
-                    request_ids.add(rid)
+                    request_ids.add(self.request_id_for_row(rid))
                 else:
                     pass
         # note (Richard Wang): a request whose build waits for upstream chunks
@@ -4437,7 +4548,7 @@ class OmniScheduler(Generic[RequestDataT]):
                 pass
             for req in batch.reqs:
                 if req.rid is not None and not req.finished():
-                    request_ids.add(req.rid)
+                    request_ids.add(self.request_id_for_row(req.rid))
                 else:
                     pass
         return sorted(request_ids)
@@ -4465,7 +4576,8 @@ class OmniScheduler(Generic[RequestDataT]):
 
     def retract_running_requests(self) -> int:
         """Retract and requeue each unfinished request holding KV, including one cut
-        between chunked extends, which sits only in last_batch and chunked_req."""
+        between chunked extends, which sits only in last_batch and chunked_req.
+        Beam search requests end with an admin-dropped error instead."""
         candidate_requests = list(self.running_batch.reqs)
         for batch in self.pending_batches():
             candidate_requests.extend(batch.reqs)
@@ -4479,11 +4591,32 @@ class OmniScheduler(Generic[RequestDataT]):
         else:
             pass
         requests_by_identity = {id(request): request for request in candidate_requests}
-        retracted_requests = [
+        unfinished_requests = [
             request
             for request in requests_by_identity.values()
             if not request.finished()
         ]
+        # note (zhumengzhiren): a beam group cannot be requeued: its members alias the leader's prompt KV and its beams live in the group, not in output_ids. The pause ends it, as newer SGLang's retract_all does.
+        beam_request_ids = [
+            request.rid
+            for request in unfinished_requests
+            if request.beam_group is not None
+        ]
+        for request_id in beam_request_ids:
+            self.abort(request_id, defer_running_cleanup=False)
+            self.emit_request_error(request_id, AdminDroppedRequestError())
+        if beam_request_ids:
+            logger.warning(
+                f"pause_generation(mode='retract') ended {len(beam_request_ids)} beam search "
+                f"requests, which cannot be requeued: {beam_request_ids}"
+            )
+        else:
+            pass
+        retracted_requests = [
+            request for request in unfinished_requests if request.beam_group is None
+        ]
+        # Clearing reqs under an attached beam tail would fail the tail's row check at the next batch mutation.
+        strip_encoder_beam_tail(self.running_batch)
         retract_all(
             reqs=retracted_requests,
             req_to_token_pool=self.req_to_token_pool,
@@ -4563,8 +4696,10 @@ class OmniScheduler(Generic[RequestDataT]):
                 marked = True
         return marked
 
-    def mark_request_finished_immediately(self, request_id: str) -> list[Req]:
-        """Make immediate cleanup visible without rewriting prepared batches."""
+    def mark_request_finished_immediately(
+        self, request_id: str, batch_to_abort: ScheduleBatch | None = None
+    ) -> list[Req]:
+        """Include a failed batch even when it has not been published to the loop."""
         matches = []
         seen: set[int] = set()
         for batch in (
@@ -4572,6 +4707,7 @@ class OmniScheduler(Generic[RequestDataT]):
             self.cur_batch,
             self.last_batch,
             *self.pending_batches(),
+            batch_to_abort,
         ):
             if batch is None:
                 continue
@@ -4814,6 +4950,8 @@ class OmniScheduler(Generic[RequestDataT]):
             and not batch.is_prefill_only
             and not batch.return_logprob
             and all(req.inflight_middle_chunks <= 0 for req in batch.reqs)
+            # A beam leader's first selection must land before the next forward resolves its inputs.
+            and all(req.beam_group is None for req in batch.reqs)
         )
 
     def pending_batches(self) -> Iterable[ScheduleBatch]:

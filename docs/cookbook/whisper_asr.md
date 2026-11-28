@@ -143,11 +143,11 @@ sgl-omni serve \
 
 A request with a positive `temperature` samples under the draft: each draft token is accepted with probability min(1, p/q), the target's probability over the draft's, and the first rejected one is redrawn from the remainder, so the transcript follows the same distribution as without the draft. On the 1,000 English clips below at temperature 0.7, WER was 4.21% to 4.35% across three runs with the draft and 4.28% to 4.44% without it, the draft accepted 6.2 tokens per round, and throughput rose 13% at concurrency 1 and 12% at 8. Segment timestamps (`srt`, `vtt`) apply Whisper's timestamp rules to every draft and verify token, and 299 of 300 `srt` files matched the server without the draft byte for byte. The draft was trained without timestamps and accepts about 4.7 tokens per round on them, so `srt` is 14% slower than without the draft at concurrency 1 and 4% faster at 8. It runs synchronously, so async decode is off. The first startup compiles the verify graphs for every decode batch size, about 14 minutes on an H200 against 9 without a draft; with a warm compile cache both start in about 6 minutes.
 
-Send the form field `return_spec_tokens_details=true` to get `sglext.spec_tokens_details` (`spec_accept_length`, `spec_accept_rate`, the draft counts and the per-verify histogram) on `json` and `verbose_json` responses and on the streamed `transcript.text.done` event. Audio long enough to be transcribed in chunks returns none.
+The config also sets `pre_lm_max_batch_size: 2`. A draft scheduler pass is longer, so requests reach the encoder in bigger groups, and every clip in a group waits for the whole group. On one H100 with fresh SeedTTS Chinese clips at concurrency 16, over two runs each, the mean first streamed text was 142 to 146 ms with the default 8 and 124 ms with 2 (83 ms without a draft), and throughput rose from 67–69 to 72–73 req/s. The pipeline default stays 8, which keeps the encoder fast enough at high concurrency without a draft.
 
 Send the form field `return_spec_tokens_details=true` to get `sglext.spec_tokens_details` (`spec_accept_length`, `spec_accept_rate`, the draft counts and the per-verify histogram) on `json` and `verbose_json` responses and on the streamed `transcript.text.done` event. Audio long enough to be transcribed in chunks returns none.
 
-On one H200 with the default 64 running requests, 1,000 English clips of 1 to 16 s (pipecat-ai/stt-benchmark-data), one warmup and one measured pass per concurrency, against the same server without a draft. Fresh audio misses the encoder cache on every request; repeated audio is the warmup's clips again, so every request reuses its cached encoder output:
+On one H200 with the default 64 running requests and `pre_lm_max_batch_size` 8, 1,000 English clips of 1 to 16 s (pipecat-ai/stt-benchmark-data), one warmup and one measured pass per concurrency, against the same server without a draft. Fresh audio misses the encoder cache on every request; repeated audio is the warmup's clips again, so every request reuses its cached encoder output:
 
 | Audio | Concurrency | No draft req/s | Draft req/s | Throughput gain | No draft p95 latency (s) | Draft p95 latency (s) |
 |---|---:|---:|---:|---:|---:|---:|
@@ -228,6 +228,8 @@ for response formats and other ASR models.
 | `prompt` | string | unset | Optional text used as Whisper prev-context conditioning |
 | `response_format` | string | `json` | `json`, `verbose_json`, raw `text`, `srt`, or `vtt` |
 | `temperature` | float | `0.0` | Sampling temperature; defaults to greedy decoding. A negative value returns HTTP 422 |
+| `beam_width` | int | `1` | Beam search width, 1 to 16; above 1 the response carries the N-best (see [Beam Search](#beam-search)) |
+| `beam_search_diversity_rate` | float | `0.0` | Ranking-only diversity bonus for beam search |
 
 The serving route selects the internal `task` from the endpoint (`transcribe`
 or `translate`); it is not a public form field. The route uses the ASR stage
@@ -237,6 +239,35 @@ the request minimal and use `response_format=json`.
 For both transcription and translation, `srt` and `vtt` request Whisper's
 model-derived segment timestamps. Non-streaming subtitle requests are
 supported; `stream=true` with either subtitle format returns HTTP 400.
+
+## Beam Search
+
+Set `beam_width` above 1 to decode with beam search. The response keeps the best hypothesis in `text` and returns all `beam_width` hypotheses, best first, in `sglext.n_best`, a SGLang-Omni extension:
+
+```bash
+curl -X POST http://localhost:8000/v1/audio/transcriptions \
+  -F model=openai/whisper-large-v3 \
+  -F file=@tests/data/query_to_cars.wav \
+  -F beam_width=5 \
+  -F response_format=json
+```
+
+```json
+{
+  "text": "...",
+  "sglext": {
+    "n_best": [
+      {"text": "...", "cum_logprob": -0.14, "score": -0.005, "finish_reason": "stop"}
+    ]
+  }
+}
+```
+
+`cum_logprob` is the hypothesis's raw cumulative log-probability and `score` is `cum_logprob` divided by the number of generated tokens, which is the order of the list. Selection and stopping follow Hugging Face `generate` with `num_beams`, `length_penalty=1.0` and `early_stopping=False`, and every beam gets Whisper's suppress, begin-suppress and timestamp rules before selection. `beam_search_diversity_rate` adds `rate * (rank_within_parent % beam_width)` to each candidate's ranking, as TensorRT-LLM does; the returned log-probabilities stay raw.
+
+Greedy and beam requests share one server and one decode step. While a beam request is decoding, its decode steps run without the async-decode lookahead, as timestamped requests do.
+
+Beam search returns final transcripts only. These requests return HTTP 400 with `beam_width` above 1: `stream=true`, `temperature` above 0, audio long enough to be split into chunks, `/v1/audio/translations`, and servers running speculative decoding. A `beam_width` above 16 also returns 400. `json` and `verbose_json` carry `sglext.n_best`; `srt`, `vtt` and `text` are plain text and return the best hypothesis only.
 
 ## Long Audio
 

@@ -2,17 +2,17 @@
 
 [English](en/start.md)
 
-使用 Apple 芯片的 Mac 需要 macOS 15 或更新版本。第一次安装，选 **Voxt 2.1.4 正式版**。需要验证最新改动时，选下方的 Beta 路线。
+使用 Apple 芯片的 Mac 需要 macOS 15 或更新版本。第一次安装，选 **Voxt 2.1.3 正式版**。需要验证最新改动时，选下方的 Beta 路线。
 
-## 下载 2.1.4 正式版
+## 下载 2.1.3 正式版
 
-[一键下载 Voxt 2.1.4（Apple 芯片）](https://github.com/sgl-project/sglang-omni/releases/download/voxt-v2.1.4/Voxt-2.1.4-arm64.dmg)
+[一键下载 Voxt 2.1.3（Apple 芯片）](https://github.com/sgl-project/sglang-omni/releases/download/voxt-v2.1.3/Voxt-2.1.3-arm64.dmg)
 
 也可以从以下入口找到同一个版本号的安装包。
 
 - 仓库首页往下到 **News**，找到 **Voxt 2.0**，点 **Download**。 [SGLang Omni News](https://github.com/sgl-project/sglang-omni#news)
-- 在 **Voxt v2.1.4** 发布页展开 **Assets**，点 `Voxt-2.1.4-arm64.dmg`。 [GitHub Releases](https://github.com/sgl-project/sglang-omni/releases/tag/voxt-v2.1.4)
-- 在 **v2.1.4** 条目点 **Download**。Changelog 可能给这条加上 **Beta** 标签，选择文件名为 `Voxt-2.1.4-arm64.dmg` 的包。 [Voxt Changelog](https://voxt.actnow.dev/changelog)
+- 在 **Voxt v2.1.3** 发布页展开 **Assets**，点 `Voxt-2.1.3-arm64.dmg`。 [GitHub Releases](https://github.com/sgl-project/sglang-omni/releases/tag/voxt-v2.1.3)
+- 在 **v2.1.3** 条目点 **Download**。Changelog 可能给这条加上 **Beta** 标签，选择文件名为 `Voxt-2.1.3-arm64.dmg` 的包。 [Voxt Changelog](https://voxt.actnow.dev/changelog)
 
 ## 下载 Beta
 
@@ -56,4 +56,4 @@ Beta 会自己更新：在 Voxt 菜单里点**检查更新…**，就能从 GitH
 
 ## 交给 Agent
 
-> 按本页在 Apple 芯片 Mac 上安装 Voxt 2.1.4 正式版。只有我明确要求 Beta 时才下载 Actions 的 Beta 包。遇到替换旧版、导入历史或 macOS 权限授权时让我确认。下载推荐的本地语音识别模型，等到显示可用。用空白文本框和一句测试内容确认转录能输出，告诉我安装的版本和结果。
+> 按本页在 Apple 芯片 Mac 上安装 Voxt 2.1.3 正式版。只有我明确要求 Beta 时才下载 Actions 的 Beta 包。遇到替换旧版、导入历史或 macOS 权限授权时让我确认。下载推荐的本地语音识别模型，等到显示可用。用空白文本框和一句测试内容确认转录能输出，告诉我安装的版本和结果。

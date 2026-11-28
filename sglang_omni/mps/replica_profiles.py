@@ -65,8 +65,10 @@ class ReplicaProfileDecision:
     message: str | None
 
 
+H100 = MeasuredGpu(name="NVIDIA H100 80GB HBM3", total_memory_mib=81559)
 B200 = MeasuredGpu(name="NVIDIA B200", total_memory_mib=183359)
 RTX_4090_D = MeasuredGpu(name="NVIDIA GeForce RTX 4090 D", total_memory_mib=24564)
+H200 = MeasuredGpu(name="NVIDIA H200", total_memory_mib=143771)
 
 # note (Yuanfan Chen): measured with sglang-omni 8848e500. Each count served the most audio within a p99 latency of 0.5 s and keeps at least 88% of the best count's audio at 1 s and 3 s; docs/basic_usage/mps_dp.md has the numbers.
 REPLICA_PROFILES: tuple[ReplicaProfile, ...] = (
@@ -232,6 +234,50 @@ REPLICA_PROFILES: tuple[ReplicaProfile, ...] = (
             "stages.asr.env.OPENBLAS_NUM_THREADS": "4",
         },
     ),
+    # note (Yuanfan Chen): searched with sglang-omni 8848e500 and measured again on c9e8e34e6, each against the model's own config. Where the B200 caps of 16 running and 16 queued requests lost to it, each replica keeps the engine's own limits and the replicas split the GPU's memory.
+    ReplicaProfile(
+        config_cls="Ming3TTSPipelineConfig",
+        model_path="inclusionAI/Ming-3.0-tts-0.5B",
+        gpu=H100,
+        num_replicas=2,
+        replicated_processes=("preprocessing", "tts_engine", "vocoder"),
+        settings={
+            "stages.preprocessing.gpu_memory_fraction": 0.03,
+            "stages.tts_engine.gpu_memory_fraction": 0.07,
+            "stages.tts_engine.engine.mem_fraction_static": 0.8,
+            "stages.tts_engine.engine.max_running_requests": 16,
+            "stages.tts_engine.engine.max_queued_requests": 16,
+            "stages.tts_engine.engine.max_total_tokens": 32768,
+            "stages.vocoder.gpu_memory_fraction": 0.04,
+        },
+    ),
+    ReplicaProfile(
+        config_cls="MossTranscribeDiarizePipelineConfig",
+        model_path="OpenMOSS-Team/MOSS-Transcribe-Diarize",
+        gpu=H100,
+        num_replicas=2,
+        replicated_processes=("asr",),
+        settings={
+            "stages.asr.gpu_memory_fraction": 0.46,
+            "stages.asr.engine.mem_fraction_static": 0.94,
+            "stages.asr.engine.max_total_tokens": 89402,
+        },
+    ),
+    ReplicaProfile(
+        config_cls="Nemotron3_5ASRPipelineConfig",
+        model_path="nvidia/nemotron-3.5-asr-streaming-0.6b",
+        gpu=H100,
+        num_replicas=6,
+        replicated_processes=("asr",),
+        settings={
+            "stages.asr.gpu_memory_fraction": 0.14,
+            "stages.asr.factory.max_batch_size": 16,
+            "stages.asr.factory.session_max_concurrency": 16,
+            "stages.asr.env.OMP_NUM_THREADS": "4",
+            "stages.asr.env.MKL_NUM_THREADS": "4",
+            "stages.asr.env.OPENBLAS_NUM_THREADS": "4",
+        },
+    ),
     # note (Jiaxin Deng): measured with sglang-omni a385eac6; on this GPU the engine's own 64 running requests and no queue cap beat the 16 and 16 above.
     ReplicaProfile(
         config_cls="MossTranscribeDiarizePipelineConfig",
@@ -245,6 +291,50 @@ REPLICA_PROFILES: tuple[ReplicaProfile, ...] = (
             "stages.asr.engine.max_running_requests": 64,
             "stages.asr.engine.cuda_graph_max_bs": 64,
             "stages.asr.engine.max_total_tokens": 32768,
+        },
+    ),
+    ReplicaProfile(
+        config_cls="Nemotron3_5ASRPipelineConfig",
+        model_path="nvidia/nemotron-3.5-asr-streaming-0.6b",
+        gpu=RTX_4090_D,
+        num_replicas=2,
+        replicated_processes=("asr",),
+        settings={
+            "stages.asr.gpu_memory_fraction": 0.4648,
+            "stages.asr.factory.max_batch_size": 16,
+            "stages.asr.factory.session_max_concurrency": 16,
+        },
+    ),
+    # note (Jiaxin Deng): measured with sglang-omni a385eac6 against the model's own config; every stage keeps its B200 budget in GB.
+    ReplicaProfile(
+        config_cls="Qwen3TTSPipelineConfig",
+        model_path="Qwen/Qwen3-TTS-12Hz-1.7B-Base",
+        gpu=H200,
+        num_replicas=6,
+        replicated_processes=("pipeline", "vocoder"),
+        settings={
+            "stages.tts_engine.gpu_memory_fraction": 0.0851,
+            "stages.tts_engine.engine.mem_fraction_static": 0.8865,
+            "stages.tts_engine.engine.max_running_requests": 16,
+            "stages.tts_engine.engine.max_queued_requests": 16,
+            "stages.tts_engine.engine.cuda_graph_max_bs": 32,
+            "stages.tts_engine.engine.max_total_tokens": 32768,
+            "stages.vocoder.gpu_memory_fraction": 0.0227,
+            "stages.vocoder.process": "vocoder",
+        },
+    ),
+    # note (Jiaxin Deng): as on the RTX 4090 D, the B200 caps lost to the model's own config here; the engine's own 64 running requests and no queue cap beat it.
+    ReplicaProfile(
+        config_cls="MossTranscribeDiarizePipelineConfig",
+        model_path="OpenMOSS-Team/MOSS-Transcribe-Diarize",
+        gpu=H200,
+        num_replicas=2,
+        replicated_processes=("asr",),
+        settings={
+            "stages.asr.gpu_memory_fraction": 0.46,
+            "stages.asr.engine.mem_fraction_static": 0.966,
+            "stages.asr.engine.max_running_requests": 64,
+            "stages.asr.engine.max_total_tokens": 157670,
         },
     ),
 )

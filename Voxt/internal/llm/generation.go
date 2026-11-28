@@ -1,6 +1,9 @@
 package llm
 
-import "maps"
+import (
+	"maps"
+	"strings"
+)
 
 // Generation is a remote model's request settings, field for field as
 // Voxt 1.x's service dialog had them (Generation Settings, Advanced,
@@ -32,6 +35,9 @@ type Generation struct {
 	Verbosity     string // OpenAI's text verbosity: "low", "medium", "high"
 	KeepAlive     string // Ollama's keep_alive ("5m")
 	IncludeUsage  *bool  // oMLX's stream_options.include_usage; nil: Voxt's (on)
+	// PromptCache marks the system prompt for the service's prompt cache
+	// (the Messages API).
+	PromptCache bool
 	// ExtraBody is applied to the body last as a JSON merge patch (RFC
 	// 7386): its keys win, an object merges into the body's, null removes.
 	ExtraBody map[string]any
@@ -233,6 +239,7 @@ func applyThinking(b map[string]any, id, model string, t Thinking) {
 				b["max_tokens"] = t.Budget + 1
 			}
 		}
+		claudeThinkingOff(b, model)
 	case "gemini":
 		switch t.Mode {
 		case ThinkOff:
@@ -247,5 +254,21 @@ func applyThinking(b map[string]any, id, model string, t Thinking) {
 		case ThinkEffort:
 			effort()
 		}
+	}
+}
+
+// claudeThinkingOff rewrites thinking off (the preset's or ThinkOff) for
+// the Claude models that refuse type disabled: Claude Sonnet 5.5 turns
+// thinking off with between_tools, and Claude Opus 5.5 and the Fable and
+// Mythos models always think, so they get no thinking field.
+func claudeThinkingOff(b map[string]any, model string) {
+	if t, _ := b["thinking"].(map[string]any); t["type"] != "disabled" {
+		return
+	}
+	switch m := strings.ToLower(strings.TrimSpace(model)); {
+	case strings.HasPrefix(m, "claude-sonnet-5-5"):
+		b["thinking"] = map[string]any{"type": "between_tools"}
+	case strings.HasPrefix(m, "claude-opus-5-5"), strings.HasPrefix(m, "claude-fable-"), strings.HasPrefix(m, "claude-mythos-"):
+		delete(b, "thinking")
 	}
 }

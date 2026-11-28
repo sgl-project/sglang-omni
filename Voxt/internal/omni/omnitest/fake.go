@@ -67,6 +67,8 @@ type Opts struct {
 	// FailFrom: the Finals from this one on (1 = the first) answer an
 	// error event, as ModeError does; 0: none.
 	FailFrom int
+	// note (chenye): FailAt fails one Final so the next Final can exercise fallback.
+	FailAt int
 	// Delay is how long a Final takes (default 50 ms).
 	Delay time.Duration
 	// Load is how long the model "loads" before ready.
@@ -105,6 +107,8 @@ type Opts struct {
 	// the completed text, as the real model sometimes does on its
 	// plain-text instruction.
 	LiveMarkup bool
+	// note (chenye): GateURL holds fake requests until a test releases them.
+	GateURL string
 }
 
 // Env is the environment that makes a test binary a fake with o.
@@ -118,6 +122,7 @@ func Env(o Opts) []string {
 	v.Set("delay", o.Delay.String())
 	v.Set("load", o.Load.String())
 	v.Set("failfrom", strconv.Itoa(o.FailFrom))
+	v.Set("failat", strconv.Itoa(o.FailAt))
 	v.Set("older", strconv.FormatBool(o.Older))
 	v.Set("nodraft", strconv.FormatBool(o.NoDraft))
 	v.Set("draftcounters", strconv.FormatBool(o.DraftCounters))
@@ -130,6 +135,7 @@ func Env(o Opts) []string {
 	v.Set("livemarkup", strconv.FormatBool(o.LiveMarkup))
 	v.Set("livesegdelay", o.LiveSegDelay.String())
 	v.Set("livestall", strconv.FormatBool(o.LiveStall))
+	v.Set("gate", o.GateURL)
 	return []string{EnvFake + "=" + v.Encode()}
 }
 
@@ -142,6 +148,8 @@ func opts() Opts {
 	o.Delay, _ = time.ParseDuration(v.Get("delay"))
 	o.Load, _ = time.ParseDuration(v.Get("load"))
 	o.FailFrom, _ = strconv.Atoi(v.Get("failfrom"))
+	o.FailAt, _ = strconv.Atoi(v.Get("failat"))
+	o.GateURL = v.Get("gate")
 	o.Older, _ = strconv.ParseBool(v.Get("older"))
 	o.NoDraft, _ = strconv.ParseBool(v.Get("nodraft"))
 	o.DraftCounters, _ = strconv.ParseBool(v.Get("draftcounters"))

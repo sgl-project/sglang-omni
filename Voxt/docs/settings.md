@@ -289,7 +289,7 @@ A provider is an object. Set the key on the page; an entry without one fails its
 | `id` | string | required | The service (`openai`, `codex`, `ollama`, `omlx`, `doubao`, …), one entry per `id` |
 | `endpoint` | string | the service's | API root (`https://…/v1`, or `http://localhost:…` for a server on this Mac); for a speech service its URL |
 | `model` | string | the service's | Model name |
-| `apiFormat` | string | `""` | `""` chat completions, `responses` the Responses API (OpenAI and custom only) |
+| `apiFormat` | string | `""` | `""` chat completions, `responses` the Responses API (OpenAI and custom only), `messages` the Messages API (Anthropic only) |
 | `appID` | string | `""` | Doubao's App ID (speech, older console) |
 | `recognitionPrompt` | string | `""` | A speech service's recognition hint, with `{{USER_MAIN_LANGUAGE}}`, `{{USER_OTHER_LANGUAGES}}`, `{{DICTIONARY_TERMS}}` |
 | `generation` | object | absent | A language model's request settings, below |
@@ -319,6 +319,7 @@ In `generation`, an absent field leaves Voxt's or the service's default. A field
 | `verbosity` | string | OpenAI only: `""`, `low`, `medium`, `high` |
 | `keepAlive` | string | Ollama only: how long it keeps the model loaded, such as `5m` |
 | `includeUsage` | bool or absent | oMLX only: usage in stream events; absent = on |
+| `promptCache` | bool | Anthropic's Messages API only: the system prompt goes to its prompt cache; absent = off |
 | `extraBodyJSON` | string | Request parameters: a JSON object **as a string**, merged into the request last (JSON merge patch: its keys win, `null` removes a field) |
 
 ### Updates and network (Settings → About, Speech models → Network)
@@ -344,7 +345,8 @@ Voxt writes these itself. Do not edit them; they are listed so that every field 
 | `setup.sessionSwitchTotal` | integer | Every session switch the user makes (a shortcut, a session on the card, or a new session); stays on this Mac |
 | `setup.sessionReturns` | integer | Session switches that came back to a session with a card; stays on this Mac |
 | `updates.lastCheck` | string (RFC 3339 time) or absent | When the last update check succeeded |
-| `updates.dismissed` | string | The version whose "is available" card was dismissed |
+| `updates.available` | string | Newest GitHub release found by a check-only build, kept across restarts until installed or cleared |
+| `updates.dismissed` | string | Legacy version whose sidebar "is available" card was dismissed |
 | `network.proxyUser` | string | A custom proxy's user name (its password is in the Keychain) |
 | `network.proxyAuthHost` | string | The proxy host that user name is for |
 | `family.follow` | object, string → bool | Which shared values Voxt follows ([Shared with other apps](#shared-with-other-apps)); the one field here you may change |
