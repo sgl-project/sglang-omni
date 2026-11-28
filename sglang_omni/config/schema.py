@@ -83,7 +83,11 @@ def stage_process_name(stage: "StageConfig") -> str:
 
 logger = logging.getLogger(__name__)
 PLACEMENT_OWNED_FACTORY_KWARGS = frozenset(
-    {"gpu_id", "total_gpu_memory_fraction", "process_total_gpu_memory_fraction"}
+    {
+        "gpu_id",
+        "total_gpu_memory_fraction",
+        "process_total_gpu_memory_fraction",
+    }
 )
 MAX_SPEECH_INPUT_CHARS: int = 4096
 
@@ -141,6 +145,11 @@ class CommConfig(BaseModel):
     mooncake_protocol: str = "rdma"
     mooncake_hostname: str | None = None
     mooncake_device_name: str = ""
+    prealloc_timeout_seconds: float | None = Field(
+        default=None,
+        gt=0,
+        allow_inf_nan=False,
+    )
 
 
 class EndpointsConfig(BaseModel):
@@ -431,6 +440,7 @@ class StageConfig(BaseModel):
     factory_path: str
     "Dotted import path of the stage factory."
     next: str | list[str] | None = None
+    kv_transfer_to: str | None = None
     terminal: bool = False
     route_fn: str | None = None
     gpu: int | list[int] | None = None
@@ -948,10 +958,18 @@ class PipelineConfig(BaseModel):
         return [s.name for s in self.stages if s.terminal]
 
     def session_route(self) -> list[str]:
-        """The stage chain a Session of this pipeline follows: `next` from the entry stage to a terminal stage."""
+        """The stage chain a Session of this pipeline follows: next from the entry stage to a terminal stage."""
         route = [self.resolved_entry_stage]
         while True:
-            following = self.stage_named(route[-1]).next
+            current = self.stage_named(route[-1])
+            if current.kv_transfer_to is not None:
+                raise ValueError(
+                    f"stage {current.name!r} uses kv_transfer_to={current.kv_transfer_to!r}; "
+                    "Session routes are not supported across KV transfer edges"
+                )
+            else:
+                pass
+            following = current.next
             if following is None:
                 return route
             elif isinstance(following, list) and len(following) == 1:
@@ -1034,7 +1052,6 @@ class PipelineConfig(BaseModel):
         groups, which override kwargs returned here whenever both name the
         same factory parameter.
         """
-        return {}
         return {}
 
     def resolved_env_defaults(self) -> dict[str, str]:
@@ -1197,16 +1214,25 @@ class PipelineConfig(BaseModel):
                 raise ValueError(f"Stage {s.name!r} missing factory")
             else:
                 pass
-            has_next = s.next is not None
-            if has_next == bool(s.terminal):
+            exit_mode_count = (
+                int(s.next is not None)
+                + int(s.kv_transfer_to is not None)
+                + int(bool(s.terminal))
+            )
+            if exit_mode_count != 1:
                 raise ValueError(
-                    f"Stage {s.name!r} must set exactly one of 'next' or 'terminal'"
+                    f"Stage {s.name!r} must set exactly one of 'next', "
+                    "'kv_transfer_to', or 'terminal'"
                 )
             else:
                 pass
             if s.terminal and s.route_fn is not None:
                 raise ValueError(
                     f"Stage {s.name!r} cannot set route_fn on a terminal stage"
+                )
+            elif s.kv_transfer_to is not None and s.route_fn is not None:
+                raise ValueError(
+                    f"Stage {s.name!r} cannot set route_fn with kv_transfer_to"
                 )
             else:
                 pass
@@ -1238,6 +1264,20 @@ class PipelineConfig(BaseModel):
                 if unknown:
                     raise ValueError(
                         f"Stage {s.name!r} next has unknown stages: {sorted(unknown)}"
+                    )
+                else:
+                    pass
+            else:
+                pass
+            if s.kv_transfer_to is not None:
+                if s.kv_transfer_to == s.name:
+                    raise ValueError(
+                        f"Stage {s.name!r} kv_transfer_to cannot reference itself"
+                    )
+                elif s.kv_transfer_to not in names:
+                    raise ValueError(
+                        f"Stage {s.name!r} kv_transfer_to references unknown stage "
+                        f"{s.kv_transfer_to!r}"
                     )
                 else:
                     pass

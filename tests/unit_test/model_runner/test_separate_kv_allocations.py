@@ -14,6 +14,7 @@ from sglang_omni.model_runner.sglang_model_runner import (
     OmniKVCacheConfigurator,
     SeparateKVAllocationsPool,
 )
+from sglang_omni.scheduling.pd_utils import build_kv_pool
 
 LAYER_NUM = 2
 PAGE_SIZE = 16
@@ -48,6 +49,10 @@ def test_k_and_v_share_no_storage_and_keep_the_base_pool_shape() -> None:
         )
         assert k_buffer.shape == base_k_buffer.shape
         assert v_buffer.shape == base_v_buffer.shape
+    assert (
+        build_kv_pool(pool, pool_id="decode:kv").layout_id
+        == build_kv_pool(base_pool, pool_id="prefill:kv").layout_id
+    )
 
 
 @pytest.mark.parametrize(

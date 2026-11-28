@@ -89,6 +89,7 @@ class MiniCPMOThinkerModelRunner(ThinkerModelRunner):
         )
         self.pending_hidden: dict[str, list[torch.Tensor]] = {}
         self.hands_hidden_to_talker = output_processor.capture_hidden
+        self.gates_audio_output_lookahead = self.hands_hidden_to_talker
         self.speculative_hidden_queue: dict[str, deque[torch.Tensor]] = {}
 
     def requested_capture_hidden_mode_prefill(

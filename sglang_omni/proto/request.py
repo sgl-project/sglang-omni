@@ -30,6 +30,7 @@ class RequestInfo:
     counts_toward_admission: bool = True
     result: object = None
     error: str | None = None
+    owned_replica_bindings: dict[str, int] | None = None
 
 
 @dataclass

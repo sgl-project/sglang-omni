@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 from collections.abc import Mapping
 from contextlib import suppress
 from dataclasses import dataclass
@@ -15,6 +16,7 @@ from uuid import uuid4
 import msgspec
 import torch
 
+from sglang_omni.admission import AdminDroppedRequestError, QueueFullError
 from sglang_omni.comm import stage_io
 from sglang_omni.comm.data_ref import (
     BackendRef,
@@ -24,10 +26,12 @@ from sglang_omni.comm.data_ref import (
     TransportKind,
 )
 from sglang_omni.comm.kv_transfer import (
+    KVCommitObserver,
     KVPageDestination,
     KVPageLease,
     KVPool,
     KVReceiver,
+    KVTransferCancelled,
 )
 from sglang_omni.comm.router import CommRouter
 from sglang_omni.pipeline.control_plane import PullSocket, PushSocket, send_to_endpoint
@@ -47,9 +51,7 @@ from sglang_omni.relay.base import Relay, RelayOperation
 
 logger = logging.getLogger(__name__)
 
-
-class KVTransferCancelled(RuntimeError):
-    """Request-scoped cancellation of an outbound paged-KV transfer."""
+DEFAULT_PREALLOC_TIMEOUT_SECONDS = 15.0
 
 
 class KVTransferRejected(RuntimeError):
@@ -63,6 +65,14 @@ class InboundKVTransfer:
     destination: KVPageDestination
     copy_started: bool = False
     abort_error: BaseException | None = None
+    orphan_timer: asyncio.TimerHandle | None = None
+
+    def cancel_orphan_timer(self) -> None:
+        if self.orphan_timer is not None:
+            self.orphan_timer.cancel()
+            self.orphan_timer = None
+        else:
+            pass
 
 
 class PendingTransfer(msgspec.Struct):
@@ -135,6 +145,7 @@ class CommEngine:
         tp_size: int = 1,
         rank_endpoints: dict[str, tuple[str, ...]] | None = None,
         task_done_callback: Callable[[asyncio.Task, str], None] | None = None,
+        on_kv_commit: KVCommitObserver | None = None,
     ) -> None:
         self.router = router
         self.tp_rank = tp_rank
@@ -145,6 +156,22 @@ class CommEngine:
         self.ack_timeout_s = (
             float(cfg["ack_timeout_s"]) if "ack_timeout_s" in cfg else 30.0
         )
+        raw_prealloc_timeout_seconds = cfg.get("prealloc_timeout_seconds")
+        self.prealloc_timeout_seconds = (
+            float(raw_prealloc_timeout_seconds)
+            if raw_prealloc_timeout_seconds is not None
+            else DEFAULT_PREALLOC_TIMEOUT_SECONDS
+        )
+        if (
+            not math.isfinite(self.prealloc_timeout_seconds)
+            or self.prealloc_timeout_seconds <= 0
+        ):
+            raise ValueError(
+                "prealloc_timeout_seconds must be positive and finite, "
+                f"got {self.prealloc_timeout_seconds}"
+            )
+        else:
+            pass
         self.send_queue_size = queue_size
         self.send_queues: dict[str, asyncio.Queue[PayloadSendJob | StreamSendJob]] = {}
         self.send_workers: dict[str, asyncio.Task[None]] = {}
@@ -157,18 +184,26 @@ class CommEngine:
         self.kv_ready: dict[str, asyncio.Future[KVTransferReadyMessage]] = {}
         self.outbound_kv_requests: dict[str, str] = {}
         self.inbound_kv: dict[str, InboundKVTransfer] = {}
-        self.aborted_kv_requests: set[str] = set()
+        self.pending_inbound_kv_transfers: set[str] = set()
+        self.aborted_kv_requests: dict[str, None] = {}
         self.rank_recv_socket: PullSocket | None = None
         self.rank_send_sockets: dict[str, PushSocket] = {}
         self.rank_control_task: asyncio.Task[None] | None = None
+        self.rank_prepare_tasks: set[asyncio.Task[None]] = set()
         self.rank_receive_tasks: set[asyncio.Task[None]] = set()
         self.task_done_callback = task_done_callback
+        self.on_kv_commit = on_kv_commit
         self.closed = False
+
+    @property
+    def prepare_timeout_seconds(self) -> float:
+        return self.prealloc_timeout_seconds + self.ack_timeout_s
 
     async def start(self) -> None:
         """Start this process's rank-local communication endpoint."""
 
-        if not self.rank_endpoints or self.rank_recv_socket is not None:
+        stage_endpoints = self.rank_endpoints.get(self.router.stage_name)
+        if not stage_endpoints or self.rank_recv_socket is not None:
             return
         else:
             pass
@@ -176,9 +211,13 @@ class CommEngine:
             raise RuntimeError("comm engine is closed")
         else:
             pass
-        recv_socket = PullSocket(
-            self.rank_endpoints[self.router.stage_name][self.tp_rank], bind=True
-        )
+        if self.kv_pools:
+            relay = self.relay(TransportKind.CUDA_IPC)
+            for pool in self.kv_pools.values():
+                relay.register_kv_pool(pool)
+        else:
+            pass
+        recv_socket = PullSocket(stage_endpoints[self.tp_rank], bind=True)
         await recv_socket.start()
         self.rank_recv_socket = recv_socket
         task = asyncio.create_task(self.run_rank_control(recv_socket))
@@ -407,10 +446,12 @@ class CommEngine:
         target_pool_id: str,
         to_stage: str,
         metadata: Mapping[str, object] | None = None,
+        replica_bindings: Mapping[str, int] | None = None,
         transfer_id: str | None = None,
         lease: KVPageLease | None = None,
+        ready_event: torch.Event | None = None,
     ) -> DataRef:
-        """Transfer this rank's pages to the same rank of ``to_stage``."""
+        """Transfer this rank's pages to the same rank of to_stage."""
         from_stage = self.router.stage_name
         transfer_id = transfer_id or (
             f"{request_id}:kv_pages:{from_stage}:{to_stage}:{uuid4().hex}"
@@ -484,11 +525,12 @@ class CommEngine:
                     source_page_indices=source_page_indices,
                     source_layout=pool.layout,
                     metadata=dict(metadata or {}),
+                    replica_bindings=dict(replica_bindings or {}),
                 ),
             )
             ready = await asyncio.wait_for(
                 ready_future,
-                timeout=self.ack_timeout_s,
+                timeout=self.prepare_timeout_seconds,
             )
             _comm_trace(
                 "comm_kv_ready",
@@ -497,21 +539,31 @@ class CommEngine:
                 error=ready.error,
                 wait_ms=round(_comm_elapsed_ms(prepare_start), 6),
             )
-            if not ready.success:
-                raise RuntimeError(ready.error)
-            else:
-                pass
             if request_id in self.aborted_kv_requests:
                 raise KVTransferCancelled(
                     f"KV transfer request {request_id!r} was cleaned up"
                 )
             else:
                 pass
+            if not ready.success:
+                if ready.cancelled:
+                    raise KVTransferCancelled(
+                        ready.error or f"KV transfer {transfer_id} was cancelled"
+                    )
+                elif AdminDroppedRequestError.matches(ready.error):
+                    raise AdminDroppedRequestError()
+                else:
+                    raise QueueFullError.from_message(ready.error)
+            else:
+                pass
             op = await relay.put_kv_pages(
                 source_pool_id=source_pool_id,
                 source_page_indices=source_page_indices,
                 destination_ref=ready.destination_ref,
+                destination_pool_id=ready.destination_pool_id,
+                destination_page_indices=ready.destination_page_indices,
                 transfer_id=transfer_id,
+                ready_event=ready_event,
             )
             if request_id in self.aborted_kv_requests:
                 raise KVTransferCancelled(
@@ -592,17 +644,12 @@ class CommEngine:
             while not self.closed:
                 message = await recv_socket.recv()
                 if isinstance(message, KVTransferPrepareMessage):
-                    if message.request_id in self.aborted_kv_requests:
-                        ready = self.kv_ready_failure(
-                            message,
-                            f"request {message.request_id!r} was aborted",
-                        )
-                    else:
-                        ready = self.prepare_kv_receive(message)
-                    await send_to_endpoint(
-                        self.rank_send_sockets,
-                        self.rank_endpoints[message.from_stage][self.tp_rank],
-                        ready,
+                    task = asyncio.create_task(self.handle_rank_kv_prepare(message))
+                    self.rank_prepare_tasks.add(task)
+                    task.add_done_callback(self.rank_prepare_tasks.discard)
+                    self.track_task(
+                        task,
+                        f"KV prepare {message.request_id}:{message.from_stage}",
                     )
                     continue
                 else:
@@ -646,7 +693,7 @@ class CommEngine:
             error = RuntimeError(f"request {message.request_id!r} was aborted")
         else:
             try:
-                await self.read_data(
+                await self.read_kv_pages(
                     relay=self.relay(data_ref.transport),
                     request_id=message.request_id,
                     data_ref=data_ref,
@@ -674,12 +721,110 @@ class CommEngine:
             ),
         )
 
-    def prepare_kv_receive(
+    def abort_unstarted_inbound_kv(
+        self,
+        transfer_id: str,
+        error: BaseException,
+        *,
+        reason: str,
+    ) -> None:
+        state = self.inbound_kv.get(transfer_id)
+        if state is None or state.copy_started:
+            return
+        else:
+            pass
+        state.cancel_orphan_timer()
+        self.inbound_kv.pop(transfer_id, None)
+        with suppress(Exception):
+            state.receiver.abort(state.request, state.destination, error)
+        _comm_trace(
+            "comm_kv_prepare_aborted",
+            request_id=state.request.request_id,
+            transfer_id=transfer_id,
+            from_stage=state.request.from_stage,
+            destination_pool_id=state.destination.pool_id,
+            num_pages=len(state.destination.page_indices),
+            reason=reason,
+            error=type(error).__name__,
+        )
+
+    async def handle_rank_kv_prepare(
+        self,
+        message: KVTransferPrepareMessage,
+    ) -> None:
+        ready = await self.prepare_kv_receive(message)
+        if self.closed:
+            return
+        else:
+            pass
+        try:
+            await send_to_endpoint(
+                self.rank_send_sockets,
+                self.rank_endpoints[message.from_stage][self.tp_rank],
+                ready,
+            )
+        except asyncio.CancelledError as exc:
+            if ready.success:
+                self.abort_unstarted_inbound_kv(
+                    message.transfer_id,
+                    exc,
+                    reason="cancelled",
+                )
+            else:
+                pass
+            raise
+        except Exception as exc:
+            if ready.success:
+                self.abort_unstarted_inbound_kv(
+                    message.transfer_id,
+                    exc,
+                    reason="ready_send_failed",
+                )
+            else:
+                pass
+            if not self.closed:
+                logger.warning(
+                    f"Failed to send KV transfer ready for {message.request_id!r} "
+                    f"to {message.from_stage!r}: {exc}"
+                )
+            else:
+                pass
+            return
+
+    def expire_orphan_inbound_kv(self, transfer_id: str) -> None:
+        state = self.inbound_kv.get(transfer_id)
+        if state is None or state.copy_started:
+            return
+        else:
+            pass
+        state.orphan_timer = None
+        logger.warning(
+            f"Expiring orphaned inbound KV transfer {transfer_id!r} for "
+            f"request {state.request.request_id!r} on {self.router.stage_name!r} "
+            f"after {self.ack_timeout_s:g}s without DataReady"
+        )
+        self.abort_unstarted_inbound_kv(
+            transfer_id,
+            TimeoutError(
+                f"inbound KV transfer {transfer_id!r} timed out waiting for DataReady"
+            ),
+            reason="orphan_timeout",
+        )
+
+    async def prepare_kv_receive(
         self,
         message: KVTransferPrepareMessage,
     ) -> KVTransferReadyMessage:
-        if message.transfer_id in self.inbound_kv:
-            raise RuntimeError(f"duplicate inbound KV transfer {message.transfer_id!r}")
+        if self.closed:
+            return self.kv_ready_failure(message, "comm engine is closed")
+        else:
+            pass
+        if message.request_id in self.aborted_kv_requests:
+            return self.kv_ready_failure(
+                message,
+                f"request {message.request_id!r} was aborted",
+                cancelled=True,
+            )
         else:
             pass
         transport = self.router.inbound(message.from_stage)
@@ -700,35 +845,77 @@ class CommEngine:
             )
         else:
             pass
+        target_pool = self.kv_pools.get(message.target_pool_id)
+        if target_pool is None:
+            return self.kv_ready_failure(
+                message,
+                f"destination KV pool {message.target_pool_id!r} is not registered",
+            )
+        else:
+            pass
+        if not message.source_layout.compatible_with(target_pool.layout):
+            return self.kv_ready_failure(
+                message,
+                "source and destination KV pool layouts do not match",
+            )
+        else:
+            pass
+        if not message.source_page_indices:
+            return self.kv_ready_failure(
+                message,
+                "KV page indices must not be empty",
+            )
+        else:
+            pass
+        if (
+            message.transfer_id in self.inbound_kv
+            or message.transfer_id in self.pending_inbound_kv_transfers
+        ):
+            return self.kv_ready_failure(
+                message,
+                f"duplicate inbound KV transfer {message.transfer_id!r}",
+            )
+        else:
+            pass
 
         destination: KVPageDestination | None = None
+        self.pending_inbound_kv_transfers.add(message.transfer_id)
         try:
-            destination = receiver.reserve(message)
+            destination = await receiver.reserve(
+                message,
+                timeout_seconds=self.prealloc_timeout_seconds,
+            )
+            if self.closed:
+                raise RuntimeError("comm engine is closed")
+            elif message.request_id in self.aborted_kv_requests:
+                raise KVTransferCancelled(f"request {message.request_id!r} was aborted")
+            else:
+                pass
             if len(destination.page_indices) != len(message.source_page_indices):
                 raise ValueError(
                     "KV receiver must reserve one destination page per source page"
                 )
             else:
                 pass
-            pool = self.kv_pools.get(destination.pool_id)
-            if pool is None:
-                raise KeyError(
-                    f"destination KV pool {destination.pool_id!r} is not registered"
-                )
+            if destination.pool_id == message.target_pool_id:
+                pool = target_pool
             else:
-                pass
+                pool = self.kv_pools.get(destination.pool_id)
+                if pool is None:
+                    raise KeyError(
+                        f"destination KV pool {destination.pool_id!r} is not registered"
+                    )
+                else:
+                    pass
+                if not message.source_layout.compatible_with(pool.layout):
+                    raise ValueError(
+                        "source and destination KV pool layouts do not match"
+                    )
+                else:
+                    pass
             pool.validate_page_indices(destination.page_indices)
-            if not message.source_layout.compatible_with(pool.layout):
-                raise ValueError("source and destination KV pool layouts do not match")
-            else:
-                pass
             relay.register_kv_pool(pool)
             relay_info = relay.prepare_kv_destination(destination.pool_id)
-            self.inbound_kv[message.transfer_id] = InboundKVTransfer(
-                request=message,
-                receiver=receiver,
-                destination=destination,
-            )
             _comm_trace(
                 "comm_kv_prepare_ready",
                 request_id=message.request_id,
@@ -737,6 +924,17 @@ class CommEngine:
                 to_stage=message.to_stage,
                 destination_pool_id=destination.pool_id,
                 num_pages=len(destination.page_indices),
+            )
+            state = InboundKVTransfer(
+                request=message,
+                receiver=receiver,
+                destination=destination,
+            )
+            self.inbound_kv[message.transfer_id] = state
+            state.orphan_timer = asyncio.get_running_loop().call_later(
+                self.ack_timeout_s,
+                self.expire_orphan_inbound_kv,
+                message.transfer_id,
             )
             return KVTransferReadyMessage(
                 request_id=message.request_id,
@@ -748,10 +946,25 @@ class CommEngine:
                 destination_page_indices=destination.page_indices,
                 destination_ref=relay_info,
             )
+        except asyncio.CancelledError as exc:
+            # note (YzXiao): abort even when destination is None so a same-tick reservation wakeup cannot leak pages or row credits.
+            with suppress(Exception):
+                receiver.abort(message, destination, exc)
+            raise
+        except KVTransferCancelled as exc:
+            with suppress(Exception):
+                receiver.abort(message, destination, exc)
+            return self.kv_ready_failure(
+                message,
+                str(exc) or type(exc).__name__,
+                cancelled=True,
+            )
         except Exception as exc:
             with suppress(Exception):
                 receiver.abort(message, destination, exc)
             return self.kv_ready_failure(message, str(exc) or type(exc).__name__)
+        finally:
+            self.pending_inbound_kv_transfers.discard(message.transfer_id)
 
     async def read_kv_pages(
         self,
@@ -775,6 +988,7 @@ class CommEngine:
 
         read_start = _comm_now_ns()
         try:
+            state.cancel_orphan_timer()
             state.copy_started = True
             op = await relay.get_kv_pages(
                 data_ref.buffer.info,
@@ -790,6 +1004,10 @@ class CommEngine:
             else:
                 pass
             state.receiver.commit(state.request, state.destination)
+            if self.on_kv_commit is not None:
+                self.on_kv_commit(state.request)
+            else:
+                pass
             _comm_trace(
                 "comm_kv_read_complete",
                 transfer_id=data_ref.object_id,
@@ -816,6 +1034,8 @@ class CommEngine:
     def kv_ready_failure(
         message: KVTransferPrepareMessage,
         error: str,
+        *,
+        cancelled: bool = False,
     ) -> KVTransferReadyMessage:
         _comm_trace(
             "comm_kv_prepare_rejected",
@@ -834,16 +1054,21 @@ class CommEngine:
             to_stage=message.from_stage,
             success=False,
             error=error,
+            cancelled=cancelled,
         )
 
     def cleanup(self, request_id: str) -> None:
-        self.aborted_kv_requests.add(request_id)
+        self.aborted_kv_requests.pop(request_id, None)
+        self.aborted_kv_requests[request_id] = None
         if len(self.aborted_kv_requests) > 10000:
             excess = len(self.aborted_kv_requests) - 5000
             for stale_request_id in list(self.aborted_kv_requests)[:excess]:
-                self.aborted_kv_requests.discard(stale_request_id)
+                self.aborted_kv_requests.pop(stale_request_id, None)
         else:
             pass
+        for receiver in self.kv_receivers.values():
+            with suppress(Exception):
+                receiver.cancel_request_waiters(request_id)
         error = RuntimeError(f"KV transfer request {request_id!r} was cleaned up")
         for transfer_id, state in list(self.inbound_kv.items()):
             if state.request.request_id != request_id:
@@ -855,9 +1080,11 @@ class CommEngine:
                 continue
             else:
                 pass
-            with suppress(Exception):
-                state.receiver.abort(state.request, state.destination, error)
-            self.inbound_kv.pop(transfer_id, None)
+            self.abort_unstarted_inbound_kv(
+                transfer_id,
+                error,
+                reason="cleanup",
+            )
         for transfer_id, outbound_request_id in list(self.outbound_kv_requests.items()):
             if outbound_request_id != request_id:
                 continue
@@ -893,6 +1120,12 @@ class CommEngine:
             await asyncio.gather(rank_control_task, return_exceptions=True)
         else:
             pass
+        rank_prepare_tasks = tuple(self.rank_prepare_tasks)
+        for task in rank_prepare_tasks:
+            task.cancel()
+        await asyncio.gather(*rank_prepare_tasks, return_exceptions=True)
+        self.rank_prepare_tasks.clear()
+        self.pending_inbound_kv_transfers.clear()
         rank_receive_tasks = tuple(self.rank_receive_tasks)
         for task in rank_receive_tasks:
             task.cancel()
@@ -913,7 +1146,14 @@ class CommEngine:
         for object_id in list(self.pending):
             self.fail_pending(object_id, RuntimeError("comm engine closed"))
         close_error = RuntimeError("comm engine closed")
+        for transfer_id in list(self.inbound_kv):
+            self.abort_unstarted_inbound_kv(
+                transfer_id,
+                close_error,
+                reason="close",
+            )
         for state in self.inbound_kv.values():
+            state.cancel_orphan_timer()
             with suppress(Exception):
                 state.receiver.abort(state.request, state.destination, close_error)
         self.inbound_kv.clear()

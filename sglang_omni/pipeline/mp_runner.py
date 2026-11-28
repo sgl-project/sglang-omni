@@ -34,10 +34,11 @@ from sglang_omni.config.schema import (
 from sglang_omni.config.topology import (
     ProcessTopologyPlan,
     resolve_coordinator_max_in_flight,
+    resolve_tracked_binding_processes,
 )
 from sglang_omni.mps.runtime import MpsPipelineRuntime, create_for_pipeline
 from sglang_omni.pipeline import Coordinator
-from sglang_omni.pipeline.replicas import ReplicaTopology
+from sglang_omni.pipeline.replicas import LeastInFlightBindingPolicy, ReplicaTopology
 from sglang_omni.pipeline.runtime_config import (
     IpcRuntimeDir,
     PipelineRuntimePrep,
@@ -82,6 +83,7 @@ class StageLaunchKwargs(TypedDict):
     factory: str
     allow_child_processes: bool
     next_stages: str | list[str] | None
+    kv_transfer_to: str | None
     route_fn: str | None
     is_terminal: bool
     env_defaults: dict[str, str]
@@ -139,6 +141,7 @@ def build_stage_groups(
             for tp_rank in range(stage.tp_size)
         )
         for stage in stages_cfg
+        if f"comm_{stage.name}_rank0" in endpoints
     }
     stream_receivers: set[str] = set()
     for scfg in stages_cfg:
@@ -186,6 +189,7 @@ def build_stage_groups(
             factory=stage_cfg.factory_path,
             allow_child_processes=stage_cfg.allow_child_processes,
             next_stages=stage_cfg.next,
+            kv_transfer_to=stage_cfg.kv_transfer_to,
             route_fn=stage_cfg.route_fn,
             is_terminal=stage_cfg.terminal,
             env_defaults=config.resolved_stage_env_defaults(logical_stage_name),
@@ -385,6 +389,10 @@ def resolve_same_process_targets(
         )
     else:
         pass
+    if stage_cfg.kv_transfer_to is not None:
+        raw_targets.append(stage_cfg.kv_transfer_to)
+    else:
+        pass
     raw_targets.extend(stage_cfg.stream_to)
 
     same_process_targets: set[str] = set()
@@ -425,7 +433,7 @@ def build_single_stage_spec(
     stage_kwargs: StageLaunchKwargs,
     http_socket_path: str | None = None,
 ) -> StageLaunchConfig:
-    comm_config = resolve_comm_config(stage_cfg, gpu_id=gpu_id)
+    comm_config = resolve_comm_config(stage_cfg, config=config, gpu_id=gpu_id)
     return StageLaunchConfig(
         role="single",
         tp_rank=0,
@@ -475,7 +483,7 @@ def build_tp_stage_specs(
         factory_kwargs["tp_size"] = stage_cfg.tp_size
         factory_kwargs["nccl_port"] = nccl_port
 
-        comm_config = resolve_comm_config(stage_cfg, gpu_id=gpu_id)
+        comm_config = resolve_comm_config(stage_cfg, config=config, gpu_id=gpu_id)
 
         if tp_rank == 0:
             specs.append(
@@ -535,12 +543,23 @@ def build_tp_stage_specs(
 def resolve_comm_config(
     stage_cfg: StageConfig,
     *,
+    config: PipelineConfig,
     gpu_id: int | None,
-) -> dict[str, int | str | None]:
+) -> dict[str, int | float | str | None]:
     """Build stage-local communication options from placement."""
     comm_config = build_comm_config(stage_cfg)
     if stage_cfg.gpu is not None:
         comm_config["gpu_id"] = gpu_id
+    else:
+        pass
+    if stage_cfg.kv_transfer_to is not None:
+        target_stage = config.stage_named(stage_cfg.kv_transfer_to)
+        # note (YzXiao): mirror Decode's prealloc timeout onto Prefill as a single knob.
+        comm_config["prealloc_timeout_seconds"] = (
+            target_stage.comm.prealloc_timeout_seconds
+            if target_stage.comm is not None
+            else None
+        )
     else:
         pass
     return comm_config
@@ -724,6 +743,15 @@ class MultiProcessPipelineRunner:
                 self.config,
                 logical_process_plan=prep.logical_process_plan,
             )
+            tracked_processes = resolve_tracked_binding_processes(
+                self.config,
+                prep.logical_process_plan,
+            )
+            binding_policy = (
+                LeastInFlightBindingPolicy(tracked_processes=tracked_processes)
+                if tracked_processes
+                else None
+            )
             stream_delivery = self.config.stream_delivery
             self._coordinator = Coordinator(  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
                 completion_endpoint=prep.endpoints["completion"],
@@ -733,6 +761,7 @@ class MultiProcessPipelineRunner:
                 terminal_stages_resolver=terminal_stages_resolver,
                 replica_topology=prep.replica_topology,
                 logical_process_plan=prep.logical_process_plan,
+                binding_policy=binding_policy,
                 max_in_flight=max_in_flight,
                 max_total_backlog_bytes=stream_delivery.max_total_backlog_bytes,
                 session_route=(

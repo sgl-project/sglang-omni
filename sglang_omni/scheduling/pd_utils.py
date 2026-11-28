@@ -4,193 +4,262 @@
 from __future__ import annotations
 
 import _thread
-import dataclasses
 import inspect
 import logging
 import queue
 import threading
 from array import array
-from collections.abc import Callable, Generator
+from collections.abc import Generator, Sequence
 from contextlib import contextmanager
-from functools import wraps
-from typing import Literal, ParamSpec, TypeVar
+from typing import Protocol
 
-import msgspec
 import torch
 from sglang.srt.managers.schedule_batch import Req
 from sglang.srt.mem_cache.allocator.base import BaseTokenToKVPoolAllocator
-from sglang.srt.mem_cache.memory_pool import KVCache, ReqToTokenPool
+from sglang.srt.mem_cache.allocator.paged import PagedTokenToKVPoolAllocator
+from sglang.srt.mem_cache.allocator.token import TokenToKVPoolAllocator
+from sglang.srt.mem_cache.memory_pool import (
+    KVCache,
+    MHATokenToKVPool,
+    MLATokenToKVPool,
+    ReqToTokenPool,
+)
+from sglang.srt.model_executor.pool_configurator import MemoryPoolConfig
 from sglang.srt.sampling.sampling_params import SamplingParams
 
-from sglang_omni.comm import KVBufferRegion, KVPageDestination, KVPool
-from sglang_omni.proto import KVTransferPrepareMessage, StagePayload
+from sglang_omni.comm.kv_transfer import KVBufferRegion, KVPool
+from sglang_omni.proto.request import StagePayload
 from sglang_omni.proto.session import find_session_operation
+from sglang_omni.scheduling.pd_receiver import (
+    DecodeContinuation,
+    ReservedKV,
+    WakeupNotifier,
+    page_indices_from_heads,
+)
 from sglang_omni.scheduling.sglang_backend.request_data import SGLangARRequestData
 
 logger = logging.getLogger(__name__)
 
-CONTINUATION_VERSION = 1
-_TRANSFER_TOMBSTONE_LIMIT = 10000
-Params = ParamSpec("Params")
-ResultT = TypeVar("ResultT")
+SEPARATE_KV_ALLOCATIONS_POOL_TYPE_NAME = (
+    "sglang_omni.model_runner.sglang_model_runner.SeparateKVAllocationsPool"
+)
 
 
 def serialize_kv_allocator(
     allocator: BaseTokenToKVPoolAllocator,
     *,
     lock: _thread.RLock | None = None,
+    sync_cuda_streams: bool = False,
 ) -> _thread.RLock:
-    """Synchronize the existing allocator, including calls through other holders.
+    """Synchronize the existing allocator across threads and CUDA streams.
 
-    Wrap bound methods in place so concrete types and existing aliases survive.
-    An RLock covers nested calls such as free_group_end -> free and alloc ->
-    merge_and_sort_free, which a proxy around only alloc/free would miss.
-    A caller-provided RLock can cover the surrounding lifecycle transition too.
-    Install once, before the Decode scheduler or comm threads start.
+    Wrap concrete allocator methods in place so concrete types and existing aliases survive; an RLock covers nested calls while optional CUDA event ordering serializes cross-stream free-list mutations without touching CUDA streams on host queries.
     """
     if lock is None:
         lock = threading.RLock()
     else:
         pass
 
-    def synchronized(
-        method: Callable[Params, ResultT],
-    ) -> Callable[Params, ResultT | None]:
-        @wraps(method)
-        def call(*args: Params.args, **kwargs: Params.kwargs) -> ResultT | None:
-            with lock:
-                return method(*args, **kwargs)
+    use_cuda_sync = (
+        sync_cuda_streams
+        and torch.cuda.is_available()
+        and str(allocator.device).startswith("cuda")
+    )
+    sync_event: torch.cuda.Event | None = None
+    if use_cuda_sync:
+        with torch.cuda.device(allocator.device):
+            sync_event = torch.cuda.Event()
+    else:
+        pass
+    last_stream: torch.cuda.Stream | None = None
+    gpu_sync_depth = 0
 
-        return call
+    @contextmanager
+    def gpu_sync_scope() -> Generator[None, None, None]:
+        nonlocal gpu_sync_depth, last_stream
+        with lock:
+            if sync_event is not None and gpu_sync_depth == 0:
+                current_stream = torch.cuda.current_stream(allocator.device)
+                if last_stream is not None and current_stream != last_stream:
+                    current_stream.wait_event(sync_event)
+                else:
+                    pass
+            else:
+                pass
+            gpu_sync_depth += 1
+            try:
+                yield
+            finally:
+                gpu_sync_depth -= 1
+                if sync_event is not None and gpu_sync_depth == 0:
+                    current_stream = torch.cuda.current_stream(allocator.device)
+                    sync_event.record(current_stream)
+                    last_stream = current_stream
+                else:
+                    pass
 
-    for name in dir(allocator):
-        method = getattr(allocator, name)
-        if not name.startswith("_") and inspect.ismethod(method):
-            setattr(allocator, name, synchronized(method))
-        else:
-            pass
+    raw_available_size = allocator.available_size
+    raw_get_kvcache = allocator.get_kvcache
+    raw_alloc = allocator.alloc
+    raw_free = allocator.free
+    raw_free_segment = allocator.free_segment
+    raw_free_segments = allocator.free_segments
+    raw_free_full = allocator.free_full
+    raw_free_full_segment = allocator.free_full_segment
+    raw_free_full_segments = allocator.free_full_segments
+    raw_free_group_begin = allocator.free_group_begin
+    raw_free_group_end = allocator.free_group_end
+    raw_merge_and_sort_free = allocator.merge_and_sort_free
+    raw_get_all_free_pages = allocator.get_all_free_pages
+    raw_clear = allocator.clear
+    raw_resize = allocator.resize
+
+    def synchronized_available_size() -> int:
+        with lock:
+            return raw_available_size()
+
+    def synchronized_get_kvcache() -> KVCache | None:
+        with lock:
+            return raw_get_kvcache()
+
+    def synchronized_alloc(need_size: int) -> torch.Tensor | None:
+        with gpu_sync_scope():
+            return raw_alloc(need_size)
+
+    def synchronized_free(free_index: torch.Tensor) -> None:
+        with gpu_sync_scope():
+            raw_free(free_index)
+
+    def synchronized_free_segment(free_index: torch.Tensor, *, start_pos: int) -> None:
+        with gpu_sync_scope():
+            raw_free_segment(free_index, start_pos=start_pos)
+
+    def synchronized_free_segments(
+        segments: Sequence[tuple[torch.Tensor, int]],
+    ) -> None:
+        with gpu_sync_scope():
+            raw_free_segments(segments)
+
+    def synchronized_free_full(free_index: torch.Tensor) -> None:
+        with gpu_sync_scope():
+            raw_free_full(free_index)
+
+    def synchronized_free_full_segment(
+        free_index: torch.Tensor, *, start_pos: int
+    ) -> None:
+        with gpu_sync_scope():
+            raw_free_full_segment(free_index, start_pos=start_pos)
+
+    def synchronized_free_full_segments(
+        segments: Sequence[tuple[torch.Tensor, int]],
+    ) -> None:
+        with gpu_sync_scope():
+            raw_free_full_segments(segments)
+
+    def synchronized_free_group_begin() -> None:
+        with gpu_sync_scope():
+            raw_free_group_begin()
+
+    def synchronized_free_group_end() -> None:
+        with gpu_sync_scope():
+            raw_free_group_end()
+
+    def synchronized_merge_and_sort_free() -> None:
+        with gpu_sync_scope():
+            raw_merge_and_sort_free()
+
+    def synchronized_get_all_free_pages() -> torch.Tensor | None:
+        with gpu_sync_scope():
+            return raw_get_all_free_pages()
+
+    def synchronized_clear() -> None:
+        with gpu_sync_scope():
+            raw_clear()
+
+    def synchronized_resize(config: MemoryPoolConfig) -> None:
+        with gpu_sync_scope():
+            raw_resize(config)
+
+    allocator.available_size = synchronized_available_size
+    allocator.get_kvcache = synchronized_get_kvcache
+    allocator.alloc = synchronized_alloc
+    allocator.free = synchronized_free
+    allocator.free_segment = synchronized_free_segment
+    allocator.free_segments = synchronized_free_segments
+    allocator.free_full = synchronized_free_full
+    allocator.free_full_segment = synchronized_free_full_segment
+    allocator.free_full_segments = synchronized_free_full_segments
+    allocator.free_group_begin = synchronized_free_group_begin
+    allocator.free_group_end = synchronized_free_group_end
+    allocator.merge_and_sort_free = synchronized_merge_and_sort_free
+    allocator.get_all_free_pages = synchronized_get_all_free_pages
+    allocator.clear = synchronized_clear
+    allocator.resize = synchronized_resize
+
+    if isinstance(allocator, (TokenToKVPoolAllocator, PagedTokenToKVPoolAllocator)):
+        raw_free_page_ids = allocator.free_page_ids
+
+        def synchronized_free_page_ids(page_ids: torch.Tensor) -> None:
+            with gpu_sync_scope():
+                raw_free_page_ids(page_ids)
+
+        allocator.free_page_ids = synchronized_free_page_ids
+    else:
+        pass
+
+    if isinstance(allocator, PagedTokenToKVPoolAllocator):
+        raw_alloc_extend = allocator.alloc_extend
+        raw_alloc_decode = allocator.alloc_decode
+
+        def synchronized_alloc_extend(
+            prefix_lens: torch.Tensor,
+            prefix_lens_cpu: torch.Tensor,
+            seq_lens: torch.Tensor,
+            seq_lens_cpu: torch.Tensor,
+            last_loc: torch.Tensor,
+            extend_num_tokens: int,
+            num_new_pages: int | None = None,
+        ) -> torch.Tensor | None:
+            with gpu_sync_scope():
+                return raw_alloc_extend(
+                    prefix_lens,
+                    prefix_lens_cpu,
+                    seq_lens,
+                    seq_lens_cpu,
+                    last_loc,
+                    extend_num_tokens,
+                    num_new_pages,
+                )
+
+        def synchronized_alloc_decode(
+            seq_lens: torch.Tensor,
+            seq_lens_cpu: torch.Tensor,
+            last_loc: torch.Tensor,
+        ) -> torch.Tensor | None:
+            with gpu_sync_scope():
+                return raw_alloc_decode(seq_lens, seq_lens_cpu, last_loc)
+
+        allocator.alloc_extend = synchronized_alloc_extend
+        allocator.alloc_decode = synchronized_alloc_decode
+    else:
+        pass
+
     return lock
 
 
-@dataclasses.dataclass(frozen=True)
-class DecodeContinuation:
-    """Serializable request state needed after the Prefill KV has arrived."""
-
-    request_id: str
-    transfer_id: str
-    origin_input_ids: list[int]
-    output_ids: list[int]
-    vocab_size: int
-    sampling_params: dict[str, object]
-    stage_payload: dict[str, object]
-    origin_input_ids_unpadded: list[int] | None = None
-    eos_token_ids: list[int] | None = None
-    cached_tokens: int = 0
-    cached_tokens_device: int = 0
-    cached_tokens_host: int = 0
-    cached_tokens_storage: int = 0
-    mm_image_tokens: int = 0
-    mm_audio_tokens: int = 0
-    mm_video_tokens: int = 0
-    return_logprob: bool = False
-    output_token_logprobs: list[list[float | int]] = dataclasses.field(
-        default_factory=list
-    )
-    top_logprobs_num: int = 0
-    token_ids_logprob: list[int] | None = None
-    logprob_start_len: int = -1
-    return_hidden_states: bool | Literal["last"] = False
-    return_sampling_mask: bool = False
-    return_routed_experts: bool = False
-    return_indexer_topk: bool = False
-    multimodal_resume: dict[str, object] | None = None
-    priority: int | None = None
-    version: int = CONTINUATION_VERSION
-
-    def __post_init__(self) -> None:
-        if self.version != CONTINUATION_VERSION:
-            raise ValueError(f"unsupported decode continuation version {self.version}")
-        else:
-            pass
-        if not self.request_id or not self.transfer_id:
-            raise ValueError("decode continuation ids must be non-empty")
-        else:
-            pass
-        if not self.output_ids:
-            raise ValueError("decode continuation requires the Prefill token")
-        else:
-            pass
-        if self.vocab_size <= 0:
-            raise ValueError("decode continuation vocab_size must be positive")
-        else:
-            pass
-        if self.priority is not None and type(self.priority) is not int:
-            raise ValueError("decode continuation priority must be an integer or None")
-        else:
-            pass
-        for name in ("sampling_params", "stage_payload"):
-            if not isinstance(getattr(self, name), dict):
-                raise TypeError(f"decode continuation {name} must be a mapping")
-            else:
-                pass
-        if self.multimodal_resume is not None and not isinstance(
-            self.multimodal_resume, dict
-        ):
-            raise TypeError("decode continuation multimodal_resume must be a mapping")
-        else:
-            pass
-        hidden_states = self.return_hidden_states
-        if not isinstance(hidden_states, bool) and hidden_states != "last":
-            raise ValueError(
-                f"unsupported decode continuation "
-                f"return_hidden_states {hidden_states!r}"
-            )
-        else:
-            pass
-
-    def encode(self) -> bytes:
-        return msgspec.msgpack.encode(dataclasses.asdict(self))
-
-    @classmethod
-    def decode(cls, value: bytes) -> DecodeContinuation:
-        try:
-            decoded = msgspec.msgpack.decode(value)
-        except Exception as exc:
-            raise ValueError("invalid decode continuation encoding") from exc
-        if not isinstance(decoded, dict):
-            raise TypeError("decode continuation must contain a mapping")
-        else:
-            pass
-        expected = {field.name for field in dataclasses.fields(cls)}
-        unknown = set(decoded) - expected
-        if unknown:
-            raise ValueError(f"unknown decode continuation fields: {unknown}")
-        else:
-            pass
-        try:
-            return cls(**decoded)
-        except TypeError as exc:
-            raise ValueError(f"invalid decode continuation: {exc}") from exc
+class StateBuilder(Protocol):
+    def __call__(
+        self, request: Req
+    ) -> tuple[dict[str, object], dict[str, object] | None, list[int]]: ...
 
 
-@dataclasses.dataclass(frozen=True)
-class ReservedKV:
-    slots: torch.Tensor
-    page_indices: tuple[int, ...]
-    seq_len: int
-
-
-@dataclasses.dataclass(frozen=True)
-class DecodeAdmission:
-    continuation: DecodeContinuation
-    allocation: ReservedKV
-    replica_bindings: dict[str, int] = dataclasses.field(default_factory=dict)
-
-
-StateBuilder = Callable[
-    [Req], tuple[dict[str, object], dict[str, object] | None, list[int]]
-]
-StateRestorer = Callable[[Req, SGLangARRequestData, dict[str, object] | None], None]
+class StateRestorer(Protocol):
+    def __call__(
+        self,
+        request: Req,
+        request_data: SGLangARRequestData,
+        multimodal_resume: dict[str, object] | None,
+    ) -> None: ...
 
 
 def continuation_from_req(
@@ -208,19 +277,18 @@ def continuation_from_req(
         raise NotImplementedError("PD does not support custom logit processors")
     else:
         pass
-    data = (
-        req.omni_data
-    )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+    request_data = req.omni_data
     if (
         req.session is not None
-        or find_session_operation(data.stage_payload.request.metadata) is not None
+        or find_session_operation(request_data.stage_payload.request.metadata)
+        is not None
     ):
         raise NotImplementedError(
             "PD does not transfer retained streaming-session state"
         )
     else:
         pass
-    if data.input_embeds_are_projected or getattr(
+    if request_data.input_embeds_are_projected or getattr(
         req,
         "_input_embeds_are_projected",
         False,  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
@@ -237,37 +305,42 @@ def continuation_from_req(
         pass
 
     payload, multimodal_resume, origin_input_ids = state_builder(req)
+    # note (YzXiao): omit origin_input_ids_unpadded when it aliases or equals req.origin_input_ids so Decode aliases to clean origin_input_ids rather than salted media-cache ids.
+    if (
+        req.origin_input_ids_unpadded is None
+        or req.origin_input_ids_unpadded is req.origin_input_ids
+        or list(req.origin_input_ids_unpadded) == list(req.origin_input_ids)
+    ):
+        origin_input_ids_unpadded = None
+    else:
+        origin_input_ids_unpadded = list(req.origin_input_ids_unpadded)
     return DecodeContinuation(
         request_id=req.rid,
         priority=req.priority,
         transfer_id=transfer_id,
         origin_input_ids=origin_input_ids,
-        origin_input_ids_unpadded=(
-            list(req.origin_input_ids_unpadded)
-            if req.origin_input_ids_unpadded is not None
-            else None
-        ),
+        origin_input_ids_unpadded=origin_input_ids_unpadded,
         output_ids=list(req.output_ids),
-        vocab_size=int(req.vocab_size),
+        vocab_size=req.vocab_size,
         sampling_params=sampling,
         stage_payload=payload,
         eos_token_ids=list(req.eos_token_ids) if req.eos_token_ids else None,
-        cached_tokens=int(req.cached_tokens),
-        cached_tokens_device=int(req.cached_tokens_device),
-        cached_tokens_host=int(req.cached_tokens_host),
-        cached_tokens_storage=int(req.cached_tokens_storage),
-        mm_image_tokens=int(req.mm_image_tokens),
-        mm_audio_tokens=int(req.mm_audio_tokens),
-        mm_video_tokens=int(req.mm_video_tokens),
-        return_logprob=bool(data.return_logprob),
-        output_token_logprobs=list(data.output_token_logprobs),
-        top_logprobs_num=int(req.logprob.top_logprobs_num),
+        cached_tokens=req.cached_tokens,
+        cached_tokens_device=req.cached_tokens_device,
+        cached_tokens_host=req.cached_tokens_host,
+        cached_tokens_storage=req.cached_tokens_storage,
+        mm_image_tokens=req.mm_image_tokens,
+        mm_audio_tokens=req.mm_audio_tokens,
+        mm_video_tokens=req.mm_video_tokens,
+        return_logprob=bool(request_data.return_logprob),
+        output_token_logprobs=list(request_data.output_token_logprobs),
+        top_logprobs_num=req.logprob.top_logprobs_num,
         token_ids_logprob=(
             list(req.logprob.token_ids_logprob)
             if req.logprob.token_ids_logprob is not None
             else None
         ),
-        logprob_start_len=int(req.logprob_start_len),
+        logprob_start_len=req.logprob_start_len,
         return_hidden_states=req.return_hidden_states,
         return_sampling_mask=bool(req.return_sampling_mask),
         return_routed_experts=bool(req.return_routed_experts),
@@ -276,11 +349,7 @@ def continuation_from_req(
     )
 
 
-class DecodeRequestPoolExhausted(RuntimeError):
-    """The KV is committed, but no request-table row is currently available."""
-
-
-def req_from_continuation(
+def request_from_continuation(
     continuation: DecodeContinuation,
     allocation: ReservedKV,
     *,
@@ -289,16 +358,13 @@ def req_from_continuation(
 ) -> Req:
     """Install a transferred request as SGLang's existing PREBUILT input."""
 
-    from sglang.srt.managers.schedule_batch import Req
-    from sglang.srt.sampling.sampling_params import SamplingParams
-
     sampling_values = dict(continuation.sampling_params)
     if isinstance(sampling_values.get("stop_token_ids"), list):
         sampling_values["stop_token_ids"] = set(sampling_values["stop_token_ids"])
     else:
         pass
     sampling_params = SamplingParams(**sampling_values)
-    req = Req(
+    request = Req(
         rid=continuation.request_id,
         priority=continuation.priority,
         origin_input_text="",
@@ -324,58 +390,68 @@ def req_from_continuation(
         ),
         vocab_size=continuation.vocab_size,
     )
-    req.output_ids.extend(continuation.output_ids)
-    req.cached_tokens = continuation.cached_tokens
-    req.already_computed = continuation.cached_tokens
-    req.cached_tokens_device = continuation.cached_tokens_device
-    req.cached_tokens_host = continuation.cached_tokens_host
-    req.cached_tokens_storage = continuation.cached_tokens_storage
-    req.mm_image_tokens = continuation.mm_image_tokens
-    req.mm_audio_tokens = continuation.mm_audio_tokens
-    req.mm_video_tokens = continuation.mm_video_tokens
-    req.logprob_start_len = continuation.logprob_start_len
+    request.output_ids.extend(continuation.output_ids)
+    request.cached_tokens = continuation.cached_tokens
+    request.already_computed = continuation.cached_tokens
+    request.cached_tokens_device = continuation.cached_tokens_device
+    request.cached_tokens_host = continuation.cached_tokens_host
+    request.cached_tokens_storage = continuation.cached_tokens_storage
+    request.mm_image_tokens = continuation.mm_image_tokens
+    request.mm_audio_tokens = continuation.mm_audio_tokens
+    request.mm_video_tokens = continuation.mm_video_tokens
+    request.logprob_start_len = continuation.logprob_start_len
 
     payload = StagePayload.from_dict(continuation.stage_payload)
-    data = SGLangARRequestData(
+    request_data = SGLangARRequestData(
         input_ids=torch.tensor(continuation.origin_input_ids, dtype=torch.long),
-        output_ids=req.output_ids,
-        req=req,
+        output_ids=request.output_ids,
+        req=request,
         stage_payload=payload,
-        max_new_tokens=int(sampling_params.max_new_tokens),
+        max_new_tokens=sampling_params.max_new_tokens,
         temperature=float(sampling_params.temperature),
         top_p=float(sampling_params.top_p),
-        top_k=int(sampling_params.top_k),
+        top_k=sampling_params.top_k,
         repetition_penalty=float(sampling_params.repetition_penalty),
         return_logprob=continuation.return_logprob,
         output_token_logprobs=list(continuation.output_token_logprobs),
     )
-    req.omni_data = data  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
-    state_restorer(req, data, continuation.multimodal_resume)
-    if req.tokenizer is None and (
+    request.omni_data = request_data
+    state_restorer(request, request_data, continuation.multimodal_resume)
+    if request.tokenizer is None and (
         sampling_params.stop_strs or sampling_params.stop_regex_strs
     ):
         raise ValueError("PD state_restorer must provide a tokenizer for stop strings")
     else:
         pass
 
-    if req_to_token_pool.alloc([req]) is None:
-        raise DecodeRequestPoolExhausted("decode request pool is exhausted")
+    if req_to_token_pool.alloc([request]) is None:
+        raise RuntimeError("decode request pool row credit violated")
+    else:
+        pass
+    # note (YzXiao): hand off the pre-reserved row credit to the real pool row atomically so free_rows stays invariant.
+    allocation.release_row_credit()
+    if allocation.slots.is_cuda:
+        # note (YzXiao): slots were allocated on allocation_stream; record compute stream usage so the caching allocator cannot recycle them mid-write.
+        allocation.slots.record_stream(
+            torch.cuda.current_stream(allocation.slots.device)
+        )
     else:
         pass
     try:
         req_to_token_pool.write(
-            (req.kv.req_pool_idx, slice(0, allocation.seq_len)), allocation.slots
+            (request.kv.req_pool_idx, slice(0, allocation.sequence_length)),
+            allocation.slots[: allocation.sequence_length],
         )
     except Exception:
-        req_to_token_pool.free(req)
+        req_to_token_pool.free(request)
         raise
-    req.prefix_len = allocation.seq_len
-    req.kv.kv_committed_len = allocation.seq_len
-    req.kv.kv_allocated_len = allocation.seq_len
-    req.extend_end = allocation.seq_len
-    req._omni_terminal_claimed = False  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
-    req._coalesce_enqueue_t = 0.0  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
-    return req
+    request.prefix_len = allocation.sequence_length
+    request.kv.kv_committed_len = allocation.sequence_length
+    request.kv.kv_allocated_len = allocation.sequence_length
+    request.extend_end = allocation.sequence_length
+    request._omni_terminal_claimed = False  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+    request._coalesce_enqueue_t = 0.0  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+    return request
 
 
 def sampling_params_to_dict(params: SamplingParams) -> dict[str, object]:
@@ -406,7 +482,7 @@ def defer_first_token_finish(reqs: list[Req]) -> Generator[None, None, None]:
             params.stop_regex_strs,
         )
         saved.append((params, values))
-        params.max_new_tokens = max(int(params.max_new_tokens), len(req.output_ids) + 2)
+        params.max_new_tokens = max(params.max_new_tokens, len(req.output_ids) + 2)
         params.ignore_eos = True
         params.stop_strs = []
         params.stop_regex_strs = []
@@ -423,241 +499,139 @@ def defer_first_token_finish(reqs: list[Req]) -> Generator[None, None, None]:
 
 
 def build_kv_pool(token_to_kv_pool: KVCache, *, pool_id: str) -> KVPool:
-    getter = getattr(
-        token_to_kv_pool, "_pd_registerable_tensors", None
-    )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
-    if callable(getter):
-        tensors = tuple(getter())
+    """Build a transfer-registrable KVPool view over an SGLang KV cache."""
+    page_size = token_to_kv_pool.page_size
+    if page_size < 1:
+        raise ValueError(f"SGLang KV pool page_size must be >= 1, got {page_size}")
     else:
+        pass
+
+    type_qualname = (
+        f"{type(token_to_kv_pool).__module__}.{type(token_to_kv_pool).__qualname__}"
+    )
+    if isinstance(token_to_kv_pool, MHATokenToKVPool):
         tensors = tuple(
-            tensor
-            for layer_id in range(int(token_to_kv_pool.layer_num))
-            for tensor in (
-                token_to_kv_pool.get_key_buffer(layer_id),
-                token_to_kv_pool.get_value_buffer(layer_id),
-            )
+            token_to_kv_pool._pd_registerable_tensors()  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
         )
-    _, _, item_lens = token_to_kv_pool.get_contiguous_buf_infos()
-    if not tensors or len(tensors) != len(item_lens):
+        if (
+            type(token_to_kv_pool) is MHATokenToKVPool
+            or type_qualname == SEPARATE_KV_ALLOCATIONS_POOL_TYPE_NAME
+        ):
+            # note (YzXiao): SeparateKVAllocationsPool is byte-identical to MHATokenToKVPool, so compiled and eager stages stay layout-compatible.
+            pool_family = "MHATokenToKVPool"
+        else:
+            pool_family = type_qualname
+        layout_tag = f"layout={token_to_kv_pool.kv_cache_layout}"
+    elif isinstance(token_to_kv_pool, MLATokenToKVPool):
+        tensors = tuple(token_to_kv_pool.kv_buffer)
+        if type(token_to_kv_pool) is MLATokenToKVPool:
+            pool_family = "MLATokenToKVPool"
+        else:
+            pool_family = type_qualname
+        layout_tag = "layout=mla"
+    else:
+        registerable_getter = getattr(
+            token_to_kv_pool,
+            "_pd_registerable_tensors",  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+            None,
+        )
+        if callable(registerable_getter):
+            tensors = tuple(registerable_getter())
+        else:
+            tensors = tuple(
+                tensor
+                for layer_id in range(token_to_kv_pool.layer_num)
+                for tensor in (
+                    token_to_kv_pool.get_key_buffer(layer_id),
+                    token_to_kv_pool.get_value_buffer(layer_id),
+                )
+            )
+        pool_family = type_qualname
+        layout_tag = "layout=default"
+
+    buffer_pointers, _, page_byte_sizes = token_to_kv_pool.get_contiguous_buf_infos()
+    if (
+        not tensors
+        or len(tensors) != len(page_byte_sizes)
+        or len(tensors) != len(buffer_pointers)
+    ):
         raise ValueError("SGLang KV pool exposed incompatible buffer metadata")
     else:
         pass
+    tensor_pointers = [tensor.data_ptr() for tensor in tensors]
+    expected_pointers = list(buffer_pointers)
+    if tensor_pointers != expected_pointers:
+        raise ValueError(
+            "SGLang KV pool registerable tensors do not match contiguous buffer pointers"
+        )
+    else:
+        pass
+    dtype_tag = (
+        f"dtype={token_to_kv_pool.dtype}:store_dtype={token_to_kv_pool.store_dtype}"
+    )
     return KVPool(
         pool_id=pool_id,
-        layout_id=(
-            f"{type(token_to_kv_pool).__module__}."
-            f"{type(token_to_kv_pool).__qualname__}:page_size=1"
-        ),
-        page_size=1,
+        layout_id=f"{pool_family}:{layout_tag}:{dtype_tag}:page_size={page_size}",
+        page_size=page_size,
         buffers=tuple(
             KVBufferRegion(
                 name=f"kv_buffer.{index}",
                 tensor=tensor,
-                bytes_per_page=int(item_len),
+                # note (YzXiao): get_contiguous_buf_infos already scales page_byte_sizes by page_size.
+                bytes_per_page=bytes_per_page,
             )
-            for index, (tensor, item_len) in enumerate(zip(tensors, item_lens))
+            for index, (tensor, bytes_per_page) in enumerate(
+                zip(tensors, page_byte_sizes)
+            )
         ),
     )
 
 
 def request_page_indices(
-    req_to_token_pool: ReqToTokenPool, req: Req
+    req_to_token_pool: ReqToTokenPool,
+    req: Req,
+    *,
+    page_size: int = 1,
 ) -> tuple[int, ...]:
+    """Return physical page indices backing a Prefill request's prompt tokens."""
+    if page_size < 1:
+        raise ValueError(f"page_size must be >= 1, got {page_size}")
+    else:
+        pass
     if req.kv.req_pool_idx is None:
         raise RuntimeError(f"request {req.rid!r} has no KV mapping")
     else:
         pass
-    seq_len = len(req.origin_input_ids)
-    if seq_len <= 0:
+    sequence_length = len(req.origin_input_ids)
+    if sequence_length <= 0:
         raise ValueError("PD cannot transfer an empty prompt")
     else:
         pass
-    return tuple(
-        int(slot)
-        for slot in req_to_token_pool.req_to_token[
-            req.kv.req_pool_idx, :seq_len
-        ].tolist()
+    page_heads = req_to_token_pool.req_to_token[
+        req.kv.req_pool_idx, :sequence_length:page_size
+    ].tolist()
+    expected_pages = (sequence_length + page_size - 1) // page_size
+    return page_indices_from_heads(
+        page_heads,
+        expected_pages=expected_pages,
+        page_size=page_size,
+        context_label=f"request {req.rid!r}",
     )
-
-
-class DecodeKVReceiver:
-    """Reserve destination pages, then queue one admission when copy commits."""
-
-    def __init__(
-        self,
-        *,
-        pool_id: str,
-        allocator: BaseTokenToKVPoolAllocator,
-        admissions: queue.SimpleQueue[DecodeAdmission],
-        resume_schema: str,
-        lifecycle_lock: _thread.RLock | None = None,
-    ) -> None:
-        self.pool_id = pool_id
-        self.allocator = allocator
-        self.admissions = admissions
-        self.resume_schema = resume_schema
-        self.lock = lifecycle_lock or threading.RLock()
-        self.reservations: dict[str, DecodeAdmission] = {}
-        self.transfer_tombstones: dict[str, None] = {}
-        self.accepting_reservations = True
-        self.closed = False
-
-    def remember_finished_transfer(self, transfer_id: str) -> None:
-        self.transfer_tombstones[transfer_id] = None
-        if len(self.transfer_tombstones) > _TRANSFER_TOMBSTONE_LIMIT:
-            del self.transfer_tombstones[next(iter(self.transfer_tombstones))]
-        else:
-            pass
-
-    def reserve(self, request: KVTransferPrepareMessage) -> KVPageDestination:
-        if request.target_pool_id != self.pool_id:
-            raise ValueError(f"KV receiver for {self.pool_id!r} got another pool")
-        else:
-            pass
-        raw = request.metadata.get("decode_continuation")
-        if not isinstance(raw, (bytes, bytearray)):
-            raise TypeError("KV transfer is missing decode continuation bytes")
-        else:
-            pass
-        continuation = DecodeContinuation.decode(bytes(raw))
-        if (
-            continuation.request_id != request.request_id
-            or continuation.transfer_id != request.transfer_id
-        ):
-            raise ValueError("KV transfer and decode continuation ids differ")
-        else:
-            pass
-        resume = continuation.multimodal_resume
-        if resume is not None and resume.get("schema") != self.resume_schema:
-            raise ValueError(
-                f"unsupported multimodal resume schema {resume.get('schema')!r}"
-            )
-        else:
-            pass
-
-        count = len(request.source_page_indices)
-        if count <= 0:
-            raise ValueError("KV transfer contains no pages")
-        else:
-            pass
-        seq_len = len(continuation.origin_input_ids)
-        if seq_len != count:
-            raise ValueError("PD requires one transferred page per prompt token")
-        else:
-            pass
-        bindings = dict(request.metadata.get("replica_bindings") or {})
-        with self.lock:
-            if self.closed:
-                raise RuntimeError("decode KV receiver is closed")
-            else:
-                pass
-            if not self.accepting_reservations:
-                raise RuntimeError("decode KV receiver is not accepting reservations")
-            else:
-                pass
-            if (
-                request.transfer_id in self.reservations
-                or request.transfer_id in self.transfer_tombstones
-            ):
-                raise RuntimeError(f"duplicate KV transfer {request.transfer_id!r}")
-            else:
-                pass
-            if int(self.allocator.available_size()) < count:
-                raise RuntimeError(
-                    f"decode KV pool exhausted: need {count}, "
-                    f"have {self.allocator.available_size()}"
-                )
-            else:
-                pass
-            slots = self.allocator.alloc(count)
-            if slots is None:
-                raise RuntimeError(f"decode KV allocator failed to allocate {count}")
-            else:
-                pass
-            allocation = ReservedKV(
-                slots=slots,
-                page_indices=tuple(int(slot) for slot in slots.tolist()),
-                seq_len=seq_len,
-            )
-            self.reservations[request.transfer_id] = DecodeAdmission(
-                continuation, allocation, bindings
-            )
-        return KVPageDestination(self.pool_id, allocation.page_indices)
-
-    def commit(
-        self,
-        request: KVTransferPrepareMessage,
-        destination: KVPageDestination,
-    ) -> None:
-        with self.lock:
-            reservation = self.reservations.pop(request.transfer_id, None)
-            if reservation is None:
-                raise RuntimeError(
-                    f"commit for unknown KV transfer {request.transfer_id!r}"
-                )
-            else:
-                pass
-            self.remember_finished_transfer(request.transfer_id)
-            if (
-                self.closed
-                or request.request_id != reservation.continuation.request_id
-                or request.target_pool_id != self.pool_id
-                or destination.pool_id != self.pool_id
-                or reservation.allocation.page_indices != destination.page_indices
-            ):
-                self.allocator.free(reservation.allocation.slots)
-                raise RuntimeError("KV commit does not match a live reservation")
-            else:
-                pass
-            self.admissions.put(reservation)
-
-    def abort(
-        self,
-        request: KVTransferPrepareMessage,
-        destination: KVPageDestination | None,
-        error: BaseException,
-    ) -> None:
-        del destination
-        with self.lock:
-            reservation = self.reservations.pop(request.transfer_id, None)
-            if reservation is not None:
-                self.remember_finished_transfer(request.transfer_id)
-                self.allocator.free(reservation.allocation.slots)
-            else:
-                pass
-        logger.warning("KV receive aborted for %s: %s", request.request_id, error)
-
-    def has_reservations(self) -> bool:
-        with self.lock:
-            return bool(self.reservations)
-
-    @contextmanager
-    def suspend_reservations(self) -> Generator[None, None, None]:
-        """Reject new reservations while a destructive scheduler operation runs."""
-
-        with self.lock:
-            was_accepting = self.accepting_reservations
-            self.accepting_reservations = False
-        try:
-            yield
-        finally:
-            with self.lock:
-                self.accepting_reservations = was_accepting and not self.closed
-
-    def close(self) -> None:
-        # CommEngine must finish/abort an in-flight copy before its pages can
-        # be freed. Closing only gates new reservations and admissions.
-        with self.lock:
-            self.accepting_reservations = False
-            self.closed = True
 
 
 class SGLangKVLease:
     """Keep source pages owned until the receiver ACKs the copy."""
 
-    def __init__(self, req: Req | None, due_releases: queue.SimpleQueue[Req]) -> None:
+    def __init__(
+        self,
+        req: Req | None,
+        due_releases: queue.SimpleQueue[Req],
+        *,
+        wakeup_notifier: WakeupNotifier | None = None,
+    ) -> None:
         self.req: Req | None = req
         self.due_releases = due_releases
+        self.wakeup_notifier = wakeup_notifier
         self.lock = threading.Lock()
 
     def release(self) -> None:
@@ -671,3 +645,7 @@ class SGLangKVLease:
         # The comm thread acknowledges ownership; only the scheduler thread
         # may mutate its request table and prefix cache.
         self.due_releases.put(req)
+        if self.wakeup_notifier is not None:
+            self.wakeup_notifier.notify_pd_wakeup()
+        else:
+            pass

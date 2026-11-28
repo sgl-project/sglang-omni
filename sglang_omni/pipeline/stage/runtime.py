@@ -25,10 +25,11 @@ from typing import Awaitable, Callable, Literal, Protocol
 
 import torch
 
+from sglang_omni.admission import AdminDroppedRequestError, QueueFullError
 from sglang_omni.comm import stage_io
-from sglang_omni.comm.data_ref import DataKind, DataRef
+from sglang_omni.comm.data_ref import DataKind, DataRef, TransportKind
 from sglang_omni.comm.engine import CommEngine, KVTransferCancelled, KVTransferRejected
-from sglang_omni.comm.kv_transfer import KVPageTransfer
+from sglang_omni.comm.kv_transfer import DEFAULT_KV_POOL_ID, KVPageTransfer
 from sglang_omni.comm.router import CommRouter
 from sglang_omni.pipeline.control_plane import StageControlPlane
 from sglang_omni.pipeline.local_dispatch import LocalStageDispatcher, LocalStreamChunk
@@ -54,6 +55,7 @@ from sglang_omni.proto import (
     DataAckMessage,
     DataReadyMessage,
     FreezeGCMessage,
+    KVTransferPrepareMessage,
     ProfilerStartMessage,
     ProfilerStopMessage,
     ShutdownMessage,
@@ -153,10 +155,12 @@ class Stage:
         allow_child_processes: bool = False,
         http_socket_path: str | None = None,
         process_failure_callback: ProcessFailureCallback | None = None,
+        kv_transfer_to: str | None = None,
     ) -> None:
         self.process_failure_callback: ProcessFailureCallback | None = (
             process_failure_callback
         )
+        self.kv_transfer_to: str | None = kv_transfer_to
         self.name = name
         self.role = role
         self.get_next = get_next
@@ -204,6 +208,7 @@ class Stage:
             tp_size=tp_size,
             rank_endpoints=rank_endpoints,
             task_done_callback=self.on_background_task_done,
+            on_kv_commit=self.on_kv_transfer_committed,
         )
         for pool, receiver in getattr(scheduler, "kv_registrations", ()):
             self.comm.register_kv_pool(pool)
@@ -221,6 +226,7 @@ class Stage:
         self.local_stream_targets: dict[str, set[str]] = {}
         self.nonlocal_stream_targets: dict[str, set[str]] = {}
         self.receive_tasks: set[asyncio.Task[None]] = set()
+        self.kv_transfer_tasks: set[asyncio.Task[None]] = set()
         self.receive_lane_tails: dict[tuple[str, str], asyncio.Future[None]] = {}
         self.scheduler_thread: threading.Thread | None = None
         self.outbox_waiter: ThreadPoolExecutor | None = None
@@ -243,6 +249,14 @@ class Stage:
         else:
             pass
         self.replica_bindings.setdefault(request_id, dict(bindings))
+
+    def on_kv_transfer_committed(self, request: KVTransferPrepareMessage) -> None:
+        if request.request_id in self.aborted:
+            return
+        else:
+            pass
+        self.record_replica_bindings(request.request_id, request.replica_bindings)
+        self.active_requests.add(request.request_id)
 
     def logical_source(self, from_stage: str) -> str:
         """Convert an incoming physical source name to its logical stage name.
@@ -273,6 +287,36 @@ class Stage:
     async def start(self) -> None:
         if self.running:
             return
+        else:
+            pass
+        if self.kv_transfer_to is not None:
+            for target_instance in self.replica_topology.instances(self.kv_transfer_to):
+                transport = self.comm.outbound(target_instance)
+                if transport is not TransportKind.CUDA_IPC:
+                    raise NotImplementedError(
+                        f"Stage {self.name!r}: kv_transfer_to target "
+                        f"{target_instance!r} requires cuda_ipc transport, "
+                        f"got {transport.value}"
+                    )
+                else:
+                    pass
+                target_endpoints = self.comm.rank_endpoints.get(target_instance)
+                if target_endpoints is None:
+                    raise ValueError(
+                        f"Stage {self.name!r}: missing rank_endpoints for "
+                        f"kv_transfer_to target {target_instance!r}"
+                    )
+                else:
+                    pass
+                if len(target_endpoints) != self.comm.tp_size:
+                    raise NotImplementedError(
+                        f"Stage {self.name!r}: kv_transfer_to target "
+                        f"{target_instance!r} has "
+                        f"tp_size={len(target_endpoints)}, expected "
+                        f"{self.comm.tp_size}"
+                    )
+                else:
+                    pass
         else:
             pass
         await self.control_plane.start()
@@ -440,6 +484,11 @@ class Stage:
         else:
             pass
         await self.finish_outbox_drain()
+        kv_transfer_tasks = list(self.kv_transfer_tasks)
+        for task in kv_transfer_tasks:
+            task.cancel()
+        await asyncio.gather(*kv_transfer_tasks, return_exceptions=True)
+        self.kv_transfer_tasks.clear()
         try:
             self.control_plane.close()
         except Exception as exc:
@@ -1683,11 +1732,11 @@ class Stage:
                 self.discard_kv_transfer(transfer)
             else:
                 pass
-            self.receive_tasks.discard(task)
+            self.kv_transfer_tasks.discard(task)
             self.on_background_task_done(task, f"KV transfer {transfer.request_id}")
 
         task = asyncio.create_task(send())
-        self.receive_tasks.add(task)
+        self.kv_transfer_tasks.add(task)
         task.add_done_callback(done)
 
     async def send_kv_transfer(self, transfer: KVPageTransfer) -> None:
@@ -1704,18 +1753,31 @@ class Stage:
                 return
             else:
                 pass
-            to_stage = self.resolve_target_instance(
-                transfer.request_id, transfer.to_stage
+            if (
+                transfer.to_stage is not None
+                and self.kv_transfer_to is not None
+                and transfer.to_stage != self.kv_transfer_to
+            ):
+                raise ValueError(
+                    f"Stage {self.name!r}: KV transfer target {transfer.to_stage!r} "
+                    f"disagrees with stage kv_transfer_to {self.kv_transfer_to!r}"
+                )
+            else:
+                pass
+            logical_target = (
+                transfer.to_stage
+                if transfer.to_stage is not None
+                else self.kv_transfer_to
             )
-            target_pool_id = (
-                transfer.target_pool_id
-                if to_stage == transfer.to_stage
-                else f"{to_stage}:kv"
-            )
-            metadata = {
-                **transfer.metadata,
-                "replica_bindings": self.replica_bindings.get(transfer.request_id),
-            }
+            if logical_target is None:
+                raise RuntimeError(
+                    f"Stage {self.name!r}: KV transfer {transfer.transfer_id!r} "
+                    "has no target stage"
+                )
+            else:
+                pass
+            to_stage = self.resolve_target_instance(transfer.request_id, logical_target)
+            target_pool_id = transfer.target_pool_id or DEFAULT_KV_POOL_ID
             # From here CommEngine owns the lease, including cancellation and
             # copies retained while their remote completion is uncertain.
             lease = None
@@ -1725,21 +1787,40 @@ class Stage:
                 source_page_indices=transfer.source_page_indices,
                 target_pool_id=target_pool_id,
                 to_stage=to_stage,
-                metadata=metadata,
+                metadata=dict(transfer.metadata),
+                replica_bindings=self.replica_bindings.get(transfer.request_id),
                 transfer_id=transfer.transfer_id,
                 lease=transfer.lease,
+                ready_event=transfer.ready_event,
             )
         except KVTransferCancelled:
             # Request cleanup is terminal for this transfer, but not for the
             # stage's long-lived outbox drain.
             return
-        except Exception as exc:
-            logger.exception(
-                "Stage %s KV transfer failed for %s",
-                self.name,
-                transfer.request_id,
+        except (QueueFullError, AdminDroppedRequestError) as exc:
+            logger.warning(
+                f"Stage {self.name} KV transfer rejected for {transfer.request_id}: "
+                f"{error_text(exc)}"
             )
-            await self.send_failure(transfer.request_id, error_text(exc))
+            if self.background_task_error is None:
+                await self.send_failure(transfer.request_id, error_text(exc))
+            else:
+                pass
+            return
+        except Exception as exc:
+            if " exceeds the maximum number of tokens:" in str(exc):
+                logger.warning(
+                    f"Stage {self.name} KV transfer rejected for {transfer.request_id}: "
+                    f"{error_text(exc)}"
+                )
+            else:
+                logger.exception(
+                    f"Stage {self.name} KV transfer failed for {transfer.request_id}"
+                )
+            if self.background_task_error is None:
+                await self.send_failure(transfer.request_id, error_text(exc))
+            else:
+                pass
             return
         finally:
             if lease is not None:
@@ -1798,6 +1879,16 @@ class Stage:
             pass
         if not self.owns_external_io:
             self.clear_request_state(request_id)
+            return
+        else:
+            pass
+        if self.kv_transfer_to is not None:
+            error = (
+                f"Stage {self.name!r} uses kv_transfer_to={self.kv_transfer_to!r} "
+                "and cannot route payload results"
+            )
+            logger.error(f"{error} (request_id={request_id})")
+            await self.send_failure(request_id, error)
             return
         else:
             pass

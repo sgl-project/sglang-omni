@@ -18,6 +18,7 @@ from sglang_omni.pipeline.replicas import (
     ReplicaTopology,
     RoundRobinBindingPolicy,
     assign_replica_bindings,
+    release_replica_bindings,
 )
 from sglang_omni.pipeline.session_graph import SessionGraphRunner
 from sglang_omni.profiler.event_recorder import emit as _emit_event
@@ -277,7 +278,8 @@ class Coordinator(SessionGraphRunner):
                 )
             else:
                 pass
-        self.requests.clear()
+        for request_id in list(self.requests):
+            self.pop_request(request_id)
         self.partial_results.clear()
         # Note (Junnan Li): Session pumps await request futures; wake them before waiting for cleanup.
         await self.fail_sessions(message)
@@ -557,6 +559,22 @@ class Coordinator(SessionGraphRunner):
             else:
                 pass
 
+    def pop_request(self, request_id: str) -> RequestInfo | None:
+        """Remove a tracked request and release any replica bindings it owned."""
+        request_record = self.requests.pop(request_id, None)
+        if (
+            request_record is not None
+            and request_record.owned_replica_bindings is not None
+        ):
+            owned_bindings = request_record.owned_replica_bindings
+            request_record.owned_replica_bindings = None
+            release_replica_bindings(
+                self.logical_process_plan, self.binding_policy, owned_bindings
+            )
+        else:
+            pass
+        return request_record
+
     async def submit_request(
         self,
         request_id: str,
@@ -607,35 +625,47 @@ class Coordinator(SessionGraphRunner):
         else:
             pass
 
+        owned_replica_bindings: dict[str, int] | None = None
         if replica_bindings is None:
             replica_bindings = assign_replica_bindings(
                 self.logical_process_plan, self.binding_policy, request_id
             )
+            owned_replica_bindings = replica_bindings
         else:
             pass
-        bindings = replica_bindings or {}
-        entry_instance = target_stage or (
-            self.replica_topology.resolve(self.entry_stage, bindings[self.entry_stage])
-            if self.replica_topology.is_replicated(self.entry_stage)
-            else self.entry_stage
-        )
-        if entry_instance not in self.stages:
-            raise ValueError(f"Entry stage {entry_instance} not registered")
-        else:
-            pass
-        entry_info = self.stages[entry_instance]
+        try:
+            bindings = replica_bindings or {}
+            entry_instance = target_stage or (
+                self.replica_topology.resolve(
+                    self.entry_stage, bindings[self.entry_stage]
+                )
+                if self.replica_topology.is_replicated(self.entry_stage)
+                else self.entry_stage
+            )
+            if entry_instance not in self.stages:
+                raise ValueError(f"Entry stage {entry_instance} not registered")
+            else:
+                pass
+            entry_info = self.stages[entry_instance]
+            resolved_terminal_stages = (
+                self.resolve_terminal_stages(request)
+                if terminal_stages is None
+                else terminal_stages
+            )
+        except BaseException:
+            release_replica_bindings(
+                self.logical_process_plan, self.binding_policy, owned_replica_bindings
+            )
+            raise
 
         # Track request
         self.requests[request_id] = RequestInfo(
             request_id=request_id,
             state=RequestState.PENDING,
             current_stage=self.entry_stage,
-            terminal_stages=(
-                self.resolve_terminal_stages(request)
-                if terminal_stages is None
-                else terminal_stages
-            ),
+            terminal_stages=resolved_terminal_stages,
             counts_toward_admission=not should_bypass_admission,
+            owned_replica_bindings=owned_replica_bindings,
         )
 
         # Create future for completion
@@ -677,7 +707,7 @@ class Coordinator(SessionGraphRunner):
             # Serialization runs before the socket send, and a ZMQ send either
             # queues the whole message or raises. No stage holds this request,
             # so it is dropped without an abort that would retire its ID there.
-            self.requests.pop(request_id, None)
+            self.pop_request(request_id)
             await self.release_submission(request_id, future)
             raise
         except BaseException:
@@ -828,7 +858,7 @@ class Coordinator(SessionGraphRunner):
         else:
             pass
 
-        self.requests.pop(request_id, None)
+        self.pop_request(request_id)
         self.partial_results.pop(request_id, None)
 
         logger.info("Coordinator aborted req=%s", request_id)
@@ -954,7 +984,7 @@ class Coordinator(SessionGraphRunner):
                     exc_info=True,
                 )
             else:
-                self.requests.pop(request_id, None)
+                self.pop_request(request_id)
             self.partial_results.pop(request_id, None)
             self.reject_completion_future(
                 request_id, QueueFullError.from_message(msg.error)
@@ -993,7 +1023,7 @@ class Coordinator(SessionGraphRunner):
                     pass
             else:
                 pass
-            self.requests.pop(request_id, None)
+            self.pop_request(request_id)
             if request_id in self.stream_queues:
                 await self.queue_stream_message(request_id, msg)
             else:
@@ -1020,7 +1050,7 @@ class Coordinator(SessionGraphRunner):
                     pass
             else:
                 pass
-            self.requests.pop(request_id, None)
+            self.pop_request(request_id)
         else:
             pass
 

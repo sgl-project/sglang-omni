@@ -40,7 +40,9 @@ __all__ = [
     "warn_replica_device_overrides",
     "BindingPolicy",
     "RoundRobinBindingPolicy",
+    "LeastInFlightBindingPolicy",
     "assign_replica_bindings",
+    "release_replica_bindings",
 ]
 
 
@@ -156,11 +158,7 @@ def expand_replica_stages(
 ) -> tuple[list[StageConfig], ReplicaTopology]:
     """Expand replicated logical Processes into per-replica instance stages.
 
-    Every member stage of a Process with N replicas is copied N times, and
-    copies sharing an index form one complete Process replica ``P@rN``. Instance
-    stages keep logical names in their wiring (``next``, ``stream_to``,
-    ``wait_for``, ``project_payload``); resolution to a concrete instance
-    happens at send time from the request's bindings.
+    Every member stage of a Process with N replicas is copied N times, and copies sharing an index form one complete Process replica P@rN. Instance stages keep logical names in their wiring (next, kv_transfer_to, stream_to, wait_for, project_payload); resolution to a concrete instance happens at send time from the request's bindings.
     """
     replicas: dict[str, tuple[str, ...]] = {}
     expanded_by_stage: dict[str, list[StageConfig]] = {}
@@ -322,6 +320,95 @@ class RoundRobinBindingPolicy:
         return index % num_replicas
 
 
+class LeastInFlightBindingPolicy:
+    """Select the least-loaded replica for tracked processes, round-robin otherwise."""
+
+    def __init__(
+        self,
+        *,
+        tracked_processes: frozenset[str] = frozenset(),
+    ) -> None:
+        self.tracked_processes = tracked_processes
+        self.in_flight_counts: dict[tuple[str, int], int] = {}
+        self.round_robin_counters: dict[str, int] = {}
+        self.lock = threading.Lock()
+
+    def bind(self, process_name: str, num_replicas: int, request_id: str) -> int:
+        # Preserve BindingPolicy signature; request_id is not used for load selection.
+        with self.lock:
+            if process_name not in self.tracked_processes:
+                counter = self.round_robin_counters.get(process_name, 0)
+                self.round_robin_counters[process_name] = counter + 1
+                return counter % num_replicas
+            else:
+                pass
+            start_index = self.round_robin_counters.get(process_name, 0) % num_replicas
+            chosen_replica = min(
+                (
+                    (start_index + offset) % num_replicas
+                    for offset in range(num_replicas)
+                ),
+                key=lambda replica_id: self.in_flight_counts.get(
+                    (process_name, replica_id), 0
+                ),
+            )
+            replica_key = (process_name, chosen_replica)
+            self.in_flight_counts[replica_key] = (
+                self.in_flight_counts.get(replica_key, 0) + 1
+            )
+            self.round_robin_counters[process_name] = (
+                chosen_replica + 1
+            ) % num_replicas
+            return chosen_replica
+
+    def release(self, process_bindings: Mapping[str, int] | None) -> None:
+        """Decrement in-flight counts for tracked processes."""
+        if not process_bindings:
+            return
+        else:
+            pass
+        with self.lock:
+            for process_name, replica_id in process_bindings.items():
+                if process_name not in self.tracked_processes:
+                    continue
+                else:
+                    pass
+                replica_key = (process_name, replica_id)
+                current_count = self.in_flight_counts.get(replica_key, 0)
+                if current_count <= 1:
+                    self.in_flight_counts.pop(replica_key, None)
+                else:
+                    self.in_flight_counts[replica_key] = current_count - 1
+
+
+def release_replica_bindings(
+    plan: LogicalProcessPlan,
+    policy: BindingPolicy,
+    replica_bindings: Mapping[str, int] | None,
+) -> None:
+    """Release process-level replica bindings previously assigned for one request."""
+    if not replica_bindings or not isinstance(policy, LeastInFlightBindingPolicy):
+        return
+    else:
+        pass
+    process_bindings: dict[str, int] = {}
+    for process in plan.processes:
+        if not process.is_replicated or not process.stage_names:
+            continue
+        else:
+            pass
+        # note (YzXiao): bindings are stage-keyed while policy tracks processes; project one stage per process.
+        replica_id = replica_bindings.get(process.stage_names[0])
+        if replica_id is not None:
+            process_bindings[process.name] = replica_id
+        else:
+            pass
+    if process_bindings:
+        policy.release(process_bindings)
+    else:
+        pass
+
+
 def assign_replica_bindings(
     plan: LogicalProcessPlan,
     policy: BindingPolicy,
@@ -329,8 +416,7 @@ def assign_replica_bindings(
 ) -> dict[str, int] | None:
     """Return stage-keyed replica bindings for one request.
 
-    The policy is consulted once per replicated Process; the chosen index is
-    then projected onto every member stage of that Process.
+    The policy is consulted once per replicated Process; the chosen index is then projected onto every member stage of that Process.
     """
     if not plan.has_replicas():
         return None
@@ -338,19 +424,23 @@ def assign_replica_bindings(
         pass
 
     bindings: dict[str, int] = {}
-    for process in plan.processes:
-        if not process.is_replicated:
-            continue
-        else:
-            pass
-        index = policy.bind(process.name, process.num_replicas, request_id)
-        if not 0 <= index < process.num_replicas:
-            raise ValueError(
-                f"Binding policy selected replica {index} for process "
-                f"{process.name!r} with {process.num_replicas} replica(s)"
-            )
-        else:
-            pass
-        for stage_name in process.stage_names:
-            bindings[stage_name] = index
+    try:
+        for process in plan.processes:
+            if not process.is_replicated:
+                continue
+            else:
+                pass
+            index = policy.bind(process.name, process.num_replicas, request_id)
+            if not 0 <= index < process.num_replicas:
+                raise ValueError(
+                    f"Binding policy selected replica {index} for process "
+                    f"{process.name!r} with {process.num_replicas} replica(s)"
+                )
+            else:
+                pass
+            for stage_name in process.stage_names:
+                bindings[stage_name] = index
+    except BaseException:
+        release_replica_bindings(plan, policy, bindings)
+        raise
     return bindings
