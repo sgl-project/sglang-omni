@@ -162,11 +162,6 @@ class TalkerAdapter(ARSessionAdapter):
         )
         sampling_params = SamplingParams(
             max_new_tokens=max_new_tokens,
-            min_new_tokens=(
-                TALKER_TOKENS_PER_UNIT
-                if state.unit_kind == "reply" and not state.is_turn_start
-                else 0
-            ),
             temperature=payload.request.params["talker_temperature"],
             # note (luojiaxuan): The official duplex loop samples codec tokens without top-p or top-k and penalizes repeats over the unit's own last 16 tokens, which the runner applies from rep_penalty.
             top_p=1.0,
@@ -196,6 +191,13 @@ class TalkerAdapter(ARSessionAdapter):
             talker_model_inputs={
                 "rep_penalty": payload.request.params["talker_repetition_penalty"],
                 "masks_chunk_boundary_eos": state.unit_speech_units > 1,
+                # note: the device sampler's slot state enforces the length floor,
+                # so SGLang's own history-bound enforcement stays off.
+                "min_new_tokens": (
+                    TALKER_TOKENS_PER_UNIT
+                    if state.unit_kind == "reply" and not state.is_turn_start
+                    else 0
+                ),
             },
         )
 

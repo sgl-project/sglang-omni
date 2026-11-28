@@ -449,3 +449,140 @@ def test_seeded_requests_draw_eager_tokens_when_batch_members_change(
         sampling_info = build_batch_sampling_info(sampling_params, device)
         assert graph_runner.samples_in_graph(len(rows), sampling_info) is is_graph_used
         assert not graph_runner.samples_in_graph(9, sampling_info), "above the top size"
+
+
+@pytest.mark.parametrize(
+    ("masks_chunk_boundary_eos", "masked_steps"),
+    [(True, [25, 29, 50]), (False, [])],
+    ids=["several-chunks", "one-chunk"],
+)
+def test_the_device_sampler_holds_the_eos_at_chunk_boundaries(
+    masks_chunk_boundary_eos: bool, masked_steps: list[int]
+) -> None:
+    """A multi-chunk session unit samples on the device, so its slot state must hold the codec EOS around every chunk boundary the host sampler's rows do."""
+    runner = build_device_sampling_runner(
+        SimpleNamespace(
+            req_to_token_pool=SimpleNamespace(req_to_token=torch.zeros(SLOT_COUNT, 1)),
+            decode_cuda_graph_runner=None,
+            sample=lambda logits_output, forward_batch: (
+                logits_output.next_token_logits.argmax(dim=-1)
+            ),
+        ),
+        torch.device("cpu"),
+    )
+    assert runner.slot_state is not None
+    steps = [0, 24, 25, 29, 30, 50]
+    requests = [
+        SimpleNamespace(
+            data=SimpleNamespace(
+                req=SimpleNamespace(
+                    output_ids=[0] * step, sampling_params=SamplingParams()
+                ),
+                talker_model_inputs={
+                    "rep_penalty": 1.0,
+                    "min_new_tokens": 0,
+                    "masks_chunk_boundary_eos": masks_chunk_boundary_eos,
+                },
+                return_logprob=False,
+            ),
+            request_id=f"boundary-{index}",
+        )
+        for index, step in enumerate(steps)
+    ]
+    rows = torch.arange(len(steps))
+    logits = torch.zeros(len(steps), VOCAB_SIZE)
+    runner.slot_state.reset(
+        rows,
+        requests,
+        build_batch_sampling_info(
+            [SamplingParams() for _ in steps], torch.device("cpu")
+        ),
+        torch.zeros(len(steps), VOCAB_SIZE, dtype=torch.bool),
+    )
+    runner.slot_state.apply(logits, rows)
+
+    assert [
+        step
+        for step, row_logits in zip(steps, logits, strict=True)
+        if row_logits[CODEC_EOS_ID] == float("-inf")
+    ] == masked_steps
+
+
+def test_device_history_matches_host_boundary_eos_and_penalty() -> None:
+    """A multi-chunk session unit's device sampling applies the chunk-boundary EOS hold and the windowed penalty exactly as the host sampler does."""
+    torch.manual_seed(0)
+    requests = [
+        SimpleNamespace(
+            data=SimpleNamespace(
+                req=SimpleNamespace(output_ids=[], sampling_params=SamplingParams()),
+                talker_model_inputs={
+                    "rep_penalty": 1.05,
+                    "min_new_tokens": 0,
+                    "masks_chunk_boundary_eos": True,
+                },
+                return_logprob=False,
+            ),
+            request_id="multi-chunk",
+        ),
+        SimpleNamespace(
+            data=SimpleNamespace(
+                req=SimpleNamespace(output_ids=[], sampling_params=SamplingParams()),
+                talker_model_inputs={
+                    "rep_penalty": 1.0,
+                    "min_new_tokens": 0,
+                    "masks_chunk_boundary_eos": False,
+                },
+                return_logprob=False,
+            ),
+            request_id="single-chunk",
+        ),
+    ]
+    rows = torch.tensor([3, 7])
+    runner = build_device_sampling_runner(
+        SimpleNamespace(
+            req_to_token_pool=SimpleNamespace(req_to_token=torch.zeros(SLOT_COUNT, 1)),
+            decode_cuda_graph_runner=None,
+            sample=lambda logits_output, forward_batch: (
+                logits_output.next_token_logits.argmax(dim=-1)
+            ),
+        ),
+        torch.device("cpu"),
+    )
+    assert runner.slot_state is not None, "the step samples on the device"
+    assert runner.sample_graphs is None, "no decode graphs to share"
+    sampling_info = build_batch_sampling_info(
+        [SamplingParams() for _ in requests], torch.device("cpu")
+    )
+    held_steps = []
+    for step in range(30):
+        logits = torch.randn(len(requests), VOCAB_SIZE) * 3
+        logits[:, CODEC_EOS_ID] += 4.0
+        expected = logits.clone()
+        runner.process_sampling_logits(
+            LogitsProcessorOutput(next_token_logits=expected, hidden_states=None),
+            requests,
+        )
+        expected[SUPPRESSED_ROW_AND_TOKEN] = float("-inf")
+        if expected[0, CODEC_EOS_ID] == float("-inf"):
+            held_steps.append(step)
+        else:
+            pass
+        forward_batch = SimpleNamespace(
+            req_pool_indices=rows,
+            forward_mode=SimpleNamespace(is_extend=lambda first=step == 0: first),
+            sampling_info=sampling_info,
+        )
+
+        next_token_ids = runner.sample_next_token_ids(
+            LogitsProcessorOutput(next_token_logits=logits, hidden_states=None),
+            forward_batch,
+            None,
+            requests,
+        )
+
+        torch.testing.assert_close(logits, expected, rtol=0, atol=0)
+        for row, scheduler_request in enumerate(requests):
+            scheduler_request.data.req.output_ids.append(int(next_token_ids[row]))
+    assert held_steps == list(
+        range(25, 30)
+    ), "the codec EOS is held around the boundary"

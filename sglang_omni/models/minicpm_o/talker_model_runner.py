@@ -54,6 +54,7 @@ class TalkerSlotState:
     generated: torch.Tensor
     min_new_tokens: torch.Tensor
     penalties: torch.Tensor
+    boundary_eos: torch.Tensor
     seeds: torch.Tensor
     temperatures: torch.Tensor
     top_ps: torch.Tensor
@@ -76,6 +77,7 @@ class TalkerSlotState:
             generated=torch.zeros(rows, dtype=torch.long, device=device),
             min_new_tokens=torch.zeros(rows, dtype=torch.long, device=device),
             penalties=torch.ones(rows, dtype=torch.float32, device=device),
+            boundary_eos=torch.zeros(rows, dtype=torch.bool, device=device),
             seeds=torch.zeros(rows, dtype=torch.long, device=device),
             temperatures=torch.ones(rows, 1, dtype=torch.float32, device=device),
             top_ps=torch.ones(rows, dtype=torch.float32, device=device),
@@ -99,6 +101,7 @@ class TalkerSlotState:
         generated = torch.zeros(count, dtype=torch.long)
         min_new_tokens = torch.zeros(count, dtype=torch.long)
         penalties = torch.ones(count, dtype=torch.float32)
+        boundary_eos = torch.zeros(count, dtype=torch.bool)
         seeds = torch.zeros(count, dtype=torch.long)
         for row, sched_req in enumerate(requests):
             req = sched_req.data.req
@@ -109,6 +112,7 @@ class TalkerSlotState:
             inputs = sched_req.data.talker_model_inputs
             min_new_tokens[row] = int(inputs.get("min_new_tokens", 0))
             penalties[row] = float(inputs.get("rep_penalty", 1.0))
+            boundary_eos[row] = bool(inputs.get("masks_chunk_boundary_eos", False))
             seed = req.sampling_params.sampling_seed
             if seed is None:
                 seed = rank_shared_unseeded_sampling_seed(sched_req, row)
@@ -123,6 +127,7 @@ class TalkerSlotState:
         self.generated[rows] = generated.to(device)
         self.min_new_tokens[rows] = min_new_tokens.to(device)
         self.penalties[rows] = penalties.to(device)
+        self.boundary_eos[rows] = boundary_eos.to(device)
         if sampling_info.sampling_seed is None:
             self.seeds[rows] = seeds.to(device)
         else:
@@ -169,8 +174,15 @@ class TalkerSlotState:
         penalized = torch.where(scores < 0, scores * factors, scores / factors)
         logits.copy_(torch.where(counts > 0, penalized, scores).to(logits.dtype))
         eos_logits = logits[:, self.eos_id]
+        generated = self.generated[rows]
+        # A multi-chunk request holds the codec EOS for a few steps after every
+        # full chunk, as the host sampler's boundary rows do.
+        at_chunk_boundary = self.boundary_eos[rows] & (
+            (generated >= CODEC_CHUNK_SIZE)
+            & (generated % CODEC_CHUNK_SIZE < CHUNK_BOUNDARY_EOS_MASK_STEPS)
+        )
         logits[:, self.eos_id] = torch.where(
-            self.generated[rows] < self.min_new_tokens[rows],
+            (generated < self.min_new_tokens[rows]) | at_chunk_boundary,
             torch.full_like(eos_logits, float("-inf")),
             eos_logits,
         )
