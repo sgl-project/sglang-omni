@@ -36,6 +36,8 @@ TALKER_START_MIN_CHUNKS = 1
 
 TALKER_MAX_RUNNING_REQUESTS = 32
 
+PREPROCESSING_MAX_RUNNING_VIDEO_REQUESTS = 8
+
 # SGLang reads this when DeepGEMM compile utilities are imported. Qwen AR
 # stages can first hit some dense FP8 shapes after readiness; disable all-M
 # precompile so that miss does not become a long post-ready compile session.
@@ -45,8 +47,9 @@ _DEEPGEMM_PRECOMPILE_ENV_DEFAULTS = {"SGLANG_JIT_DEEPGEMM_PRECOMPILE": "0"}
 
 # A colocated worker launches six stage processes. Letting every PyTorch
 # process size its OpenMP pool to the full host oversubscribes launch-side CPU
-# work when multiple workers share a node. Preprocessing handles one prompt per
-# scheduler call, so a host-wide tokenizer Rayon pool only adds contention.
+# work when multiple workers share a node. Preprocessing tokenizes each prompt on
+# the thread that runs its request, so a host-wide tokenizer Rayon pool only adds
+# contention.
 _COLOCATED_STAGE_ENV_DEFAULTS = {
     **_DEEPGEMM_PRECOMPILE_ENV_DEFAULTS,
     "OMP_NUM_THREADS": "8",
@@ -67,7 +70,9 @@ def preprocessing_stage(*, process: str, speech_enabled: bool = False) -> StageC
         name="preprocessing",
         process=process,
         factory_path=f"{_PKG}.stages.create_preprocessing_executor",
-        factory=FactoryArgs(),
+        factory=FactoryArgs(
+            max_running_video_requests=PREPROCESSING_MAX_RUNNING_VIDEO_REQUESTS
+        ),
         next=next_stages,
         route_fn=route_fn,
         project_payload={

@@ -17,7 +17,10 @@ from transformers.models.qwen3_omni_moe.processing_qwen3_omni_moe import (
     Qwen3OmniMoeProcessor,
 )
 
-from sglang_omni.models.qwen3_omni.components.preprocessor import Qwen3OmniPreprocessor
+from sglang_omni.models.qwen3_omni.components.preprocessor import (
+    Qwen3OmniPreprocessor,
+    ThreadProcessors,
+)
 from sglang_omni.models.qwen3_omni.payload_types import Qwen3OmniPipelineState
 from sglang_omni.proto.request import OmniRequest, StagePayload
 
@@ -57,6 +60,7 @@ def audio_preprocessor() -> Qwen3OmniPreprocessor:
     preprocessor.processor.apply_chat_template.side_effect = (
         template_processor.apply_chat_template
     )
+    preprocessor.thread_processors = ThreadProcessors(preprocessor.processor, copies=0)
     return preprocessor
 
 

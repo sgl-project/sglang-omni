@@ -93,7 +93,7 @@ When every part of the question comes from audio, video, or image input, set `"c
 
 ### Video Decoding
 
-The following thread allocation applies to pipelines using the shared video loader and automatic CPU-based budget, including Qwen3-Omni. Available preprocessing factory options depend on the model.
+The following thread allocation applies to pipelines using the shared video loader and automatic CPU-based budget, such as MiniCPM-o and Ming-Omni. Qwen3-Omni runs each video request on threads of its own, as its [cookbook](../cookbook/qwen3_omni.md) describes. Available preprocessing factory options depend on the model.
 
 Each preprocessing worker decodes a request's videos on parallel decoders that share min(16, the stage's CPUs divided by its workers) FFmpeg threads, split evenly among the request's videos. Set `--preprocessing.factory.video_decode_threads N` to choose that count. A value at or below the video reader's own threads (`TORCHCODEC_NUM_THREADS`, 8 by default) decodes each video on the reader alone.
 
