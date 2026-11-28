@@ -304,6 +304,18 @@ def test_load_audio_fast_path_handles_float32_wav() -> None:
     samples[0] = 0
 
 
+@pytest.mark.parametrize("header_offset,width", [(22, 2), (24, 4)])
+def test_load_audio_rejects_invalid_wav_format_fields(
+    monkeypatch, header_offset: int, width: int
+) -> None:
+    data = wav_bytes()
+    malformed = data[:header_offset] + bytes(width) + data[header_offset + width :]
+    monkeypatch.setattr(audio, "check_torchcodec_ready", lambda: False)
+
+    with pytest.raises(AudioDecodeError, match="Could not decode Test audio input"):
+        load_audio(malformed, source_name="Test")
+
+
 def test_load_audio_fast_path_skips_torchaudio(monkeypatch) -> None:
     def fail_load(*args, **kwargs):
         raise AssertionError("torchaudio.load should not be called on the fast path")

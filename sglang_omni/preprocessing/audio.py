@@ -176,6 +176,14 @@ def parse_wav_bytes(
         raise ValueError(f"Missing data chunk in WAV: {source}")
     else:
         pass
+    if not channels:
+        raise ValueError(f"Invalid WAV channel count: {source}")
+    else:
+        pass
+    if sample_rate == 0:
+        raise ValueError(f"Invalid WAV sample rate: {source}")
+    else:
+        pass
 
     if fmt_tag == 3:  # IEEE float
         if bits_per_sample == 32:
