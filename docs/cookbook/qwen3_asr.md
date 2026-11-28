@@ -60,7 +60,7 @@ Apple Silicon and Ascend NPU launch different configurations; see [Platform Conf
 |---|---|---|
 | Transcribe a file | [HTTP transcription](#transcribe-audio) | Upload a complete file |
 | Receive text incrementally | [SSE transcription](#stream-transcription) | Upload a complete file before decoding starts |
-| Transcribe live audio | [Realtime WebSocket](#live-pcm-transcription) | Send PCM audio packets as they arrive |
+| Transcribe live audio | [Realtime WebSocket](#realtime-transcription-websocket) | Send PCM audio packets as they arrive |
 
 ## Transcribe Audio
 
