@@ -15,6 +15,7 @@ from sglang_omni.config.schema import (
     StageConfig,
 )
 from sglang_omni.models.zonos3.hf_config import ARCHITECTURE
+from sglang_omni.platforms import current_platform
 
 PACKAGE = "sglang_omni.models.zonos3"
 TTS_ENGINE_GPU_MEMORY_FRACTION = 0.3
@@ -131,6 +132,19 @@ class Zonos3PipelineConfig(PipelineConfig):
 
     def supports_uploaded_voice_references(self) -> bool:
         return True
+
+    def resolved_env_defaults(self) -> dict[str, str]:
+        environment = super().resolved_env_defaults()
+        # Ascend's chunk GDN kernel rejects an fp32 initial state below Ascend950, so its
+        # linear-attention state runs bfloat16; other devices keep sglang's fp32 default.
+        if current_platform.is_npu():
+            environment.setdefault("SGLANG_MAMBA_SSM_DTYPE", "bfloat16")
+            # The ATB paged-attention op fails setup on this CANN build, so decode runs the
+            # fused infer attention kernel, which needs the 128-wide pages set in the engine.
+            environment.setdefault("ASCEND_USE_FIA", "1")
+        else:
+            pass
+        return environment
 
 
 EntryClass = Zonos3PipelineConfig

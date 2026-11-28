@@ -21,6 +21,7 @@ from sglang_omni.models.zonos3.components.teacher_kernels import (
 from sglang_omni.models.zonos3.components.teacher_norm_kernels import (
     residual_layer_norm,
 )
+from sglang_omni.platforms import current_platform
 
 TEACHER_SAMPLE_RATE_HZ = 16000
 # note (zhaochenyang20): The teacher's SeamlessM4TFeatureExtractor filterbank, computed in torch on the encoder's device; the extractor's per-frame numpy loop held the GIL for about 17% of the serving process.
@@ -133,8 +134,18 @@ class W2vBertSemanticFeatures(nn.Module):
         A lane always holds an even number of filterbank frames, so no stacked frame needs padding or masking.
         """
         assert teacher_waveform.shape[0] == 1, teacher_waveform.shape
+        device = teacher_waveform.device
+        # note: without float64 device kernels (NPU) .double() silently downcasts, so the float64 analysis runs on the CPU and its float32 features move back; the rest of the pipeline is unaffected.
+        if current_platform.is_float64_supported():
+            analysis_waveform = teacher_waveform[0]
+            windowed_fourier_basis = self.windowed_fourier_basis
+            mel_filters = self.mel_filters
+        else:
+            analysis_waveform = teacher_waveform[0].cpu()
+            windowed_fourier_basis = self.windowed_fourier_basis.cpu().double()
+            mel_filters = self.mel_filters.cpu().double()
         # note (zhaochenyang20): float64 throughout; TF32 on CUDA moved quiet mel bins of SeedTTS EN references by up to 4.5 after normalization.
-        analysis_frames = (teacher_waveform[0].double() * INT16_FULL_SCALE).unfold(
+        analysis_frames = (analysis_waveform.double() * INT16_FULL_SCALE).unfold(
             0, TEACHER_WINDOW_SAMPLES, TEACHER_HOP_SAMPLES
         )
         analysis_frames = analysis_frames - analysis_frames.mean(1, keepdim=True)
@@ -148,22 +159,16 @@ class W2vBertSemanticFeatures(nn.Module):
         )
         # The extractor stores the spectrum as complex64 before it squares the magnitude in float64.
         real_spectrum, imaginary_spectrum = (
-            (analysis_frames @ self.windowed_fourier_basis)
-            .float()
-            .double()
-            .chunk(2, dim=1)
+            (analysis_frames @ windowed_fourier_basis).float().double().chunk(2, dim=1)
         )
         power_spectrum = real_spectrum**2 + imaginary_spectrum**2
         log_mel_energies = (
-            (power_spectrum @ self.mel_filters)
-            .clamp(min=TEACHER_MEL_FLOOR)
-            .log()
-            .float()
+            (power_spectrum @ mel_filters).clamp(min=TEACHER_MEL_FLOOR).log().float()
         )
         normalized_log_mel = (log_mel_energies - log_mel_energies.mean(0)) / torch.sqrt(
             log_mel_energies.var(0, correction=1) + TEACHER_NORMALIZATION_EPSILON
         )
-        return normalized_log_mel.reshape(
+        return normalized_log_mel.to(device).reshape(
             1, -1, normalized_log_mel.shape[1] * TEACHER_FRAME_STACK
         )
 
@@ -197,7 +202,7 @@ class W2vBertSemanticFeatures(nn.Module):
                 attention.query_key_value_weight,
                 attention.query_key_value_bias,
             )
-            if normalized_states.is_cuda:
+            if current_platform.is_cuda():
                 attention_output = torch.empty_like(normalized_states)
                 relative_key_attention_kernel[
                     (
@@ -260,7 +265,7 @@ class W2vBertSemanticFeatures(nn.Module):
             projected_states = F.linear(
                 normalized_states, convolution.pointwise_conv1.weight[..., 0]
             )
-            if normalized_states.is_cuda:
+            if current_platform.is_cuda():
                 convolved_states = torch.empty_like(normalized_states)
                 gated_causal_depthwise_convolution_kernel[
                     (
@@ -331,7 +336,18 @@ class W2vBertSemanticFeatures(nn.Module):
 
         Each codec frame box-averages the teacher states under a centered window; its edges fall on fractional teacher frames, so boundary frames count in proportion to their overlap, via prefix sums.
         """
-        filterbank_features = self.filterbank_features(teacher_waveform)
+        return self.forward_from_features(
+            self.filterbank_features(teacher_waveform), frame_count
+        )
+
+    @torch.inference_mode()
+    def forward_from_features(
+        self, filterbank_features: torch.Tensor, frame_count: int
+    ) -> torch.Tensor:
+        """Map (1, teacher frames, 160) filterbank features to (1, hidden, frame_count) float32 features.
+
+        The caller computes the filterbank; on a device without float64 kernels that pass runs on the host, so a captured graph takes its features as an input instead.
+        """
         device = filterbank_features.device
         input_features = filterbank_features.to(torch.bfloat16)
         teacher_hidden_states = self.teacher_states(input_features).transpose(1, 2)

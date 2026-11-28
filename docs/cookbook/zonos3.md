@@ -10,6 +10,8 @@
 
 Follow the [CUDA installation guide](../get_started/installation.md), using a checkout that includes Zonos3 support. No additional model-specific dependencies are required. Your Hugging Face account must have access to `Zyphra-staging/Zonos3-Mini-Staging-Release`; authenticate the server environment before launching.
 
+On Ascend NPU, follow [Ascend NPU installation](../other_platforms/installation_npu.md) and use the settings in [Ascend NPU](#ascend-npu).
+
 <a id="launch-the-server"></a>
 
 ### Start the server and check readiness
@@ -88,6 +90,29 @@ Text, reference audio, and the generation budget must fit the server's default 8
 ## Next steps
 
 Use the shared [Python requests](../basic_usage/tts.md#python), [OpenAI Python SDK](../basic_usage/tts.md#openai-python-sdk), and [Python streaming client](../basic_usage/tts.md#python-streaming-client) examples with the checkpoint ID above. Remove the Qwen-specific `language` field; omit `voice` in HTTP requests or use `voice="default"` in the SDK.
+
+## Ascend NPU
+
+Follow [Ascend NPU installation](../other_platforms/installation_npu.md), then export the device and stream settings and start the server.
+
+```bash
+export ASCEND_RT_VISIBLE_DEVICES=0
+export PER_STREAM_QUEUE=1
+sgl-omni serve \
+  --model-path Zyphra-staging/Zonos3-Mini-Staging-Release \
+  --port 8000
+```
+
+Set `PER_STREAM_QUEUE=1` when decode graphs run on NPU: on a shared host task queue a graph replay can overlap the update that rebinds KV lengths. Zonos3 derives the remaining Ascend defaults from the platform, and an explicit engine override still takes effect: bf16 gated-delta-net state, fused-infer attention, the `ascend` attention backend with 128-wide pages, and decode graphs on. Prefill graph capture stays CUDA-only because the breakable prefill graph replays per-bucket static gated-delta-net tables that only the CUDA graph backend captures.
+
+Measured on one Ascend 910B, SeedTTS EN voice cloning (1088 samples), concurrency 16, default server and sampling settings, no request seed, scored with Qwen3-ASR-1.7B; SIM is WavLM-large speaker similarity in percentage points.
+
+| Mode | WER (corpus) | SIM | RTF mean | Throughput (qps) | First audio (s) |
+|---|---|---|---|---|---|
+| Non-streaming | 1.36% | 51.44 | 0.485 | 7.51 | - |
+| Streaming | - | - | 0.582 | 6.24 | 1.12 |
+
+Supported software versions are listed in [Ascend NPU installation](../other_platforms/installation_npu.md).
 
 ## Benchmark results
 

@@ -3,7 +3,10 @@
 
 from __future__ import annotations
 
+import logging
 import math
+import threading
+from contextlib import nullcontext
 from dataclasses import dataclass, replace
 from pathlib import Path
 
@@ -52,6 +55,10 @@ from sglang_omni.models.zonos3.components.semantic_features import (
     W2vBertSemanticFeatures,
 )
 from sglang_omni.platforms import current_platform
+from sglang_omni.platforms.device_graph import ReplayableGraph
+from sglang_omni.utils.device import device_guard, has_device_streams
+
+logger = logging.getLogger(__name__)
 
 TEACHER_DIRECTORY = "autoencoder/teacher"
 TEACHER_HIDDEN_DIMENSION = 1024
@@ -113,11 +120,15 @@ class ReferenceLane:
 
 @dataclass(kw_only=True)
 class ReferenceEncodeGraph:
-    """A captured lane length bucket: replay reads the lane's waveforms and writes its codes in place."""
+    """A captured lane length bucket: replay reads the lane's inputs and writes its codes in place.
 
-    graph: torch.cuda.CUDAGraph
+    teacher_waveform feeds the devices whose graph runs the filterbank itself; where the filterbank runs on the host instead, input_features carries its features into the graph.
+    """
+
+    graph: ReplayableGraph
     internal_waveform: torch.Tensor
-    teacher_waveform: torch.Tensor
+    teacher_waveform: torch.Tensor | None
+    input_features: torch.Tensor | None
     codes: torch.Tensor
 
 
@@ -155,6 +166,8 @@ class Zonos3CodecEncoder(nn.Module):
         self.quantizer = SemanticResidualQuantizer()
         self.semantic_features = semantic_features
         self.encode_graphs: dict[int, ReferenceEncodeGraph] = {}
+        # note (zhaochenyang20): preprocessing may run several workers; a replay holds one bucket's static inputs, so its copy, replay and read must not interleave with another worker's.
+        self.encode_lock = threading.Lock()
         # Plain attributes, set on the encoder's device after loading: RoPE tables of the longest lane's first stage, which every stage slices.
         self.rotary_cos: torch.Tensor | None = None
         self.rotary_signed_sin: torch.Tensor | None = None
@@ -241,7 +254,7 @@ class Zonos3CodecEncoder(nn.Module):
             ),
             ENCODER_HEAD_DIMENSION,
         )
-        if encoder.input_conv.weight.is_cuda:
+        if current_platform.is_cuda():
             compute_capability_major, _ = torch.cuda.get_device_capability(
                 encoder.input_conv.weight.device
             )
@@ -258,6 +271,15 @@ class Zonos3CodecEncoder(nn.Module):
         self, internal_waveform: torch.Tensor, teacher_waveform: torch.Tensor
     ) -> torch.Tensor:
         """(10, bucket frames) codes of one lane's device waveforms; the teacher waveform always spans the whole lane."""
+        return self.lane_codes_from_features(
+            internal_waveform,
+            self.semantic_features.filterbank_features(teacher_waveform),
+        )
+
+    def lane_codes_from_features(
+        self, internal_waveform: torch.Tensor, input_features: torch.Tensor
+    ) -> torch.Tensor:
+        """(10, bucket frames) codes of one lane's device waveform and its (1, teacher frames, 160) filterbank features."""
         device_type = internal_waveform.device.type
         assert self.rotary_cos is not None and self.rotary_signed_sin is not None
         with torch.autocast(device_type, dtype=torch.bfloat16, cache_enabled=False):
@@ -285,9 +307,9 @@ class Zonos3CodecEncoder(nn.Module):
                     self.rotary_signed_sin,
                     self.uses_fused_encoder,
                 )
-        semantic_states = self.semantic_features(teacher_waveform, LANE_FRAMES)[
-            ..., : hidden_states.shape[-1]
-        ]
+        semantic_states = self.semantic_features.forward_from_features(
+            input_features, LANE_FRAMES
+        )[..., : hidden_states.shape[-1]]
         with torch.autocast(device_type, dtype=torch.bfloat16, cache_enabled=False):
             semantic_states = self.semantic_encoder(semantic_states)
         semantic_codes, semantic_quantized = self.quantizer.semantic_quantizer.encode(
@@ -302,41 +324,112 @@ class Zonos3CodecEncoder(nn.Module):
 
     @torch.inference_mode()
     def capture_encode_graphs(self) -> None:
-        """Capture every lane length bucket before serving, so no capture overlaps the vocoder's."""
+        """Capture every lane length bucket before serving, so no capture overlaps the vocoder's.
+
+        No graph is captured on a device whose platform has no graph backend; a capture that fails leaves every lane on the eager path rather than failing startup.
+        """
         device = self.input_conv.weight.device
-        graph_pool = torch.cuda.graph_pool_handle()
-        graph_stream = torch.cuda.Stream(device=device)
-        # note (zhaochenyang20): the graphs share one pool, so longest first each shorter bucket reuses blocks the longer ones freed; on one H100 the reference encoder reserved 8.8 GiB shortest first and 5.3 GiB longest first.
-        for bucket_frames in reversed(
-            (
-                *range(
-                    ENCODE_GRAPH_BUCKET_FRAMES, LANE_FRAMES, ENCODE_GRAPH_BUCKET_FRAMES
-                ),
-                LANE_FRAMES,
-            )
-        ):
-            internal_waveform = torch.zeros(
-                1, bucket_frames * INTERNAL_SAMPLES_PER_FRAME, device=device
-            )
-            teacher_waveform = torch.zeros(1, TEACHER_LANE_SAMPLES, device=device)
-            graph_stream.wait_stream(torch.cuda.current_stream(device))
-            with torch.cuda.stream(graph_stream):
-                self.lane_codes(internal_waveform, teacher_waveform)
-            torch.cuda.current_stream(device).wait_stream(graph_stream)
-            graph = torch.cuda.CUDAGraph()
-            with torch.cuda.graph(
-                graph,
-                pool=graph_pool,
-                stream=graph_stream,
-                capture_error_mode="thread_local",
-            ):
-                codes = self.lane_codes(internal_waveform, teacher_waveform)
-            self.encode_graphs[bucket_frames] = ReferenceEncodeGraph(
-                graph=graph,
-                internal_waveform=internal_waveform,
-                teacher_waveform=teacher_waveform,
-                codes=codes,
-            )
+        graph_backend = current_platform.get_device_graph_backend(device)
+        if graph_backend is None:
+            return
+        else:
+            pass
+        device_module = torch.get_device_module(device)
+        # note (zhaochenyang20): the filterbank needs float64 kernels; where the device lacks them it runs on the host, so the graph takes its features as an input instead of the teacher waveform.
+        captures_filterbank = current_platform.is_float64_supported()
+        graph_pool = graph_backend.graph_pool_handle()
+        graph_stream = (
+            device_module.Stream(device=device) if has_device_streams(device) else None
+        )
+        # note (zhaochenyang20): Ascend loads and compiles the kernels of a shape on its first pass, so every bucket warms up before its capture; CUDA keeps the single pass the serving path already paid.
+        warmup_passes = 2 if device.type == "npu" else 1
+
+        def encode_lane(
+            internal_waveform: torch.Tensor,
+            teacher_waveform: torch.Tensor | None,
+            input_features: torch.Tensor | None,
+        ) -> torch.Tensor:
+            if input_features is None:
+                assert teacher_waveform is not None
+                return self.lane_codes(internal_waveform, teacher_waveform)
+            else:
+                return self.lane_codes_from_features(internal_waveform, input_features)
+
+        graphs: dict[int, ReferenceEncodeGraph] = {}
+        with device_guard(device):
+            try:
+                # note (zhaochenyang20): the graphs share one pool, so longest first each shorter bucket reuses blocks the longer ones freed; on one H100 the reference encoder reserved 8.8 GiB shortest first and 5.3 GiB longest first.
+                for bucket_frames in reversed(
+                    (
+                        *range(
+                            ENCODE_GRAPH_BUCKET_FRAMES,
+                            LANE_FRAMES,
+                            ENCODE_GRAPH_BUCKET_FRAMES,
+                        ),
+                        LANE_FRAMES,
+                    )
+                ):
+                    internal_waveform = torch.zeros(
+                        1, bucket_frames * INTERNAL_SAMPLES_PER_FRAME, device=device
+                    )
+                    if captures_filterbank:
+                        teacher_waveform = torch.zeros(
+                            1, TEACHER_LANE_SAMPLES, device=device
+                        )
+                        input_features = None
+                    else:
+                        teacher_waveform = None
+                        input_features = torch.zeros_like(
+                            self.semantic_features.filterbank_features(
+                                torch.zeros(1, TEACHER_LANE_SAMPLES)
+                            ),
+                            device=device,
+                        )
+                    if graph_stream is not None:
+                        graph_stream.wait_stream(device_module.current_stream(device))
+                    else:
+                        pass
+                    with torch.inference_mode(), (
+                        device_module.stream(graph_stream)
+                        if graph_stream is not None
+                        else nullcontext()
+                    ):
+                        for _ in range(warmup_passes):
+                            encode_lane(
+                                internal_waveform, teacher_waveform, input_features
+                            )
+                    if graph_stream is not None:
+                        device_module.current_stream(device).wait_stream(graph_stream)
+                    else:
+                        pass
+                    with graph_backend.capture(
+                        pool=graph_pool,
+                        stream=graph_stream,
+                        thread_local_errors=True,
+                    ) as graph:
+                        codes = encode_lane(
+                            internal_waveform, teacher_waveform, input_features
+                        )
+                    graphs[bucket_frames] = ReferenceEncodeGraph(
+                        graph=graph,
+                        internal_waveform=internal_waveform,
+                        teacher_waveform=teacher_waveform,
+                        input_features=input_features,
+                        codes=codes,
+                    )
+            except Exception as exc:
+                logger.warning(
+                    "Zonos3 reference encoder graph capture disabled: "
+                    f"{type(exc).__name__}: {exc}",
+                    exc_info=True,
+                )
+                self.encode_graphs = {}
+                return
+        self.encode_graphs = graphs
+        logger.info(
+            "Zonos3 reference encoder graphs captured for %d lane buckets",
+            len(graphs),
+        )
 
     def reference_lanes(self, waveform: torch.Tensor) -> list[ReferenceLane]:
         """Cut a (1, samples) 44.1 kHz CPU waveform into lanes; both resamplers run on the CPU here."""
@@ -410,24 +503,36 @@ class Zonos3CodecEncoder(nn.Module):
             dtype=torch.int64,
             device=device,
         )
-        for lane in lanes:
-            encode_graph = self.encode_graphs.get(
-                lane.internal_waveform.shape[1] // INTERNAL_SAMPLES_PER_FRAME
-            )
-            if encode_graph is None:
-                lane_codes = self.lane_codes(
-                    lane.internal_waveform.to(device),
-                    lane.teacher_waveform.to(device),
+        with device_guard(device):
+            for lane in lanes:
+                output_start_frame = lane.output_start_frame
+                output_end_frame = lane.output_end_frame
+                source_slice = slice(
+                    output_start_frame - lane.source_frame,
+                    output_end_frame - lane.source_frame,
                 )
-            else:
-                encode_graph.internal_waveform.copy_(lane.internal_waveform)
-                encode_graph.teacher_waveform.copy_(lane.teacher_waveform)
-                encode_graph.graph.replay()
-                lane_codes = encode_graph.codes
-            codes[:, lane.output_start_frame : lane.output_end_frame] = lane_codes[
-                :,
-                lane.output_start_frame
-                - lane.source_frame : lane.output_end_frame
-                - lane.source_frame,
-            ]
+                encode_graph = self.encode_graphs.get(
+                    lane.internal_waveform.shape[1] // INTERNAL_SAMPLES_PER_FRAME
+                )
+                if encode_graph is None:
+                    codes[:, output_start_frame:output_end_frame] = self.lane_codes(
+                        lane.internal_waveform.to(device),
+                        lane.teacher_waveform.to(device),
+                    )[:, source_slice]
+                else:
+                    # note (zhaochenyang20): the read of the graph's codes must stay under the lock, or another worker's replay overwrites them first.
+                    with self.encode_lock:
+                        encode_graph.internal_waveform.copy_(lane.internal_waveform)
+                        if encode_graph.input_features is None:
+                            encode_graph.teacher_waveform.copy_(lane.teacher_waveform)
+                        else:
+                            encode_graph.input_features.copy_(
+                                self.semantic_features.filterbank_features(
+                                    lane.teacher_waveform
+                                )
+                            )
+                        encode_graph.graph.replay()
+                        codes[:, output_start_frame:output_end_frame] = (
+                            encode_graph.codes[:, source_slice]
+                        )
         return codes

@@ -22,6 +22,7 @@ from sglang_omni.models.zonos3.backbone_kernels import (
 )
 from sglang_omni.models.zonos3.hf_config import Zonos3Config
 from sglang_omni.models.zonos3.mixers import Zonos3Attention, Zonos3GatedDeltaNet
+from sglang_omni.platforms import current_platform
 
 # Checkpoint tensors stored with a leading split axis that the model fuses into one linear.
 FUSED_CHECKPOINT_SUFFIXES = (".attention.wkv.weight", ".feed_forward.w_in.weight")
@@ -60,12 +61,16 @@ class FloatRMSNorm(nn.Module):
         self.epsilon = epsilon
 
     def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
-        return F.rms_norm(
-            hidden_states.float(),
-            (hidden_states.shape[-1],),
-            self.weight,
-            self.epsilon,
-        )
+        states = hidden_states.float()
+        if current_platform.is_npu():
+            # note: the fused Ascend rms norm replaces the four kernels F.rms_norm decomposes into here, within 1.4e-6 of the same float32 math.
+            import torch_npu
+
+            normalized, _ = torch_npu.npu_rms_norm(states, self.weight, self.epsilon)
+            return normalized
+        else:
+            pass
+        return F.rms_norm(states, (states.shape[-1],), self.weight, self.epsilon)
 
 
 class Zonos3DenseFeedForward(nn.Module):
