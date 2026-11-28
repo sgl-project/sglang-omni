@@ -275,6 +275,8 @@ def test_stream_done_sends_its_ready_window_before_the_final_one() -> None:
     queue_chunk(scheduler, "r", frames(3, 4, 5))
 
     scheduler.handle_stream_done("r")
+    while scheduler.pending_finalizations:
+        scheduler.run_ready_step()
 
     messages = [scheduler.outbox.get_nowait() for _ in range(scheduler.outbox.qsize())]
     assert [message.type for message in messages] == ["stream", "stream", "result"]
