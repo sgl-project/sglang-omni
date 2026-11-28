@@ -34,6 +34,10 @@ sgl-omni serve \
 
 ## Synthesizing Speech
 
+### Async Decode
+
+The CUDA generation stage enables Async Decode by default. It launches the next decode step before collecting the previous step's CPU outputs, with audio feedback kept on the GPU. Disable it with `--tts_generation.factory.enable_async_decode false`; optionally set `--tts_generation.factory.async_decode_min_batch_size 2` to use it only for batches of at least two requests. The minimum batch size defaults to 1. Prefill drains pending decode results first, and both streaming and non-streaming requests are supported.
+
 ### Preset Voice
 
 Voxtral ships preset voices with the checkpoint. Use `cheerful_female` for the

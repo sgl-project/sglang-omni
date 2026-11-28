@@ -157,6 +157,8 @@ def create_generation_executor(
     device: str | None = None,
     gpu_id: int | None = None,
     max_new_tokens: int = 4096,
+    enable_async_decode: bool = True,
+    async_decode_min_batch_size: int = 1,
     server_args_overrides: Mapping[str, object] | None = None,
 ) -> OmniScheduler[VoxtralSGLangRequestData]:
     """Factory for the SGLang-backed AR generation stage."""
@@ -165,7 +167,10 @@ def create_generation_executor(
         VoxtralTtsEngineBuilder,
     )
 
-    return VoxtralTtsEngineBuilder().build(
+    return VoxtralTtsEngineBuilder(
+        enable_async_decode=enable_async_decode,
+        async_decode_min_batch_size=async_decode_min_batch_size,
+    ).build(
         model_path,
         device=device,
         gpu_id=gpu_id,

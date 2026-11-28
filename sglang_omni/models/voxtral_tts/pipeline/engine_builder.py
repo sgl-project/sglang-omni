@@ -57,8 +57,12 @@ class VoxtralTtsEngineBuilder(TtsEngineBuilder[VoxtralSGLangRequestData]):
     model_name = "Voxtral TTS"
     context_length = 8192
 
-    def __init__(self) -> None:
+    def __init__(
+        self, *, enable_async_decode: bool, async_decode_min_batch_size: int
+    ) -> None:
         self.voice_embeddings: dict[str, Tensor] = {}
+        self.enable_async_decode: bool = enable_async_decode
+        self.async_decode_min_batch_size: int = async_decode_min_batch_size
 
     def pre_infra_setup(self, checkpoint_dir: str) -> None:
         del checkpoint_dir
@@ -126,7 +130,12 @@ class VoxtralTtsEngineBuilder(TtsEngineBuilder[VoxtralSGLangRequestData]):
         return model_runner_mod.VoxtralTTSModelRunner(model_worker, output_proc)
 
     def extra_scheduler_kwargs(self) -> SchedulerExtras[VoxtralSGLangRequestData]:
-        return {"stream_output_builder": request_builders.VoxtralStreamOutput()}
+        return {
+            "stream_output_builder": request_builders.VoxtralStreamOutput(),
+            "enable_async_decode": self.enable_async_decode,
+            "async_decode_min_batch_size": self.async_decode_min_batch_size,
+            "async_decode_resolve_before_prefill": True,
+        }
 
     def make_adapters(self, model: VoxtralSGLangTTSModel | None) -> tuple[
         Callable[[StagePayload], VoxtralSGLangRequestData],
