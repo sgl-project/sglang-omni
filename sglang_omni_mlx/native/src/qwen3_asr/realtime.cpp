@@ -203,9 +203,15 @@ RealtimeSettings MakeRealtimeSettings(int decode_interval_ms,
 
 RealtimeSession::RealtimeSession(TranscriptionWorker &worker,
                                  const Qwen3ASRTranscriber &transcriber,
-                                 RealtimeSettings settings, Sender sender)
+                                 RealtimeSettings settings, Sender sender,
+                                 bool hold_gpu_clock)
     : RealtimeConnection(std::move(sender)), worker_(worker),
-      transcriber_(transcriber), settings_(settings) {}
+      transcriber_(transcriber), settings_(settings) {
+  if (hold_gpu_clock) {
+    gpu_clock_.emplace();
+  } else {
+  }
+}
 
 bool RealtimeSession::Handle(const nlohmann::json &message) {
   const nlohmann::json type = message.value("type", nlohmann::json());
@@ -269,7 +275,10 @@ bool RealtimeSession::Handle(const nlohmann::json &message) {
     }
     return true;
   } else if (type == "input_audio_buffer.append") {
-    gpu_clock_.Touch();
+    if (gpu_clock_.has_value()) {
+      gpu_clock_->Touch();
+    } else {
+    }
     Append(message.value("audio", nlohmann::json()),
            message.value("preview_refresh", nlohmann::json()),
            message.value("speech_epoch", nlohmann::json()),

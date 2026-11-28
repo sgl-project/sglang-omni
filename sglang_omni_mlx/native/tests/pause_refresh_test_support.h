@@ -23,7 +23,7 @@ inline std::shared_ptr<RealtimeSession> MakePauseRefreshSession(
   static Qwen3ASRTranscriber transcriber;
   transcriber.decoder = std::move(decoder);
   return std::make_shared<RealtimeSession>(worker, transcriber, settings,
-                                           std::move(sender));
+                                           std::move(sender), false);
 }
 
 inline constexpr auto kPauseRefreshTestWait = std::chrono::seconds(10);

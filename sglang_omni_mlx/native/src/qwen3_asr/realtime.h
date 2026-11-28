@@ -92,7 +92,8 @@ class RealtimeSession : public omni_server::RealtimeConnection {
 public:
   RealtimeSession(omni_server::TranscriptionWorker &worker,
                   const Qwen3ASRTranscriber &transcriber,
-                  RealtimeSettings settings, Sender sender);
+                  RealtimeSettings settings, Sender sender,
+                  bool hold_gpu_clock = true);
 
   bool Handle(const nlohmann::json &message) override;
   void Close() override;
@@ -279,7 +280,7 @@ private:
   bool is_shadowing_ = false;
   // Cancels a running shadow Final once the Final is taken.
   omni_server::CancelFlag shadow_cancel_ = omni_server::NewCancelFlag();
-  omni_common::GpuClockHold gpu_clock_;
+  std::optional<omni_common::GpuClockHold> gpu_clock_;
 };
 
 } // namespace qwen3_asr
