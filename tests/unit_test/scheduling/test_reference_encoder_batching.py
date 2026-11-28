@@ -195,6 +195,19 @@ def test_close_stops_the_batch_worker() -> None:
     assert not service.batch_thread.is_alive()
 
 
+@pytest.mark.parametrize("reference", ["cached", "fresh", "uncacheable-a"])
+def test_closed_service_rejects_requests(reference: str) -> None:
+    """Requests after shutdown must fail instead of waiting on an exited worker."""
+    hook = BatchHook()
+    service = make_service(hook)
+    service.get_or_encode("cached")
+    service.close()
+    service.timeout_s = 0.01
+
+    with pytest.raises(RuntimeError, match="shutting down"):
+        service.get_or_encode(reference)
+
+
 def test_shutdown_fails_queued_waiters_instead_of_hanging() -> None:
     hook = BatchHook()
     hook.gate = threading.Event()
@@ -222,16 +235,10 @@ def test_shutdown_fails_queued_waiters_instead_of_hanging() -> None:
             with queue_grew:
                 assert queue_grew.wait_for(lambda: None in queued_entries, timeout=5)
             late = pool.submit(service.get_or_encode, "item-late")
-            with queue_grew:
-                assert queue_grew.wait_for(
-                    lambda: isinstance(queued_entries[-1], tuple)
-                    and queued_entries[-1][0] == "item-late",
-                    timeout=5,
-                )
-            hook.gate.set()
-
             with pytest.raises(RuntimeError, match="shutting down"):
                 late.result(timeout=5)
+            hook.gate.set()
+
             assert [tuple(future.result(timeout=5).tolist()) for future in early] == [
                 (6, ord("0")),
                 (6, ord("1")),

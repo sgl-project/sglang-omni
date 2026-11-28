@@ -69,17 +69,18 @@ class TensorHook(TensorReferenceEncodeHook[str]):
 
 def test_service_close_delegates_to_hook() -> None:
     class ClosableHook(TensorHook):
-        closed = False
+        close_calls = 0
 
         def close(self) -> None:
-            self.closed = True
+            self.close_calls += 1
 
     hook = ClosableHook()
     service = ReferenceEncodeService(hook)
 
     service.close()
+    service.close()
 
-    assert hook.closed
+    assert hook.close_calls == 1
 
 
 def test_tensor_hook_builds_key_and_owns_stored_and_loaded_tensors() -> None:

@@ -169,6 +169,7 @@ class ReferenceEncodeService(Generic[InputT, ArtifactT, StoredT, RawInputT]):
         self.timeout_s = float(timeout_s)
         self.log_prefix = log_prefix
         self.lock = threading.Lock()
+        self.closed: bool = False
         self.inflight: dict[str, concurrent.futures.Future[StoredT]] = {}
         self.hits = 0
         self.misses = 0
@@ -204,10 +205,15 @@ class ReferenceEncodeService(Generic[InputT, ArtifactT, StoredT, RawInputT]):
         return self.batching
 
     def close(self) -> None:
-        if self.batch_queue is not None:
-            self.batch_queue.put(None)
-        else:
-            pass
+        with self.lock:
+            if self.closed:
+                return
+            else:
+                self.closed = True
+            if self.batch_queue is not None:
+                self.batch_queue.put(None)
+            else:
+                pass
         thread = self.batch_thread
         if thread is not None and thread.is_alive():
             thread.join(timeout=5.0)
@@ -220,13 +226,21 @@ class ReferenceEncodeService(Generic[InputT, ArtifactT, StoredT, RawInputT]):
             pass
 
     def encode_leader(self, item: InputT) -> ArtifactT:
-        if self.batch_queue is None:
+        future: concurrent.futures.Future[ArtifactT] | None = None
+        with self.lock:
+            if self.closed:
+                raise RuntimeError("reference encode service is shutting down")
+            else:
+                pass
+            if self.batch_queue is not None:
+                future = concurrent.futures.Future()
+                self.batch_queue.put((item, future))
+            else:
+                pass
+        if future is None:
             return self._hook.encode_one(item)  # noqa: leading-underscore
         else:
-            pass
-        future: concurrent.futures.Future[ArtifactT] = concurrent.futures.Future()
-        self.batch_queue.put((item, future))
-        return future.result(timeout=self.timeout_s)
+            return future.result(timeout=self.timeout_s)
 
     def drain_batch(
         self,
@@ -363,6 +377,10 @@ class ReferenceEncodeService(Generic[InputT, ArtifactT, StoredT, RawInputT]):
         follower_fut: concurrent.futures.Future[StoredT] | None = None
         stored: StoredT | None = None
         with self.lock:
+            if self.closed:
+                raise RuntimeError("reference encode service is shutting down")
+            else:
+                pass
             stored = self.cache.get(cache_key)
             if stored is not None:
                 self.hits += 1
