@@ -15,6 +15,7 @@ import pytest
 from sglang.srt.arg_groups.cuda_graph_hook import (
     generate_prefill_cuda_graph_batch_sizes,
 )
+from sglang.srt.configs.model_config import ModelConfig
 
 import sglang_omni.models.qwen3_asr.engine_builder as qwen3_asr_builder
 import sglang_omni.models.qwen3_asr.stages as qwen3_asr_stages
@@ -25,6 +26,7 @@ import sglang_omni.utils.cuda_graph_batch_validator as cuda_graph_batch_validato
 import sglang_omni.utils.device as device_utils
 from sglang_omni.models.qwen3_asr import request_builders
 from sglang_omni.models.qwen3_asr.config import Qwen3ASRPipelineConfig
+from sglang_omni.models.qwen3_asr.configuration_qwen3_asr import Qwen3ASRConfig
 from sglang_omni.models.qwen3_asr.engine_builder import Qwen3ASREngineBuilder
 from sglang_omni.models.qwen3_asr.stages import create_sglang_qwen3_asr_executor
 from sglang_omni.models.registry import PIPELINE_CONFIG_REGISTRY
@@ -38,6 +40,9 @@ from sglang_omni.scheduling.generation_batch_policy import (
     build_default_cuda_graph_bs,
     build_generation_batch_overrides,
     validate_generation_batch_policy,
+)
+from sglang_omni.scheduling.sglang_backend.server_args_builder import (
+    build_sglang_server_args,
 )
 
 
@@ -420,6 +425,67 @@ def test_qwen3_asr_torch_mps_profile_overrides_typed_torch_compile_default() -> 
 
     assert defaults["enable_torch_compile"] is False
     assert overrides["enable_torch_compile"] is False
+
+
+@pytest.mark.parametrize(
+    ("device", "enable_multimodal", "quantization"),
+    [
+        ("mps", None, None),
+        ("mps", True, None),
+        ("cuda", None, None),
+        ("mps", None, "awq"),
+    ],
+)
+def test_qwen3_asr_resolves_its_checkpoint_without_sglang_mps_multimodal_serving(
+    tmp_path: Path,
+    device: str,
+    enable_multimodal: bool | None,
+    quantization: str | None,
+) -> None:
+    """MPS accepts ASR startup without bypassing quantization checks or changing CUDA."""
+    checkpoint_config = Qwen3ASRConfig(
+        architectures=["Qwen3ASRForConditionalGeneration"],
+        thinker_config={
+            "text_config": {
+                "hidden_size": 128,
+                "intermediate_size": 256,
+                "max_position_embeddings": 8192,
+                "num_attention_heads": 4,
+                "num_hidden_layers": 2,
+                "num_key_value_heads": 4,
+                "vocab_size": 1000,
+            },
+        },
+    )
+    checkpoint_config.to_json_file(tmp_path / "config.json")
+    builder = make_engine_builder(mm_attention_backend="sdpa")
+    builder.device = device
+    builder.gpu_id = 0
+    overrides = build_generation_batch_overrides(
+        **builder.generation_defaults(dtype="float16"),
+        server_args_overrides={
+            "enable_multimodal": enable_multimodal,
+            "quantization": quantization,
+        },
+    )
+    builder.adjust_overrides(overrides)
+
+    if quantization is not None:
+        with pytest.raises(ValueError, match="unquantized model weights"):
+            build_sglang_server_args(
+                str(tmp_path), builder.context_length, device=device, **overrides
+            )
+    else:
+        server_args = build_sglang_server_args(
+            str(tmp_path), builder.context_length, device=device, **overrides
+        )
+        model_config = ModelConfig.from_server_args(server_args)
+        assert model_config.is_multimodal is (device == "cuda")
+        assert model_config.hf_config.architectures == [
+            "Qwen3ASRForConditionalGeneration"
+        ]
+        assert model_config.hf_config.thinker_config.audio_config is not None
+        assert model_config.hf_text_config.hidden_size == 128
 
 
 @pytest.mark.parametrize(
