@@ -586,3 +586,12 @@ def test_each_duplex_session_optimization_turns_off_alone(
     native_stages.MiniCPMOVocoderRuntime.return_value.warm_up.assert_called_once_with(
         b"reference", capture_chunk_graphs=captures_chunk_graphs
     )
+
+
+def test_speech_fused_qkv_is_opt_in() -> None:
+    default = MiniCPMODuplexPipelineConfig(model_path="local")
+    enabled = MiniCPMODuplexPipelineConfig(
+        model_path="local", speech={"enable_fused_qkv": True}
+    )
+    assert default.stage_factory_kwargs("speech")["enable_fused_qkv"] is False
+    assert enabled.stage_factory_kwargs("speech")["enable_fused_qkv"] is True

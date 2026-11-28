@@ -90,11 +90,26 @@ class Attention(torch.nn.Module):
         self.to_q = nn.Linear(dim, self.inner_dim, bias=qkv_bias)
         self.to_k = nn.Linear(dim, self.inner_dim, bias=qkv_bias)
         self.to_v = nn.Linear(dim, self.inner_dim, bias=qkv_bias)
+        self.register_buffer("fused_qkv_weight", None, persistent=False)
+        self.register_buffer("fused_qkv_bias", None, persistent=False)
         self.q_norm = norm_layer(self.head_dim) if qk_norm else nn.Identity()
         self.k_norm = norm_layer(self.head_dim) if qk_norm else nn.Identity()
         self.attn_drop = nn.Dropout(attn_drop)
         self.proj_drop = nn.Dropout(proj_drop)
         self.proj = nn.Linear(self.inner_dim, dim)
+
+    def enable_fused_qkv(self) -> None:
+        """Pack the loaded projections for streaming inference."""
+        projections = (self.to_q, self.to_k, self.to_v)
+        self.fused_qkv_weight = torch.cat(
+            [projection.weight.detach() for projection in projections], dim=0
+        )
+        if self.to_q.bias is not None:
+            self.fused_qkv_bias = torch.cat(
+                [projection.bias.detach() for projection in projections], dim=0
+            )
+        else:
+            pass
 
     def to_heads(self, ts: torch.Tensor) -> torch.Tensor:
         b, t, c = ts.shape
@@ -111,9 +126,19 @@ class Attention(torch.nn.Module):
     ) -> tuple[torch.Tensor, AttentionState | None]:
         """A window holds keys and values over [new frames, history] with the history already written; the new keys and values are written into its leading frames in place."""
         b, t, c = x.shape
-        q = self.to_q(x)
-        k = self.to_k(x)
-        v = self.to_v(x)
+        if (
+            self.fused_qkv_weight is not None
+            and not self.training
+            and not torch.is_grad_enabled()
+            and (window is not None or state is not None)
+        ):
+            q, k, v = F.linear(x, self.fused_qkv_weight, self.fused_qkv_bias).split(
+                self.inner_dim, dim=-1
+            )
+        else:
+            q = self.to_q(x)
+            k = self.to_k(x)
+            v = self.to_v(x)
         q = self.to_heads(q)
         k = self.to_heads(k)
         v = self.to_heads(v)

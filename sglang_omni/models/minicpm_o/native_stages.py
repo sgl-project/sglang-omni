@@ -579,6 +579,7 @@ def create_speech_scheduler(
     enable_hift_torch_compile: bool = DEFAULT_SPEECH_SETTINGS.enable_hift_torch_compile,
     n_timesteps: int = DEFAULT_SPEECH_SETTINGS.n_timesteps,
     enable_chunk_cuda_graph: bool = DEFAULT_SPEECH_SETTINGS.enable_chunk_cuda_graph,
+    enable_fused_qkv: bool = DEFAULT_SPEECH_SETTINGS.enable_fused_qkv,
     gather_window_ms: float = DEFAULT_SPEECH_SETTINGS.gather_window_ms,
 ) -> SessionScheduler:
     device = str(resolve_concrete_device(device, gpu_id))
@@ -600,6 +601,11 @@ def create_speech_scheduler(
         decode_stream_priority=CODE2WAV_DECODE_STREAM_PRIORITY,
         enable_flow_block_compile=False,
     )
+    if enable_fused_qkv:
+        for block in codec.token2wav.flow.decoder.estimator.blocks:
+            block.attn.enable_fused_qkv()
+    else:
+        pass
     runtime = MiniCPMOVocoderRuntime(
         codec,
         max_state_bytes_per_session=max_state_bytes_per_session,
