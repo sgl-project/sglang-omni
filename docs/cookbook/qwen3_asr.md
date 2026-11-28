@@ -164,7 +164,11 @@ async def main() -> None:
             "type": "session.update",
             "session": {"language": "English"},
         }))
-        print(await ws.recv())
+        event = json.loads(await ws.recv())
+        if event["type"] == "error":
+            raise RuntimeError(event["error"]["message"])
+        else:
+            print(event)
 
         with wave.open("query_to_cars_16k.wav", "rb") as audio_file:
             if (
@@ -188,7 +192,9 @@ async def main() -> None:
 
         while True:
             event = json.loads(await ws.recv())
-            if event["type"] == "transcription.completed":
+            if event["type"] == "error":
+                raise RuntimeError(event["error"]["message"])
+            elif event["type"] == "transcription.completed":
                 print(event["text"])
                 break
             else:
@@ -197,6 +203,8 @@ async def main() -> None:
 
 asyncio.run(main())
 ```
+
+Server `error` events raise `RuntimeError`, so a failed segment or rejected session update cannot silently produce a successful-looking partial transcript.
 
 The example extracts PCM frames from an uncompressed mono 16 kHz PCM16 WAV file and sends packets containing 100 ms of audio. It sends the file as fast as possible; add pacing when simulating live capture. The WebSocket endpoint does not resample audio, so convert other input formats before sending them.
 
