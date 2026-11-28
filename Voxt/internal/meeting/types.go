@@ -87,6 +87,11 @@ type Snapshot struct {
 	Progress float64
 	Started  time.Time
 	Elapsed  time.Duration
+	// Quiet is how long the meeting has recorded since a track last heard
+	// someone speak, pauses not counted: 0 while someone speaks. Silero
+	// decides when the live recognition has it; else the level against
+	// the room's floor (quiet.go).
+	Quiet time.Duration
 	// Levels are each track's last session.Bars input levels as bar
 	// heights (session.Level), oldest first: its waveform.
 	Levels    map[Source][]float64
@@ -94,6 +99,9 @@ type Snapshot struct {
 	Segments  []Segment
 	Translate string
 	Problem   *Problem
+	// Mistake: it asks (StateAsking) because it ended with hardly anything
+	// heard, not because history is off (mistake.go).
+	Mistake bool
 }
 
 // StartRequest names a new meeting.

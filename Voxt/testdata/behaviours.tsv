@@ -39,9 +39,24 @@ Notes	L	TestSessionNote	none
 Meeting live captions	L	TestCommitterLive	none
 Meeting live captions	L	TestMeetingPlaythrough	none
 Meeting live captions	L	TestDedupeOverlapText	none
+Meeting started by mistake	L	TestFewWordsAskAndKeep	none
+Meeting started by mistake	L	TestMeetingMistakeEndToEnd	none
 Meeting speakers and clean-up	L	TestDiarizeTrackChunksAndCarriesSpeakers	none
 Meeting speakers and clean-up	L	TestCorrectTranscript	none
 Meeting speakers and clean-up	E	TestEvalMTDSpeakers	none
+Meeting detection	L	TestMeetingDetectedAsksOnce	Which real apps hold the microphone during a meeting is checked by hand only
+Meeting detection	L	TestMeetingDetectedInBrowser	Reading a real browser's tab is checked by hand only
+Meeting detection	L	TestMeetingAskMenu	none
+Meeting detection	L	TestMeetingChatClipsRequireConfirmation	Real chat apps and long voice messages require the manual checks in docs/manual-test.md
+Meeting detection	L	TestMeetingDetectReadsTheTabAgain	Real Chrome accessibility restoration and window-manager interactions require the manual checks in docs/manual-test.md
+Meeting detection	L	TestMeetingAskCompact	The card's window (its place, staying behind the app in front, the pointer over it) is checked by hand only
+Meeting detection	L	TestMeetingDetectEndToEnd	none
+Meeting detection	L	TestMeetingDetectDuringDictationEndToEnd	none
+Meeting detection	L	TestMeetingEndedAsks	Whether an app lets go of the microphone when muted is checked by hand only
+Meeting detection	L	TestMeetingDetectedInArc	A real Arc or Dia tab is checked by hand only
+Meeting detection	M	TestMacHelperMicWatch	none
+Meeting detection	M	TestMacE2EMeetingDetect	none
+Meeting detection	manual	docs/manual-test.md	A real meeting app joining a call is checked by hand only
 Meeting permissions	manual	docs/manual-test.md	System permission state can only be checked on a Mac
 History	L	TestHistoryTabs	No real-app check that each session leaves one entry
 History	L	TestHistoryAllTab	none
@@ -101,3 +116,4 @@ Home Looking back folds to its title row and stays folded	L	TestLookingBackFolds
 Session list: switch sessions on the card, each keeping its card and conversation	L	TestSessionSlotSwitchKeepsConversations	A real-app pass over the session row and the parked cards is checked by hand only
 Sessions come back after a restart while history is kept	L	TestSessionsSurviveRestart	none
 Sidebar update control (bar and icon-rail button) and menu bar tray update action	L	TestSidebarUpdateControlAndTray	none
+Meeting detection	M	TestMacE2EMeetingDetectLive	Requires a prepared real Zoom microphone test or meeting, or Chrome using its microphone on the chosen tab (docs/manual-test.md, 15.3a)

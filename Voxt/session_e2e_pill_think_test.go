@@ -97,13 +97,23 @@ func TestPillThinkingLevel(t *testing.T) {
 // answer is pasted and kept, the snapshot says the level, and the
 // service's setting stays.
 func TestPillThinkingLevelEndToEnd(t *testing.T) {
+	recorded := make(chan int, 2)
 	chat := &fakeChat{text: "Hello, VoxtNew.", delay: time.Minute}
+	chat.onRequest = func() { recorded <- len(chat.requests()) }
 	set, keys, _ := fileSetup(t, "hello aura link", chat)
 	ev := script(t, hotkeyLine(0, "transcribe/0", proto.PhaseTrigger), hotkeyLine(400, "transcribe/0", proto.PhaseTrigger))
 	a := newSessionApp(t, ev, set, keys)
 	a.pump("the model's step", func() bool {
-		return a.sess.State == session.Composing && a.sess.CanSkip && len(chat.requests()) == 1
+		return a.sess.State == session.Composing && a.sess.CanSkip
 	})
+	select {
+	case n := <-recorded:
+		if n != 1 {
+			t.Fatalf("the first request is recorded: got %d", n)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the model did not receive the request")
+	}
 	chat.mu.Lock()
 	chat.delay = 0
 	chat.mu.Unlock()

@@ -45,18 +45,48 @@ func FinalizePass(ctx context.Context, cfg Config, mt store.Meeting, onProgress 
 		}()
 	}
 	var first error
-	trackN := len(sources)
+	// Every track's speech first: the progress is the share of all of it
+	// recognised, so a long track does not stand still at half and a
+	// short one jump.
+	found := map[Source]*trackSpeech{}
+	speechTotal := 0
+	for _, src := range sources {
+		ts, err := findTrackSpeech(ctx, cfg, audioDir, src)
+		if err != nil {
+			if first == nil {
+				first = err
+			}
+			continue
+		}
+		found[src] = ts
+		if ts != nil {
+			speechTotal += ts.samples
+		}
+	}
 	done := map[Source][]Segment{}
+	base := 0.0
 	for i, src := range sources {
+		ts, ok := found[src]
+		if !ok {
+			continue // its error is first's
+		}
 		if src == SourceSystem && mode.Diarize() && holdRelease != nil {
 			// MTD cannot start until the selected speech model's hold lets its server stop.
 			holdRelease()
 			holdRelease = nil
 		}
-		base := float64(i) / float64(trackN)
-		segs, err := finalizeTrack(ctx, cfg, audioDir, src, mode.Diarize(), func(p float64) {
+		share := 1 / float64(len(sources))
+		if speechTotal > 0 {
+			share = 0
+			if ts != nil {
+				share = float64(ts.samples) / float64(speechTotal)
+			}
+		}
+		from := base
+		base += share
+		segs, err := finalizeTrack(ctx, cfg, audioDir, src, ts, mode.Diarize(), func(p float64) {
 			if onProgress != nil {
-				onProgress(base + p/float64(trackN))
+				onProgress(from + p*share)
 			}
 		})
 		if err != nil {
@@ -108,21 +138,47 @@ func FinalizePass(ctx context.Context, cfg Config, mt store.Meeting, onProgress 
 	return cfg.Store.UpdateMeeting(ctx, mt)
 }
 
-// finalizeTrack transcribes one track's WAV again; nil segments mean the
-// track has nothing to replace (no file, or no audio).
-func finalizeTrack(ctx context.Context, cfg Config, dir string, src Source, diarize bool, onProgress func(float64)) ([]Segment, error) {
-	path := filepath.Join(dir, string(src)+".wav")
-	pcm, rate, err := readTrackPCM(path)
+// trackSpeech is where a track speaks, found before any of it is
+// recognised; nil for a track with no file or no audio.
+type trackSpeech struct {
+	speech  []vad.Segment
+	samples int // of speech: the track's weight in the progress
+}
+
+func findTrackSpeech(ctx context.Context, cfg Config, dir string, src Source) (*trackSpeech, error) {
+	pcm, rate, err := readTrackPCM(filepath.Join(dir, string(src)+".wav"))
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, nil
 		}
 		return nil, err
 	}
+	if len(pcm) < 2 {
+		return nil, nil
+	}
 	speech, err := speechRegions(ctx, pcm, rate, cfg.VAD)
 	if err != nil {
 		return nil, err
 	}
+	ts := &trackSpeech{speech: speech}
+	for _, s := range speech {
+		ts.samples += s.End - s.Start
+	}
+	return ts, nil
+}
+
+// finalizeTrack transcribes one track's WAV again where ts found speech;
+// nil segments mean the track has nothing to replace (no file, or no
+// audio).
+func finalizeTrack(ctx context.Context, cfg Config, dir string, src Source, ts *trackSpeech, diarize bool, onProgress func(float64)) ([]Segment, error) {
+	if ts == nil {
+		return nil, nil
+	}
+	pcm, rate, err := readTrackPCM(filepath.Join(dir, string(src)+".wav"))
+	if err != nil {
+		return nil, err
+	}
+	speech := ts.speech
 	total := len(pcm) / 2
 	if total == 0 {
 		return nil, nil
@@ -140,6 +196,7 @@ func finalizeTrack(ctx context.Context, cfg Config, dir string, src Source, diar
 		if ta.File == nil {
 			return nil, fmt.Errorf("meeting: no file ASR for %s", src)
 		}
+		file := asr.FileTranscriber(scriptedFile{ta.File, ta.Script})
 		chunks := PlanChunks(speech, total, chunkP)
 		req := asr.FileRequest{
 			SampleRate: rate, Lang: ta.Lang, Prompt: ta.Prompt, Hints: ta.Hints, Format: "pcm",
@@ -150,7 +207,7 @@ func finalizeTrack(ctx context.Context, cfg Config, dir string, src Source, diar
 				return nil, err
 			}
 			if d != nil {
-				segs, err := diarizeTrack(ctx, src, d, req, rate, pcm, speech, onProgress)
+				segs, err := diarizeTrack(ctx, src, scriptedDiarizer{d, ta.Script}, req, rate, pcm, speech, onProgress)
 				if err != nil {
 					return nil, err
 				}
@@ -160,7 +217,7 @@ func finalizeTrack(ctx context.Context, cfg Config, dir string, src Source, diar
 				return segs, nil
 			}
 		}
-		segs, err := transcribeChunks(ctx, src, ta.File, req, rate, pcm, chunks, onProgress)
+		segs, err := transcribeChunks(ctx, src, file, req, rate, pcm, chunks, onProgress)
 		if err != nil {
 			return nil, err
 		}
@@ -358,9 +415,14 @@ func sameWords(a, b []string) bool {
 func transcribeChunks(ctx context.Context, src Source, ft asr.FileTranscriber, req asr.FileRequest, rate int, pcm []byte, chunks []Chunk, onProgress func(float64)) ([]Segment, error) {
 	var out []Segment
 	var prevText string
+	// By audio, not by chunk: a short chunk is quick, a long one is not.
+	all, recognised := 0, 0
+	for _, ch := range chunks {
+		all += ch.End - ch.Start
+	}
 	for i, ch := range chunks {
-		if onProgress != nil && len(chunks) > 0 {
-			onProgress(float64(i) / float64(len(chunks)))
+		if onProgress != nil && all > 0 {
+			onProgress(float64(recognised) / float64(all))
 		}
 		req.Audio = pcm[ch.Start*2 : ch.End*2]
 		if req.SampleRate == 0 {
@@ -370,6 +432,7 @@ func transcribeChunks(ctx context.Context, src Source, ft asr.FileTranscriber, r
 		if err != nil {
 			return out, fmt.Errorf("chunk %d: %w", i, err)
 		}
+		recognised += ch.End - ch.Start
 		text := sanitizeSegmentText(res.Text, req, true)
 		if i > 0 {
 			text = DedupeOverlapText(prevText, text)

@@ -39,6 +39,8 @@ type settingsPrivacyActions interface {
 type settingsMeetingActions interface {
 	setMeetingCaptureMode(captureMode string)
 	setMeetingHideFromSharing(hideFromSharing bool)
+	setMeetingDetect(detect bool)
+	setMeetingAutoStart(auto bool)
 	setMeetingASR(speechModelID string)
 	setMeetingLanguage(languageCode string)
 	setMeetingLLM(languageModelID string)

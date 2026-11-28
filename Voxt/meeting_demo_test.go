@@ -24,8 +24,8 @@ func newMeetingDemoTester(t *testing.T, host *meetingDemoHost) *ui.Tester {
 		height = 2400
 	}
 	if fixture.state.Kind == "overlay" && fixture.state.Overlay.Visible {
-		model := meetingOverlayLayoutModel(*fixture.state.Overlay, host.overlayUI.menu)
-		width, height = model.Layout.Width, model.Layout.Height+48
+		model := meetingOverlayLayoutModel(*fixture.state.Overlay, host.overlayMenu())
+		width, height = model.Layout.Width, model.Layout.Height+48+meetingOvEndAskH // room for End's bubble
 	}
 	if fixture.state.Kind == "session-overlay" && host.sessionState.Mode != ovHidden {
 		placement := host.sessionDemoPlacement()
@@ -106,7 +106,7 @@ func meetingDemoSentinel(fixture meetingDemoFixture) string {
 			return fixture.name
 		}
 		if overlay.ShowAsking {
-			return i18n.T("Save this meeting?")
+			return overlay.AskingText
 		}
 		if overlay.ShowFinishing {
 			return overlay.FinishingText
@@ -710,7 +710,7 @@ func TestMeetingDemoActionControls(t *testing.T) {
 		{name: "seek second", fixture: "en/detail-normal", steps: steps("00:03 Alice"), want: []string{"seekMeetingPlayback detail-1 3000"}},
 		{name: "pause", fixture: "en/state-recording-meeting", steps: steps("Pause meeting"), want: []string{"meetingPauseResume"}},
 		{name: "resume", fixture: "en/state-paused", steps: steps("Resume meeting"), want: []string{"meetingPauseResume"}},
-		{name: "end overlay", fixture: "en/state-recording-meeting", steps: steps("End meeting"), want: []string{"meetingFinish"}},
+		{name: "end overlay", fixture: "en/state-recording-meeting", steps: steps("End meeting", "End"), want: []string{"requestMeetingFinish", "meetingFinish"}},
 		{name: "end starting", fixture: "en/state-starting", steps: steps("End meeting"), want: []string{"meetingFinish"}},
 		{name: "save", fixture: "en/state-asking", steps: steps("Save"), want: []string{"meetingSave"}},
 		{name: "discard", fixture: "en/state-asking", steps: steps("Discard"), want: []string{"meetingDiscard"}},

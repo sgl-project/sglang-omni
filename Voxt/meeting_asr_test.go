@@ -13,6 +13,7 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/local"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/meeting"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/models"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
 )
 
@@ -148,6 +149,37 @@ func TestMeetingDiarizerLanguageGate(t *testing.T) {
 				t.Errorf("%s: diarizer %v", tc.main, d)
 			}
 		})
+	}
+}
+
+// A meeting writes Chinese in the script its spoken language names, else
+// dictation's (#4534); left to the model, in the Chinese the user reads.
+func TestMeetingScript(t *testing.T) {
+	for _, c := range []struct {
+		main, meet string
+		reads      []string
+		want       string
+	}{
+		{"zh-Hans", "", nil, "zh-Hans"},
+		{"zh-Hant", "", nil, "zh-Hant"},
+		{"zh-Hans", "zh-Hant", nil, "zh-Hant"},
+		{"zh-Hans", "ja", nil, ""},
+		{"", "", []string{"zh-Hans-US", "en-US"}, "zh-Hans"}, // the user's Mac, an English Voxt
+		{"en", "", []string{"en-US", "zh-Hant-TW"}, "zh-Hant"},
+		{"", "", []string{"en-US"}, ""},
+		{"", "en", []string{"zh-Hans-CN"}, ""},
+	} {
+		var s settings.Settings
+		s.General.MainLanguage, s.Features.Meeting.Lang = c.main, c.meet
+		if got := meetingScript(s, "en", c.reads); got != c.want {
+			t.Errorf("main %q, meeting %q, reads %q: script %q, want %q", c.main, c.meet, c.reads, got, c.want)
+		}
+	}
+	a, _, _ := newTestApp(t)
+	a.local = &fakeLocal{ASRP: &fakeTranscriptions{}}
+	a.prefs.General.MainLanguage = "zh-Hant"
+	if ta, err := a.meetingTrackASR(context.Background(), meeting.SourceMic); err != nil || ta.Script != "zh-Hant" {
+		t.Fatalf("track: script %q, %v", ta.Script, err)
 	}
 }
 

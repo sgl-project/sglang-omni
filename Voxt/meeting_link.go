@@ -26,9 +26,13 @@ import (
 const meetingLogSource = "meeting"
 
 type meetingState struct {
-	meetMgr   *meeting.Manager
-	meetSnap  meeting.Snapshot
-	meetingUI *meetingSettingsUI // settings_meeting.go
+	meetMgr            *meeting.Manager
+	meetSnap           meeting.Snapshot
+	meetingUI          *meetingSettingsUI // settings_meeting.go
+	meetingDetectState                    // meeting_detect.go
+	// savedNotice is the meeting "Meeting saved" was last shown for: a
+	// meeting kept from its question says it once, after its final pass.
+	savedNotice string
 }
 
 func (a *app) openMeetings() {
@@ -117,16 +121,50 @@ func (a *app) meetingChanged(s meeting.Snapshot) {
 	a.meetSnap = s
 	if s.ID != prev.ID || s.State != prev.State {
 		a.meetOvUI.menu = meetingMenuNone // a menu for the state it opened in
+		a.meetOvUI.endAsk = false         // and End's question
 	}
 	if a.mv.read && (s.ID != prev.ID || s.State != prev.State) {
 		a.loadMeetings() // the meeting's row was written or its status changed (#3990)
 	}
 	a.followMeeting(s, prev)
+	if prev.State == meeting.StateFinishing && prev.ID != "" && (s.State == meeting.StateDone || s.State == meeting.StateIdle) {
+		// The overlay goes once the meeting is filed: say where it went.
+		a.noticeMeetingSaved(prev.ID)
+	}
+	if s.State.Active() != prev.State.Active() {
+		a.closeMeetingAsk() // meeting_detect.go: it records now
+		a.ask.snoozed = ""  // and is not asked about again later
+		if !s.State.Active() {
+			a.recorded = meetingRecorded{quietAsk: a.recorded.quietAsk} // meeting_detect_end.go
+		}
+		a.syncMeetingDetect() // an app that records is settled while Voxt does
+	}
+	a.followRecordedMeeting() // meeting_detect_end.go: quiet, a sound, or ended in Voxt
+	if s.State == meeting.StateAsking && s.Mistake && (prev.State != meeting.StateAsking || prev.ID != s.ID) {
+		a.keepUnanswered(s.ID)
+	}
 	a.syncMeetingOverlay()
 	a.syncHotkeys()
 	if a.tray != nil {
 		a.buildTrayMenu()
 	}
+}
+
+// meetingMistakeWait is how long "Started by mistake?" waits for an
+// answer. A meeting that asks blocks dictation and the next meeting, so a
+// question nobody answers is answered Keep: nothing is lost.
+const meetingMistakeWait = 30 * time.Second
+
+// keepUnanswered keeps meeting id when its question is still open after
+// meetingMistakeWait. With history off it waits for the user, as "Save
+// this meeting?" does: kept by itself, it would keep what they chose not
+// to.
+func (a *app) keepUnanswered(id string) {
+	a.later(meetingMistakeWait, func() {
+		if s := a.meetSnap; s.ID == id && s.State == meeting.StateAsking && s.Mistake && a.prefs.Privacy.KeepHistory {
+			a.meetingSave()
+		}
+	})
 }
 
 func meetingModeFrom(s settings.Meeting) meeting.Mode {
@@ -140,7 +178,11 @@ func meetingModeFrom(s settings.Meeting) meeting.Mode {
 	}
 }
 
-func (a *app) startMeeting() {
+func (a *app) startMeeting() { a.startMeetingThen(nil) }
+
+// startMeetingThen starts a meeting; failed, when not nil, also hears why
+// one did not start (the toast is the main window's, which may be closed).
+func (a *app) startMeetingThen(failed func(msg string, err error)) {
 	if a.meetMgr == nil {
 		return
 	}
@@ -150,36 +192,50 @@ func (a *app) startMeeting() {
 		_, err := a.meetMgr.Start(ctx, meeting.StartRequest{Mode: meetingModeFrom(a.prefs.Features.Meeting)})
 		if err != nil {
 			a.post(func() {
-				a.meetingFailed("start", meetingStartProblem(err), err)
+				msg := meetingStartProblem(err)
+				a.meetingFailed("start", msg, err)
+				if failed != nil {
+					failed(msg, err)
+				}
 			})
 		}
 	})
 }
 
 func (a *app) meetingPauseResume() {
-	if a.meetMgr == nil || a.meetSnap.ID == "" {
+	if a.meetMgr == nil || a.meetSnap.ID == "" || a.meetOvPending != "" {
+		return // one at a time: the last press is still on its way
+	}
+	id, target := a.meetSnap.ID, meeting.StatePaused
+	switch a.meetSnap.State {
+	case meeting.StateRecording:
+	case meeting.StatePaused:
+		target = meeting.StateRecording
+	default:
 		return
 	}
-	id := a.meetSnap.ID
+	a.meetOvPending = target // shown at once (meeting_overlay_window.go)
+	a.syncMeetingOverlay()
 	a.async(func() {
 		ctx := context.Background()
 		var err error
-		switch a.meetSnap.State {
-		case meeting.StateRecording:
+		if target == meeting.StatePaused {
 			err = a.meetMgr.Pause(ctx, id)
-		case meeting.StatePaused:
+		} else {
 			err = a.meetMgr.Resume(ctx, id)
 		}
-		if err != nil {
-			a.post(func() {
+		a.post(func() {
+			a.meetOvPending = "" // the manager's state has come (or the press failed)
+			a.syncMeetingOverlay()
+			if err != nil {
 				a.meetingFailed("pause", i18n.T("Could not pause or resume the meeting: %v", err), err)
-			})
-		}
+			}
+		})
 	})
 }
 
 func (a *app) meetingFinish() {
-	if a.meetMgr == nil || !a.meetingActive() {
+	if a.meetMgr == nil || !a.meetingActive() || a.meetSnap.State == meeting.StateFinishing || a.meetSnap.State == meeting.StateAsking {
 		return
 	}
 	id := a.meetSnap.ID
@@ -205,8 +261,24 @@ func (a *app) meetingSave() {
 			})
 			return
 		}
-		a.post(a.loadMeetings)
+		a.post(func() {
+			a.loadMeetings()
+			if a.meetSnap.ID == id && a.meetSnap.State == meeting.StateFinishing {
+				return // its final pass runs: the notice comes once it is filed
+			}
+			a.noticeMeetingSaved(id)
+		})
 	})
+}
+
+// noticeMeetingSaved says once where meeting id went: "Meeting saved",
+// with View meeting.
+func (a *app) noticeMeetingSaved(id string) {
+	if a.savedNotice == id {
+		return
+	}
+	a.savedNotice = id
+	a.showNotice(sessionNotice{text: i18n.T("Meeting saved"), action: actionMeeting, entry: id, ok: true})
 }
 
 func (a *app) meetingReprocess(id string) {

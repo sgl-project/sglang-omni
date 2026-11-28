@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/sgl-project/sglang-omni/Voxt/internal/asr"
@@ -14,6 +15,7 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/models"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/omni"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/session"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/vad"
 )
 
@@ -109,6 +111,7 @@ func (a *app) meetingTrackASR(ctx context.Context, src meeting.Source) (meeting.
 	// What dictation's speechContext gives an on-device model: no service template.
 	prompt := strings.TrimSpace(a.prefs.Dictionary.SpeechContext)
 	ta := meeting.TrackASR{Caps: caps, Lang: l, Prompt: prompt, Hints: hints, StreamReq: asr.StreamRequest{Lang: l, Prompt: prompt, Hints: hints}}
+	ta.Script = meetingScript(a.prefs, i18n.Locale(), readingLanguages())
 	if ft, ok := p.(asr.FileTranscriber); ok && caps.File {
 		ta.File = ft
 	}
@@ -121,4 +124,18 @@ func (a *app) meetingTrackASR(ctx context.Context, src meeting.Source) (meeting.
 		}
 	}
 	return ta, nil
+}
+
+// meetingScript is the script a meeting writes Chinese in, "zh-Hans" or
+// "zh-Hant" ("": the speech model's): the one its spoken language names,
+// else dictation's (#4534). With the language left to the model, Chinese
+// it hears follows the Chinese the user reads even when the main language
+// is another (11-25: an English Voxt on a Mac reading zh-Hans got 嵐 and
+// 為 in a Chinese meeting).
+func meetingScript(s settings.Settings, locale string, reads []string) string {
+	main := cmp.Or(s.Features.Meeting.Lang, session.MainLanguage(s, locale))
+	if c := lang.Canonical(main); s.Features.Meeting.Lang == "" && c != "zh" && c != "yue" {
+		main = "zh"
+	}
+	return lang.ChineseScript(main, append(slices.Clip(reads), locale))
 }

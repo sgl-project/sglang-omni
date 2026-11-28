@@ -269,7 +269,7 @@ func TestSessionReturnFinishes(t *testing.T) {
 			set, keys, _ := fileSetup(t, "finished sentence", chat)
 			ev := script(t, hotkeyLine(0, "transcribe/0", proto.PhaseTrigger))
 			a := newSessionApp(t, ev, set, keys)
-			a.pump("the recording", func() bool { return a.sess.State == session.Recording })
+			a.pump("the recording's audio", func() bool { return a.sess.State == session.Recording && len(a.sess.Levels) >= 5 })
 			if !strings.Contains(a.hotkeysSent, `"id":"finish"`) {
 				t.Fatal("Return is not bound while Transcribe records")
 			}

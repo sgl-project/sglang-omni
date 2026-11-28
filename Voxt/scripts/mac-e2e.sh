@@ -38,14 +38,14 @@ step "swift test"
 (cd helper && nice -n 10 swift test $("$ROOT/scripts/swift-sandbox-flag.sh") -j 2 2>&1 | grep -E "error:|failed|Executed .* tests" | tail -5)
 
 step "the helper, read-only and the file input"
-nice -n 10 go test -count=1 -run 'TestMacHelperReadOnly|TestMacHelperIcons|TestMacHelperCaptureFile' -v . | grep -vE '^\s*$'
+nice -n 10 go test -count=1 -run 'TestMacHelperReadOnly|TestMacHelperIcons|TestMacHelperCaptureFile|TestMacHelperMicWatch' -v . | grep -vE '^\s*$'
 
 step "text fit (Core Text)"
 VOXTNEW_TEXTFIT_PROBE=1 VOXTNEW_TEXTFIT_AUDIT=strict nice -n 10 go test -count=1 -run 'TestTextFitsItsOwnWidth|TestTranslationsFit' -v . |
   grep -E '^(---|ok|FAIL|PASS)|break at'
 
 step "a session over the fake local models"
-nice -n 10 go test -count=1 -run 'TestMacE2ESessionLocal' -v . | grep -vE '^\s*$'
+nice -n 10 go test -count=1 -run 'TestMacE2ESessionLocal|TestMacE2EMeetingDetect' -v . | grep -vE '^\s*$'
 
 if pgrep -f "$VOXTNEW_HELPER" >/dev/null; then
   echo "a helper is still running: $(pgrep -f "$VOXTNEW_HELPER" | tr '\n' ' ')" >&2

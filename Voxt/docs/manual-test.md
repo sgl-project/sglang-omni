@@ -1182,8 +1182,10 @@ MAC_DIR=code/VoxtNew-xyz scripts/mac.sh scripts/mac-regress.sh   # 真实模型�
 |---|---|---|
 | `swift test` | 协议 fixture、热键识别、PCM 分帧；文件输入：22.05 kHz 立体声 fixture 按实时节奏读出，混成单声道并重采样到 16 kHz，分帧连续，电平正确；哪些 App 设置 `AXManualAccessibility`、每个进程一次（`ManualAccessibilityTests`） | 10-16（M0）：59 个用例全部通过 |
 | `TestMacHelperIcons` | 真实的辅助进程画 App 图标（`app.icons`）：访达、Safari 按 bundle ID，微信、Arc 装了才算，已安装列表里的前几个按路径，加一个不存在的 App（应当没有图标）；`VOXTNEW_E2E_ICONS=<目录>` 时把 PNG 存下来 | 10-15 通过：10 个图标 309 ms（第一次，之后系统有缓存），每个 64×64、4–7 KB；不存在的 App 没有图标 |
+| `TestMacHelperMicWatch` | 真实的辅助进程回答 `mic.watch`：哪些进程在用音频输入（Core Audio 的进程列表），不需要任何权限；列表里没有辅助进程和测试进程自己 | 11-24 通过（没有 App 在录音时列表为空；Zoom 开会时手动核对列出 `us.zoom.xos`，放开麦克风后收到 `mic.changed`） |
 | `TestMacHelperReadOnly` | 真实的 supervisor 加真实的辅助进程：`helper.hello`、`permissions.status`、`hotkey.status`（没有绑定时不装 tap）、`app.frontmost`、`app.list`（运行中的、已安装的）、`capture.devices`、对已经在运行的浏览器按 pid 调三轮 `browser.url`（第二轮之前发 `app.configure`，列出 Chromium 系浏览器：读不到网页区域的会被设置 `AXManualAccessibility` 后重试）、`textio.focus`、`textio.selection`（不允许 ⌘C）；前后的权限状态不变，没有收到任何热键通知 | 通过。Arc 在后台：第一轮 `none`（717 ms），`app.configure` 之后重试读到（`ax-focus`，1230 ms，`retried`），之后 2–5 ms；Chrome 一直是 `ax-document`，1–22 ms（见 10.3） |
 | `TestMacHelperCaptureFile` | 辅助进程以 4 倍速读语音样本：`capture.started` 报告文件名、16 kHz、单声道；帧序号和偏移连续；录到的 PCM 和文件逐样本一致；电平约 20 Hz；`capture.stop`、取消、`maxSeconds` 三种结束方式；22.05 kHz 立体声的 fixture 混音后峰值是 0.375；麦克风的权限状态没有变 | 通过：和文件的相关系数 1.00000，延迟 0 个样本；`maxSeconds=1` 时正好 16000 个样本 |
+| `TestMacE2EMeetingDetect` | 整个 app 接真实的辅助进程（不装 event tap，麦克风和系统声音都用样本文件代替，不需要权限、不出声）：app 打开 `mic.watch` 并收下 Core Audio 的回答；有会议 App 在录音时出卡片（这台 Mac 上没有会议时，按 `mic.changed` 的样子告诉 app Zoom 开始录音）；点“开始记录”后经辅助进程的两路采集录一场会议，结束后列表里有这场会议，`mic.wav` 和 `system.wav` 都有声音数据 | 11-24 通过（1.1 s；两个 WAV 各约 10 KB） |
 | `TestMacE2ESessionLocal` | 和 app 一样组装的 `session.Manager`：辅助进程按实时节奏读语音样本，假的本地语音识别和语言模型（`local_fakes_test.go`），文字交给假的文本输出，历史写进临时目录里的 SQLite | 10-16（M0）通过：整段样本都送到了假的语音识别，结果整理、交付、写进历史 |
 | 文字测量 | `TestTextFitsItsOwnWidth`、`TestTranslationsFit`（strict）：Core Text 下每条中英文字符串按自身宽度排版不折行 | 10-16（M0）通过：0 条折行 |
 | `TestMacHelperOutputMute`（只在设了 `VOXTNEW_MAC_OUTPUT=<设备 UID>` 时跑，不在 mac-e2e.sh 里） | 真实辅助进程和 CoreAudio：静音这个设备再 release；静音后用 SIGKILL 杀掉辅助进程，另一个辅助进程 `output.recover` 恢复；静音后 `helper.shutdown`，辅助进程退出前恢复；每次静音不到 1 秒。设备是默认输出时拒绝运行（除非 `VOXTNEW_MAC_OUTPUT_DEFAULT=1`：会被同时用这台 Mac 的人听到），设备本来静音时跳过 | 10-17 通过（用户同意在默认输出上测：mac-air 只有内置扬声器 `BuiltInSpeakerDevice`，它就是默认输出，`VOXTNEW_MAC_OUTPUT_DEFAULT=1`）：5 次静音各 1–3 ms，整个测试 0.21 s；前后都是 `output volume:19, output muted:false`，没有残留的辅助进程和 journal |
@@ -1358,9 +1360,23 @@ Developer ID 签名、公证、发布和更新的测试见 [release.md](release.
 
 **应看到**：下一场录音的 WAV 符合所选模式（`meetings/<id>/` 里可能只有 `mic.wav` 或 `system.wav`）；共享屏幕时浮窗是否隐藏取决于该开关；快捷键在无听写冲突时能开始会议。
 
+**做**：先不加入会议，在 Zoom → 设置 → 音频里点“测试麦克风”，持续至少 7 秒：不应出现会议卡片。停止测试，再在 Zoom（或 Teams、腾讯会议、飞书）里加入一场会议；再在 Chrome 里打开一个 Google Meet 会议并允许麦克风。Chrome 保持用麦克风，先切到别的网页，再切回 Meet；也试浏览器先在后台、再回到前台。Chrome 刚启动时也做一遍：不能依赖其他辅助功能工具已经打开网页树。
+
+**应看到**：Zoom 的会议进程确认后立即（其他会议 App 开始用麦克风约一秒后），屏幕左侧出现卡片“检测到会议 · Zoom”和“开始记录”按钮，期间没有任何录音开始；卡片不抢前台（Zoom 仍是当前 App）。鼠标移到卡片上，左上角出现 ×；点按钮旁的箭头，菜单向上展开（2 分钟后再问、自动开始记录、检测设置），卡片的下边缘不动。约 8 秒不碰，卡片缩成一行，鼠标移上去再展开。点“开始记录”就开始 Voxt 的会议（同“开始会议”）；点 × 卡片消失，这场会议不再问；选“2 分钟后再问”，两分钟后会议还在就再出现；离开会议后卡片自己消失。Voxt 正在记录时离开 Zoom 的会议，不再说话（开着风扇、空调这类持续的声音也行）：约 5 分钟后卡片问“会议结束了？”，第二行“5 分钟没人说话”，点“结束记录”结束 Voxt 的会议，不点则继续录；卡片在时说句话，它就消失。Chrome 在 Meet 页面上用麦克风时卡片写“Google Meet”，在别的网页（如 ChatGPT 的语音输入）上用麦克风时不出现。点过 × 后，同一场会议里静音再取消静音不重问；没点卡片就静音、App 放开麦克风时，卡片收起，取消静音约 3 秒后再出现；在微信里发语音消息不问；关掉会议 → 设置 →“检测会议”后不再出现；打开“自动开始记录”后，检测到会议直接开始记录，不出卡片。
+
+用真实辅助进程和 App 控制器自动断言当前场景（不安装事件 tap、不出窗口、不读取真实声音、不开始 Voxt 录音）：先 `scripts/build-helper.sh`，在上面的每个场景准备好以后，分别运行 `VOXTNEW_MAC_E2E=1 VOXTNEW_MEETING_CASE=zoom-test go test -count=1 -run '^TestMacE2EMeetingDetectLive$' -v .`；场景值还可以是 `zoom-meeting`、`chrome-other`、`chrome-meet`。测试要求目标 App 此时确实在用麦克风；前两个负例 `zoom-test`、`chrome-other` 至少观察 7 秒不出卡片，两个正例验证卡片的会议名称。Chrome 的无障碍回归还由 `BrowserActivationTests.testChromeActivationFallsBackFromElectronAttribute` 覆盖：拒绝 Electron 的属性后，必须请求 Chrome 的属性；Electron 已接受时不加额外请求。
+
+**做**：卡片出现后，按听写快捷键开始说话，说话过程中点卡片的“开始记录”，再结束听写。然后在会议 → 设置里把语音识别模型都隐藏或删掉（或在系统设置里关掉 Voxt 的麦克风权限），关掉主窗口，再让会议 App 用一次麦克风并点“开始记录”。最后打开“在屏幕共享中隐藏”，在 Zoom 里共享整个屏幕。
+
+**应看到**：听写照常完成并插入文字，听写一结束会议就开始，没有“无法录制麦克风”的提示。会议开不起来时，浮窗的位置出一条提示（原因和“打开语音识别模型”或“打开权限页”），点它打开对应页面。共享屏幕时对方看不到卡片，自己仍看得到。设置引导开着时不出卡片，关掉引导后才出；设置 → 功能里隐藏“会议”后不再出卡片。
+
 **做**：录制中在浮窗的 **更多** 菜单里点 **取消会议**，在对话框选 **取消会议**。
 
 **应看到**：录音立刻结束，列表无该行，`meetings/<id>/` 目录被删。
+
+**做**：点 **开始会议**，不说话，几秒后点结束。再开一场，同样几秒后结束，这次不点任何按钮等 30 秒。再开一场，说两三句完整的话后结束。
+
+**应看到**：前两场结束时浮窗变成“是误开的吗？”，下面一行“只录到几个字。”，右边“保留”和“丢弃”。第一场点“丢弃”：浮窗消失，列表无该行，`meetings/<id>/` 目录被删，听写快捷键马上可用。第二场 30 秒后浮窗自己消失，列表里有这场会议。第三场不问，直接进入整理。
 
 **做**：设置了语言模型时，在 **更多** 菜单里打开 **实时翻译**，再开一场两路都录的会议；录制中在主窗口打开这场会议的详情，说几句话，然后结束会议，详情页不要关。
 
@@ -1399,3 +1415,13 @@ Developer ID 签名、公证、发布和更新的测试见 [release.md](release.
   - 第 4 步：第二次清理那行的 `cached` 不是 0，约等于指令的长度（1,000 多 tokens）；第一次只写入缓存，还是 0。
   - 第 5 步：照常出结果，“提示词缓存”不见了。
 - **不对时看**：日志里 `connection test of remote language model anthropic`；`llm.bad_request` 的 detail 是 Anthropic 返回的原话（`invalid_request_error: …`）。
+
+### Meeting detection review follow-up
+
+Before release, verify on the exact built head and record the result:
+
+- In Feishu/Lark, DingTalk, WeCom, Slack and Discord, a two-second voice message must show no card. With automatic recording enabled, a microphone use lasting at least two minutes may show a card but must wait for Start recording. A long voice message can still show the card.
+- While Chrome records on a non-meeting page, tab retries back off to five seconds; foregrounding Chrome immediately re-reads it. With app enhancement off, stop using its microphone and verify that an enhanced accessibility attribute previously off is restored. Repeat a meeting to confirm reactivation. Also try with VoiceOver and the user's window manager; an already enabled or unreadable attribute is deliberately preserved.
+- Press End from the overlay, menu and detected-end card while tracks stop and while the final pass runs. There must be one final pass, and a pending Keep/Discard question must stay open.
+
+These platform interactions are not covered by the injected-AX unit tests alone. The production-source `5c87b585d` Chrome render measurements and enabled native-window checks are recorded in [Chrome accessibility validation](chrome-accessibility-validation.md). Title-bar dragging, freehand resize, VoiceOver and third-party window managers remain unverified; no new installed-app recording result is claimed. The linked manual runner covers future accessibility changes.

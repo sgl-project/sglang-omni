@@ -145,6 +145,11 @@ func TestMeetingSendsHotWords(t *testing.T) {
 		if err := m.Finish(ctx, id); err != nil {
 			t.Fatal(err)
 		}
+		// It ended at once with hardly a word heard: it asks, and the
+		// user keeps it.
+		if err := m.Save(ctx, id); err != nil {
+			t.Fatal(err)
+		}
 		mt, _, err := s.Meetings().Meeting(ctx, id)
 		if err != nil {
 			t.Fatal(err)

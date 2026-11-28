@@ -8,6 +8,7 @@ type meetingFixtureState struct {
 	Overlay               *meetingOverlayViewState    `json:"overlay,omitempty"`
 	Page                  *meetingsViewState          `json:"page,omitempty"`
 	Start                 *meetingStartViewState      `json:"start,omitempty"`
+	Ask                   *meetingAskViewState        `json:"ask,omitempty"`
 	History               *historyViewState           `json:"history,omitempty"`
 	HistorySettings       *historySettingsViewState   `json:"history_settings,omitempty"`
 	HistoryAccess         *historyAccessViewState     `json:"history_access,omitempty"`

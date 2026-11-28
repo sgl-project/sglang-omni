@@ -21,6 +21,11 @@ type Meeting struct {
 	TranslateTarget string `json:"translateTarget,omitempty"`
 	// Collapsed keeps the meeting overlay in its compact layout.
 	Collapsed bool `json:"collapsed,omitempty"`
+	// NoDetect turns off the notice that offers to record when a meeting
+	// app starts using the microphone (internal/meetdetect).
+	NoDetect bool `json:"noDetect,omitempty"`
+	// AutoStart starts a meeting when one is detected, without asking.
+	AutoStart bool `json:"autoStart,omitempty"`
 	// HideFromSharing hides the overlay from screen sharing.
 	HideFromSharing bool `json:"hideFromSharing,omitempty"`
 }

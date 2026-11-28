@@ -4,6 +4,8 @@ import (
 	"encoding/binary"
 	"math"
 	"time"
+
+	"github.com/sgl-project/sglang-omni/Voxt/internal/vad"
 )
 
 const (
@@ -29,7 +31,19 @@ type Cutter struct {
 	voicedDur  time.Duration
 	inUtter    bool
 	silence    time.Duration
+	// voice follows the meeting's speech detector (meetingVAD), whose floor
+	// rises to a steady noise; voiceAt is the end of the last frame it took
+	// for speech (voiced: it took one). A piece with no such frame is the
+	// room's noise, not sent to the model, which writes words for noise
+	// (Whisper: "Thank you", 11-25).
+	voice   *vad.Detector
+	voiceAt time.Duration
+	voiced  bool
 }
+
+// heard reports whether the meeting's detector took a frame of the piece
+// that starts at from for speech.
+func (c *Cutter) heard(from time.Duration) bool { return c.voiced && c.voiceAt > from }
 
 // Push ingests PCM16 mono at 16 kHz and returns any completed utterances.
 func (c *Cutter) Push(pcm []byte) []Utterance {
@@ -50,6 +64,13 @@ func (c *Cutter) Push(pcm []byte) []Utterance {
 
 func (c *Cutter) pushFrame(frame []byte) []Utterance {
 	c.appendRing(frame)
+	if c.voice == nil {
+		c.voice = vad.NewDetector(cutterRate, meetingVAD())
+	}
+	c.voice.Write(frame)
+	if c.voice.Speaking() {
+		c.voiceAt, c.voiced = c.pos+cutterFrame, true
+	}
 	speech := frameRMS(frame) >= cutterSpeechRMS
 	var out []Utterance
 	if !c.inUtter {
@@ -83,7 +104,8 @@ func (c *Cutter) pushFrame(frame []byte) []Utterance {
 
 // Flush returns a partial utterance still buffered (pause/end).
 func (c *Cutter) Flush() []Utterance {
-	if !c.inUtter || len(c.buf) == 0 {
+	if !c.inUtter || len(c.buf) == 0 || !c.heard(c.utterStart) {
+		c.resetUtter()
 		return nil
 	}
 	end := c.pos
@@ -117,7 +139,7 @@ func (c *Cutter) appendRing(frame []byte) {
 }
 
 func (c *Cutter) finalize(end time.Duration, minLen bool) (Utterance, bool) {
-	if minLen && c.voicedDur < cutterMinUtterance {
+	if minLen && c.voicedDur < cutterMinUtterance || !c.heard(c.utterStart) {
 		return Utterance{}, false
 	}
 	return Utterance{
@@ -138,12 +160,13 @@ func (c *Cutter) cutAtQuietest(end time.Duration) (Utterance, bool) {
 		End:   c.utterStart + pcmDuration(first),
 		PCM:   append([]byte(nil), first...),
 	}
+	heard := c.heard(c.utterStart)
 	c.buf = c.buf[cut:]
 	c.utterStart = u.End
 	c.speechAt = 0
 	c.voicedDur = 0
 	c.silence = 0
-	return u, true
+	return u, heard // a piece of the room's noise is dropped
 }
 
 func (c *Cutter) resetUtter() {

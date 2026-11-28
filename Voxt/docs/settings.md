@@ -244,6 +244,8 @@ And their own fields:
 | `features.meeting.mode` | string | `""` | `""` (meeting), `subtitles`, `recording` | Capture mode |
 | `features.meeting.lang` | string | `""` | a language code; `""` = the main language | Spoken language |
 | `features.meeting.correctionStyle` | string | `""` | correction rules for the language model; `""` = the built-in rules | Transcript correction |
+| `features.meeting.noDetect` | bool | `false` | | Detect meetings (the switch is on while this is `false`) |
+| `features.meeting.autoStart` | bool | `false` | | Start recording automatically (shown while Detect meetings is on; also set by the card's menu). Feishu/Lark, DingTalk, WeCom, Slack and Discord always require confirmation after two minutes of microphone use because they can also record voice messages |
 | `features.meeting.hideFromSharing` | bool | `false` | | Hide from screen sharing |
 | `features.meeting.collapsed` | bool | `false` | | The overlay's compact layout |
 | `features.meeting.translateTarget` | string | `""` (= `en`) | a language code | (no settings row) |

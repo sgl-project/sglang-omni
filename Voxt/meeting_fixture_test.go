@@ -112,6 +112,9 @@ func buildMeetingFixture(t *testing.T, scenario meetingFixtureScenario, locale s
 	case "start":
 		state := buildMeetingStartViewState(translator, scenario.err)
 		fixture.Start = &state
+	case "meeting-ask":
+		state := buildMeetingAskViewState(translator, scenario.ask)
+		fixture.Ask = &state
 	case "history":
 		if scenario.historyProblem != "" {
 			scenario.history = historyFixtureProblemInput(scenario.historyProblem)

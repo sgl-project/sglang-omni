@@ -578,7 +578,7 @@ public struct BrowserURLResult: Codable, Sendable {
 // MARK: app.configure
 
 public struct AppConfigureParams: Codable, Sendable {
-    /// Bundle ids that get AXManualAccessibility as they come to the front
+    /// Bundle ids that get accessibility activation as they come to the front
     /// (the app's Chromium browsers), besides Electron apps; replaces the
     /// last list.
     public var manualAccessibility: [String]?
@@ -823,6 +823,8 @@ public enum WireTypes {
         case Method.speechPartial: SpeechPartialParams.self
         case Method.outputChanged: OutputState.self
         case Method.outputReleased: OutputReleasedParams.self
+        case Method.micWatch: MicWatchParams.self
+        case Method.micChanged: MicUsers.self
         case Method.captureStarted: CaptureStartedParams.self
         case Method.captureLevel: LevelParams.self
         case Method.capturePCM: PCMParams.self
@@ -862,6 +864,7 @@ public enum WireTypes {
         case Method.outputMute: OutputMuteResult.self
         case Method.outputRelease: OutputReleaseResult.self
         case Method.outputRecover: OutputRecoverResult.self
+        case Method.micWatch: MicUsers.self
         case Method.speechRecognize: SpeechResult.self
         default: nil
         }

@@ -17,6 +17,77 @@ const (
 	meetingOvMenuRowH   = 40
 )
 
+// The question with a line under it ("Started by mistake?") is a card:
+// an icon, two lines, and two buttons centred beside them. It is wider
+// than the pill, for both lines and both buttons in English too.
+const (
+	meetingOvAskCardW  = 448 + 2*layout.Pad
+	meetingOvAskCardH  = 64 + 2*layout.Pad
+	meetingOvAskRadius = 16
+	meetingOvAskPadX   = 14
+	meetingOvAskBadge  = 30
+	meetingOvAskBtnH   = 36
+)
+
+// End's question ("End this meeting?") is a small bubble out of the
+// overlay, its End in line with the overlay's End, not a card over it
+// (11-25, the user: End's question at End, and smaller): the window grows
+// by meetingOvEndAskH for the bubble and its gap, the face where it was.
+// The bubble opens below a face high on the screen and above a low one
+// (meetingOverlayEndFrame).
+const (
+	meetingOvEndBubbleH    = 34
+	meetingOvEndBtnH       = 24
+	meetingOvEndBtnW       = 2 * meetingOvEndBtnH // the bubble's End, as meetingAskingButton's least width
+	meetingOvEndBubblePadR = 5
+	meetingOvEndRadius     = 10
+	meetingOvEndGap        = 6
+	meetingOvEndAskH       = meetingOvEndBubbleH + meetingOvEndGap
+	meetingOvEndBubbleW    = 300
+	meetingOvActionGap     = 2 // between the overlay's buttons
+)
+
+// meetingEndBubbleRight is how far the bubble's right edge sits in from the
+// face's, its End in line with the overlay's End: right of that are
+// Collapse and, on the card, More.
+func meetingEndBubbleRight(expanded bool) float32 {
+	padX, after := float32(layout.PillPadX), float32(1)
+	if expanded {
+		padX, after = layout.CardPadX, 2
+	}
+	endMid := padX + after*(layout.CardBtn+meetingOvActionGap) + layout.CardBtn/2
+	return max(endMid-meetingOvEndBtnW/2-meetingOvEndBubblePadR, 0)
+}
+
+// meetingOverlayEndFrame places the window with End's bubble (open) or
+// without it, the face where it was: at is the window now, which had the
+// bubble (wasOpen) below the face (wasBelow) or above it. The bubble goes
+// below a face in the top half of the screen, and above one in the bottom
+// half (11-25, the user liked it so), or below when no room is above.
+func meetingOverlayEndFrame(at, area mygo.Rectangle, width, height int, open, wasOpen, wasBelow bool) (mygo.Rectangle, bool) {
+	face := at
+	if wasOpen && at.Width > 0 {
+		face.Height -= meetingOvEndAskH
+		if !wasBelow {
+			face.Y += meetingOvEndAskH
+		}
+	}
+	faceH := height
+	if open {
+		faceH -= meetingOvEndAskH
+	}
+	frame := meetingOverlayFrame(face, area, width, faceH)
+	if !open {
+		return frame, false
+	}
+	below := frame.Y+frame.Height/2 <= area.Y+area.Height/2 || frame.Y-meetingOvEndAskH < area.Y-layout.Pad
+	if !below {
+		frame.Y -= meetingOvEndAskH
+	}
+	frame.Height += meetingOvEndAskH
+	return frame, below
+}
+
 var meetingOvWidths = [3]int{520, 600, 760}
 
 const meetingOvChrome = layout.CardPadTop + layout.CardHeadH + layout.CardRuleTop + 1 + layout.CardRuleGap + layout.CardPadY
@@ -32,7 +103,10 @@ type meetingOverlayModel struct {
 	ShowBar       bool
 	ShowExpanded  bool
 	ShowAsking    bool
+	AskingCard    bool
 	ShowFinishing bool
+	// EndAsk: End's bubble shows, meetingOvEndAskH of the window's height.
+	EndAsk bool
 }
 
 // meetingOverlayLayoutModel keeps all dimensions on the UI side.
@@ -45,13 +119,14 @@ func meetingOverlayLayoutModel(state meetingOverlayViewState, menu meetingMenu) 
 		ShowBar:       state.ShowBar,
 		ShowExpanded:  state.ShowExpanded,
 		ShowAsking:    asking,
+		AskingCard:    asking && state.AskingHint != "",
 		ShowFinishing: finishing,
 	}
 	problem := state.ProblemText != "" && !asking && !finishing
 	if !pill {
 		width := meetingOvWidths[min(max(state.CardSize, 0), len(meetingOvWidths)-1)]
 		body := meetingOverlayBodyHeight(state.Rows, width-2*layout.CardPadX-layout.CardInset)
-		if menu != meetingMenuNone {
+		if menu != meetingMenuNone && menu != meetingMenuEnd {
 			body = max(body, menuHeight(menu, state))
 		}
 		height := meetingOvChrome + body
@@ -61,6 +136,13 @@ func meetingOverlayLayoutModel(state meetingOverlayViewState, menu meetingMenu) 
 		model.Layout.Width, model.Layout.Height = width+2*layout.Pad, min(height, meetingOvMaxFaceH)+2*layout.Pad
 	} else if problem {
 		model.Layout.Height += meetingOvProblemH
+	} else if model.AskingCard {
+		model.Layout.Width, model.Layout.Height = meetingOvAskCardW, meetingOvAskCardH
+	}
+	if menu == meetingMenuEnd && !asking && !finishing {
+		model.EndAsk = true
+		model.Layout.Height += meetingOvEndAskH
+		model.Layout.Width = max(model.Layout.Width, meetingOvEndBubbleW+int(meetingEndBubbleRight(model.ShowExpanded))+2*layout.Pad)
 	}
 	return model
 }
@@ -91,6 +173,9 @@ const (
 	meetingMenuNone meetingMenu = iota
 	meetingMenuMode
 	meetingMenuMore
+	// meetingMenuEnd is End's question: a bubble beside the face, not a
+	// menu in place of the transcript (meetingOverlayLocalUI.endAsk).
+	meetingMenuEnd
 )
 
 func menuHeight(menu meetingMenu, state meetingOverlayViewState) int {
@@ -109,7 +194,8 @@ func meetingOverlayFrame(at, area mygo.Rectangle, width, height int) mygo.Rectan
 	if at.Width == 0 {
 		return mygo.Rectangle{X: area.X + (area.Width-width)/2, Y: area.Y + area.Height - height - 28, Width: width, Height: height}
 	}
-	x := max(min(at.X, area.X+area.Width-width+layout.Pad), area.X-layout.Pad)
+	x := at.X + (at.Width-width)/2 // it grows and shrinks about its centre
+	x = max(min(x, area.X+area.Width-width+layout.Pad), area.X-layout.Pad)
 	y := at.Y
 	if at.Y+at.Height/2 > area.Y+area.Height/2 {
 		y = at.Y + at.Height - height
@@ -123,5 +209,13 @@ func meetingOverlayFace(model meetingOverlayModel) (overlayMode, int) {
 	if model.ShowExpanded {
 		mode = ovAnswer
 	}
-	return mode, model.Layout.Height - 2*layout.Pad
+	if model.AskingCard {
+		// A card's corners, not a pill's ends: the height that gives them.
+		return mode, 2 * meetingOvAskRadius
+	}
+	height := model.Layout.Height - 2*layout.Pad
+	if model.EndAsk {
+		height -= meetingOvEndAskH // the bubble is not the face
+	}
+	return mode, height
 }

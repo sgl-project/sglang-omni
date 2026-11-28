@@ -1,0 +1,29 @@
+{
+  "name": "ask-menu",
+  "kind": "meeting-ask",
+  "ask": {
+    "visible": true,
+    "title": "Meeting detected",
+    "app": "Google Meet",
+    "start_label": "Start recording",
+    "menu_label": "More options",
+    "close_label": "Dismiss",
+    "compact": false,
+    "menu_open": true,
+    "menu": [
+      {
+        "id": "snooze",
+        "label": "Ask again in 2 minutes",
+        "rule": true
+      },
+      {
+        "id": "auto",
+        "label": "Start recording automatically"
+      },
+      {
+        "id": "settings",
+        "label": "Detection settings"
+      }
+    ]
+  }
+}

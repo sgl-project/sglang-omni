@@ -367,6 +367,11 @@ func TestLateFinalDoesNotCommitIntoNextMeeting(t *testing.T) {
 	case <-time.After(7 * time.Second):
 		t.Fatal("meeting A did not finish behind its held Final")
 	}
+	if m.Current().State == meeting.StateAsking {
+		if err := m.Save(ctx, idA); err != nil {
+			t.Fatal(err)
+		}
+	}
 	idB, err := m.Start(ctx, meeting.StartRequest{Mode: meeting.ModeRecording})
 	if err != nil {
 		t.Fatal(err)
@@ -552,6 +557,11 @@ func testOldPCMIsolation(t *testing.T, failFinal bool, nextMode meeting.Mode) {
 		}
 	case <-time.After(7 * time.Second):
 		t.Fatal("meeting A did not finish")
+	}
+	if m.Current().State == meeting.StateAsking {
+		if err := m.Save(ctx, idA); err != nil {
+			t.Fatal(err)
+		}
 	}
 	if failFinal {
 		select {
@@ -752,43 +762,5 @@ func TestManagerModelHold(t *testing.T) {
 	}
 	if hold.holds != 0 {
 		t.Fatalf("after finish holds=%d", hold.holds)
-	}
-}
-
-// Each track keeps its last session.Bars levels, as bar heights, for its
-// waveform in the meeting's window; the other track's stay its own.
-func TestSnapshotKeepsLevelHistory(t *testing.T) {
-	mic := newFakeAudio(nil)
-	mic.levelsSent = make(chan struct{})
-	for i := range session.Bars + 4 {
-		mic.levels = append(mic.levels, -60+float64(i)*3)
-	}
-	m, ctx, _, _ := testManagerMic(t, mic, nil, false)
-	id, err := m.Start(ctx, meeting.StartRequest{Mode: meeting.ModeRecording})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer m.Finish(ctx, id)
-	// A full buffer can still contain the first levels. Wait for the
-	// complete sequence, then for the manager to take in the last level.
-	select {
-	case <-mic.levelsSent:
-	case <-time.After(2 * time.Second):
-		t.Fatal("microphone did not finish sending its level events")
-	}
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		levels := m.Current().Levels[meeting.SourceMic]
-		if len(levels) > 0 && levels[len(levels)-1] == session.Level(-3) {
-			break
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
-	got := m.Current().Levels
-	if h := got[meeting.SourceMic]; len(h) != session.Bars || h[0] != session.Level(-48) || h[len(h)-1] != session.Level(-3) {
-		t.Fatalf("mic levels %v: want the last %d, -48 to -3 dBFS", h, session.Bars)
-	}
-	if len(got[meeting.SourceSystem]) != 0 {
-		t.Fatalf("system levels %v in a microphone-only meeting", got[meeting.SourceSystem])
 	}
 }

@@ -14,7 +14,7 @@ internal/historyapi/server_test.go 3
 internal/llm/llm_test.go 1
 internal/meeting/finalize_test.go 1
 internal/meeting/manager_more_test.go 1
-internal/meeting/manager_test.go 3
+internal/meeting/manager_test.go 2
 internal/meeting/repeat_store_test.go 1
 internal/meeting/track_test.go 2
 internal/models/accept_test.go 2

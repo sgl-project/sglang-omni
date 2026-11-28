@@ -1,0 +1,913 @@
+{
+  "sourceCommit": "5c87b585d4471032cb3c1176e4e72e54e5baf5d2",
+  "date": "2026-11-27",
+  "hardware": {
+    "chip": "Apple M4",
+    "cpuCores": 10,
+    "ramGiB": 24,
+    "macOS": "26.6.2 (25G83)"
+  },
+  "units": {
+    "browserCPU": "percent of one CPU core, browser and descendant processes",
+    "rssMiB": "sum of process RSS, shared pages may be counted multiple times",
+    "frameP95": "milliseconds"
+  },
+  "browsers": [
+    {
+      "browser": "Chrome",
+      "version": "158.0.8127.37",
+      "initialEnhanced": false,
+      "samples": [
+        {
+          "count": 1000,
+          "phase": "baseline",
+          "rep": 0,
+          "frames": 362,
+          "frameMedian": 16.699999999999818,
+          "frameP95": 17.199999999999818,
+          "longFramePercent": 0,
+          "duration": 6014.60000000149,
+          "visibility": "visible",
+          "wallSeconds": 6.055681417004962,
+          "browserCPU": 35.99925177500819,
+          "rssMiB": 881.671875,
+          "enhanced": false
+        },
+        {
+          "count": 1000,
+          "phase": "active",
+          "rep": 0,
+          "frames": 362,
+          "frameMedian": 16.69999999999891,
+          "frameP95": 17.100000000002183,
+          "longFramePercent": 0,
+          "duration": 6008.79999999702,
+          "visibility": "visible",
+          "wallSeconds": 6.049884583000676,
+          "browserCPU": 37.85196177848712,
+          "rssMiB": 904.375,
+          "enhanced": true
+        },
+        {
+          "count": 1000,
+          "phase": "released",
+          "rep": 0,
+          "frames": 362,
+          "frameMedian": 16.700000000000728,
+          "frameP95": 17.200000000000728,
+          "longFramePercent": 0,
+          "duration": 6005.70000000298,
+          "visibility": "visible",
+          "wallSeconds": 6.04470116700395,
+          "browserCPU": 41.854839968110305,
+          "rssMiB": 941.734375,
+          "enhanced": false
+        },
+        {
+          "count": 1000,
+          "phase": "baseline",
+          "rep": 1,
+          "frames": 362,
+          "frameMedian": 16.69999999999709,
+          "frameP95": 17.299999999999272,
+          "longFramePercent": 0,
+          "duration": 6016.19999999553,
+          "visibility": "visible",
+          "wallSeconds": 6.049679542004014,
+          "browserCPU": 37.0267546313367,
+          "rssMiB": 944.953125,
+          "enhanced": false
+        },
+        {
+          "count": 1000,
+          "phase": "active",
+          "rep": 1,
+          "frames": 362,
+          "frameMedian": 16.69999999999709,
+          "frameP95": 16.89999999999418,
+          "longFramePercent": 0,
+          "duration": 6010.9000000059605,
+          "visibility": "visible",
+          "wallSeconds": 6.0515505419971305,
+          "browserCPU": 38.66777586604696,
+          "rssMiB": 950.34375,
+          "enhanced": true
+        },
+        {
+          "count": 1000,
+          "phase": "released",
+          "rep": 1,
+          "frames": 362,
+          "frameMedian": 16.69999999999709,
+          "frameP95": 17.099999999998545,
+          "longFramePercent": 0,
+          "duration": 6006.60000000149,
+          "visibility": "visible",
+          "wallSeconds": 6.045471624995116,
+          "browserCPU": 38.21041836420606,
+          "rssMiB": 950.453125,
+          "enhanced": false
+        },
+        {
+          "count": 1000,
+          "phase": "baseline",
+          "rep": 2,
+          "frames": 362,
+          "frameMedian": 16.69999999999709,
+          "frameP95": 17.200000000004366,
+          "longFramePercent": 0,
+          "duration": 6006.69999999553,
+          "visibility": "visible",
+          "wallSeconds": 6.047901458005072,
+          "browserCPU": 37.53368033130567,
+          "rssMiB": 951.4375,
+          "enhanced": false
+        },
+        {
+          "count": 1000,
+          "phase": "active",
+          "rep": 2,
+          "frames": 362,
+          "frameMedian": 16.69999999999709,
+          "frameP95": 17.5,
+          "longFramePercent": 0,
+          "duration": 6002.9000000059605,
+          "visibility": "visible",
+          "wallSeconds": 6.041188415998477,
+          "browserCPU": 44.03107165066561,
+          "rssMiB": 962.296875,
+          "enhanced": true
+        },
+        {
+          "count": 1000,
+          "phase": "released",
+          "rep": 2,
+          "frames": 361,
+          "frameMedian": 16.69999999999709,
+          "frameP95": 17.60000000000582,
+          "longFramePercent": 0,
+          "duration": 6000.80000000447,
+          "visibility": "visible",
+          "wallSeconds": 6.040515709006286,
+          "browserCPU": 39.06951183789302,
+          "rssMiB": 965.484375,
+          "enhanced": false
+        },
+        {
+          "count": 10000,
+          "phase": "baseline",
+          "rep": 0,
+          "frames": 362,
+          "frameMedian": 16.69999999999709,
+          "frameP95": 17.5,
+          "longFramePercent": 0,
+          "duration": 6015.0999999940395,
+          "visibility": "visible",
+          "wallSeconds": 6.058731958997669,
+          "browserCPU": 72.29235473101552,
+          "rssMiB": 1282.078125,
+          "enhanced": false
+        },
+        {
+          "count": 10000,
+          "phase": "active",
+          "rep": 0,
+          "frames": 362,
+          "frameMedian": 16.69999999999709,
+          "frameP95": 17.59999999999127,
+          "longFramePercent": 0,
+          "duration": 6009.30000000447,
+          "visibility": "visible",
+          "wallSeconds": 6.043382041003497,
+          "browserCPU": 73.46879561601804,
+          "rssMiB": 1510.5625,
+          "enhanced": true
+        },
+        {
+          "count": 10000,
+          "phase": "released",
+          "rep": 0,
+          "frames": 362,
+          "frameMedian": 16.69999999999709,
+          "frameP95": 17.5,
+          "longFramePercent": 0,
+          "duration": 6005.89999999851,
+          "visibility": "visible",
+          "wallSeconds": 6.047163333001663,
+          "browserCPU": 64.82378239408673,
+          "rssMiB": 1633.9375,
+          "enhanced": false
+        },
+        {
+          "count": 10000,
+          "phase": "baseline",
+          "rep": 1,
+          "frames": 362,
+          "frameMedian": 16.69999999999709,
+          "frameP95": 17.5,
+          "longFramePercent": 0,
+          "duration": 6008.10000000149,
+          "visibility": "visible",
+          "wallSeconds": 6.050184500003525,
+          "browserCPU": 68.92351795218096,
+          "rssMiB": 1592.28125,
+          "enhanced": false
+        },
+        {
+          "count": 10000,
+          "phase": "active",
+          "rep": 1,
+          "frames": 362,
+          "frameMedian": 16.69999999999709,
+          "frameP95": 17.5,
+          "longFramePercent": 0,
+          "duration": 6004.60000000149,
+          "visibility": "visible",
+          "wallSeconds": 6.037057875000755,
+          "browserCPU": 79.17764081397686,
+          "rssMiB": 1612.28125,
+          "enhanced": true
+        },
+        {
+          "count": 10000,
+          "phase": "released",
+          "rep": 1,
+          "frames": 362,
+          "frameMedian": 16.69999999999709,
+          "frameP95": 17.5,
+          "longFramePercent": 0,
+          "duration": 6011.29999999702,
+          "visibility": "visible",
+          "wallSeconds": 6.052296874993772,
+          "browserCPU": 70.22127446457053,
+          "rssMiB": 1637.171875,
+          "enhanced": false
+        },
+        {
+          "count": 10000,
+          "phase": "baseline",
+          "rep": 2,
+          "frames": 362,
+          "frameMedian": 16.699999999982538,
+          "frameP95": 17.5,
+          "longFramePercent": 0,
+          "duration": 6010.69999999553,
+          "visibility": "visible",
+          "wallSeconds": 6.0525221659991075,
+          "browserCPU": 71.2099829094725,
+          "rssMiB": 1622.71875,
+          "enhanced": false
+        },
+        {
+          "count": 10000,
+          "phase": "active",
+          "rep": 2,
+          "frames": 362,
+          "frameMedian": 16.699999999982538,
+          "frameP95": 17.5,
+          "longFramePercent": 0,
+          "duration": 6002.70000000298,
+          "visibility": "visible",
+          "wallSeconds": 6.034607791996677,
+          "browserCPU": 79.7069199158096,
+          "rssMiB": 1598.734375,
+          "enhanced": true
+        },
+        {
+          "count": 10000,
+          "phase": "released",
+          "rep": 2,
+          "frames": 362,
+          "frameMedian": 16.699999999982538,
+          "frameP95": 17.5,
+          "longFramePercent": 0,
+          "duration": 6010.10000000149,
+          "visibility": "visible",
+          "wallSeconds": 6.04963499999576,
+          "browserCPU": 69.26037686576034,
+          "rssMiB": 1622.671875,
+          "enhanced": false
+        }
+      ],
+      "renderTransitions": [
+        {
+          "phase": "baseline",
+          "enhanced": false,
+          "expected": false,
+          "frontMatchesTarget": true
+        },
+        {
+          "phase": "active",
+          "enhanced": true,
+          "expected": true,
+          "frontMatchesTarget": true
+        },
+        {
+          "phase": "released",
+          "enhanced": false,
+          "expected": false,
+          "frontMatchesTarget": true
+        },
+        {
+          "phase": "baseline",
+          "enhanced": false,
+          "expected": false,
+          "frontMatchesTarget": true
+        },
+        {
+          "phase": "active",
+          "enhanced": true,
+          "expected": true,
+          "frontMatchesTarget": true
+        },
+        {
+          "phase": "released",
+          "enhanced": false,
+          "expected": false,
+          "frontMatchesTarget": true
+        },
+        {
+          "phase": "baseline",
+          "enhanced": false,
+          "expected": false,
+          "frontMatchesTarget": true
+        },
+        {
+          "phase": "active",
+          "enhanced": true,
+          "expected": true,
+          "frontMatchesTarget": true
+        },
+        {
+          "phase": "released",
+          "enhanced": false,
+          "expected": false,
+          "frontMatchesTarget": true
+        },
+        {
+          "phase": "baseline",
+          "enhanced": false,
+          "expected": false,
+          "frontMatchesTarget": true
+        },
+        {
+          "phase": "active",
+          "enhanced": true,
+          "expected": true,
+          "frontMatchesTarget": true
+        },
+        {
+          "phase": "released",
+          "enhanced": false,
+          "expected": false,
+          "frontMatchesTarget": true
+        },
+        {
+          "phase": "baseline",
+          "enhanced": false,
+          "expected": false,
+          "frontMatchesTarget": true
+        },
+        {
+          "phase": "active",
+          "enhanced": true,
+          "expected": true,
+          "frontMatchesTarget": true
+        },
+        {
+          "phase": "released",
+          "enhanced": false,
+          "expected": false,
+          "frontMatchesTarget": true
+        },
+        {
+          "phase": "baseline",
+          "enhanced": false,
+          "expected": false,
+          "frontMatchesTarget": true
+        },
+        {
+          "phase": "active",
+          "enhanced": true,
+          "expected": true,
+          "frontMatchesTarget": true
+        },
+        {
+          "phase": "released",
+          "enhanced": false,
+          "expected": false,
+          "frontMatchesTarget": true
+        },
+        {
+          "phase": "released",
+          "enhanced": false,
+          "expected": false,
+          "frontMatchesTarget": true
+        }
+      ],
+      "errors": []
+    },
+    {
+      "browser": "Chrome for Testing",
+      "version": "158.0.8127.36",
+      "initialEnhanced": false,
+      "samples": [
+        {
+          "count": 1000,
+          "phase": "baseline",
+          "rep": 0,
+          "frames": 361,
+          "frameMedian": 16.699999999999818,
+          "frameP95": 16.799999999999727,
+          "longFramePercent": 0,
+          "duration": 6006.29999999702,
+          "visibility": "visible",
+          "wallSeconds": 6.041638499998953,
+          "browserCPU": 36.57948088089651,
+          "rssMiB": 1251.328125,
+          "enhanced": false
+        },
+        {
+          "count": 1000,
+          "phase": "active",
+          "rep": 0,
+          "frames": 362,
+          "frameMedian": 16.69999999999891,
+          "frameP95": 16.799999999999272,
+          "longFramePercent": 0,
+          "duration": 6008.29999999702,
+          "visibility": "visible",
+          "wallSeconds": 6.039000582997687,
+          "browserCPU": 40.238446189945186,
+          "rssMiB": 1306.515625,
+          "enhanced": true
+        },
+        {
+          "count": 1000,
+          "phase": "released",
+          "rep": 0,
+          "frames": 361,
+          "frameMedian": 16.700000000000728,
+          "frameP95": 16.799999999999272,
+          "longFramePercent": 0,
+          "duration": 6003.69999999553,
+          "visibility": "visible",
+          "wallSeconds": 6.043836707998707,
+          "browserCPU": 37.06254996988048,
+          "rssMiB": 1145.21875,
+          "enhanced": false
+        },
+        {
+          "count": 1000,
+          "phase": "baseline",
+          "rep": 1,
+          "frames": 362,
+          "frameMedian": 16.69999999999709,
+          "frameP95": 16.700000000004366,
+          "longFramePercent": 0,
+          "duration": 6002.60000000149,
+          "visibility": "visible",
+          "wallSeconds": 6.032111416003318,
+          "browserCPU": 37.46615147068029,
+          "rssMiB": 1146.21875,
+          "enhanced": false
+        },
+        {
+          "count": 1000,
+          "phase": "active",
+          "rep": 1,
+          "frames": 361,
+          "frameMedian": 16.69999999999709,
+          "frameP95": 16.799999999995634,
+          "longFramePercent": 0,
+          "duration": 6003.10000000149,
+          "visibility": "visible",
+          "wallSeconds": 6.0348118750043795,
+          "browserCPU": 40.43208057746174,
+          "rssMiB": 1150.671875,
+          "enhanced": true
+        },
+        {
+          "count": 1000,
+          "phase": "released",
+          "rep": 1,
+          "frames": 362,
+          "frameMedian": 16.69999999999709,
+          "frameP95": 16.700000000004366,
+          "longFramePercent": 0,
+          "duration": 6001.69999999553,
+          "visibility": "visible",
+          "wallSeconds": 6.03186170799745,
+          "browserCPU": 37.7992750890993,
+          "rssMiB": 1148.625,
+          "enhanced": false
+        },
+        {
+          "count": 1000,
+          "phase": "baseline",
+          "rep": 2,
+          "frames": 361,
+          "frameMedian": 16.69999999999709,
+          "frameP95": 16.700000000004366,
+          "longFramePercent": 0,
+          "duration": 6009.29999999702,
+          "visibility": "visible",
+          "wallSeconds": 6.040471833999618,
+          "browserCPU": 36.420995916527595,
+          "rssMiB": 1183.046875,
+          "enhanced": false
+        },
+        {
+          "count": 1000,
+          "phase": "active",
+          "rep": 2,
+          "frames": 362,
+          "frameMedian": 16.69999999999709,
+          "frameP95": 16.799999999995634,
+          "longFramePercent": 0,
+          "duration": 6002.10000000149,
+          "visibility": "visible",
+          "wallSeconds": 6.043720125002437,
+          "browserCPU": 47.81823016661999,
+          "rssMiB": 1192.359375,
+          "enhanced": true
+        },
+        {
+          "count": 1000,
+          "phase": "released",
+          "rep": 2,
+          "frames": 361,
+          "frameMedian": 16.69999999999709,
+          "frameP95": 16.70000000001164,
+          "longFramePercent": 0,
+          "duration": 6013.5,
+          "visibility": "visible",
+          "wallSeconds": 6.055452458000218,
+          "browserCPU": 36.496034199397236,
+          "rssMiB": 1189.96875,
+          "enhanced": false
+        },
+        {
+          "count": 10000,
+          "phase": "baseline",
+          "rep": 0,
+          "frames": 360,
+          "frameMedian": 16.69999999999709,
+          "frameP95": 16.70000000001164,
+          "longFramePercent": 0,
+          "duration": 6004.5,
+          "visibility": "visible",
+          "wallSeconds": 6.046444457999314,
+          "browserCPU": 66.65074041436692,
+          "rssMiB": 1344.40625,
+          "enhanced": false
+        },
+        {
+          "count": 10000,
+          "phase": "active",
+          "rep": 0,
+          "frames": 361,
+          "frameMedian": 16.69999999999709,
+          "frameP95": 16.80000000000291,
+          "longFramePercent": 0,
+          "duration": 6016.60000000149,
+          "visibility": "visible",
+          "wallSeconds": 6.055698249998386,
+          "browserCPU": 75.30097788477512,
+          "rssMiB": 1662.28125,
+          "enhanced": true
+        },
+        {
+          "count": 10000,
+          "phase": "released",
+          "rep": 0,
+          "frames": 361,
+          "frameMedian": 16.69999999999709,
+          "frameP95": 16.70000000001164,
+          "longFramePercent": 0,
+          "duration": 6014.30000000447,
+          "visibility": "visible",
+          "wallSeconds": 6.056397625005047,
+          "browserCPU": 70.50395737509788,
+          "rssMiB": 1499.625,
+          "enhanced": false
+        },
+        {
+          "count": 10000,
+          "phase": "baseline",
+          "rep": 1,
+          "frames": 362,
+          "frameMedian": 16.69999999999709,
+          "frameP95": 16.70000000001164,
+          "longFramePercent": 0,
+          "duration": 6006,
+          "visibility": "visible",
+          "wallSeconds": 6.042114166004467,
+          "browserCPU": 66.8640129762986,
+          "rssMiB": 1540.0625,
+          "enhanced": false
+        },
+        {
+          "count": 10000,
+          "phase": "active",
+          "rep": 1,
+          "frames": 361,
+          "frameMedian": 16.69999999999709,
+          "frameP95": 16.79999999998836,
+          "longFramePercent": 0,
+          "duration": 6012.39999999851,
+          "visibility": "visible",
+          "wallSeconds": 6.044832292005594,
+          "browserCPU": 78.08322500927429,
+          "rssMiB": 1578.140625,
+          "enhanced": true
+        },
+        {
+          "count": 10000,
+          "phase": "released",
+          "rep": 1,
+          "frames": 361,
+          "frameMedian": 16.69999999999709,
+          "frameP95": 16.80000000000291,
+          "longFramePercent": 0,
+          "duration": 6010.89999999851,
+          "visibility": "visible",
+          "wallSeconds": 6.049788542004535,
+          "browserCPU": 68.26684885471329,
+          "rssMiB": 1506.171875,
+          "enhanced": false
+        },
+        {
+          "count": 10000,
+          "phase": "baseline",
+          "rep": 2,
+          "frames": 361,
+          "frameMedian": 16.699999999982538,
+          "frameP95": 16.70000000001164,
+          "longFramePercent": 0,
+          "duration": 6016.5,
+          "visibility": "visible",
+          "wallSeconds": 6.047865749998891,
+          "browserCPU": 70.60341906565606,
+          "rssMiB": 1538.078125,
+          "enhanced": false
+        },
+        {
+          "count": 10000,
+          "phase": "active",
+          "rep": 2,
+          "frames": 361,
+          "frameMedian": 16.699999999982538,
+          "frameP95": 16.70000000001164,
+          "longFramePercent": 0,
+          "duration": 6012.5,
+          "visibility": "visible",
+          "wallSeconds": 6.047097000002395,
+          "browserCPU": 84.00725174406801,
+          "rssMiB": 1529.984375,
+          "enhanced": true
+        },
+        {
+          "count": 10000,
+          "phase": "released",
+          "rep": 2,
+          "frames": 361,
+          "frameMedian": 16.699999999982538,
+          "frameP95": 16.79999999998836,
+          "longFramePercent": 0,
+          "duration": 6013,
+          "visibility": "visible",
+          "wallSeconds": 6.055052750001778,
+          "browserCPU": 73.98779473884318,
+          "rssMiB": 1491.4375,
+          "enhanced": false
+        }
+      ],
+      "renderTransitions": [
+        {
+          "phase": "baseline",
+          "enhanced": false,
+          "expected": false,
+          "frontMatchesTarget": true
+        },
+        {
+          "phase": "active",
+          "enhanced": true,
+          "expected": true,
+          "frontMatchesTarget": true
+        },
+        {
+          "phase": "released",
+          "enhanced": false,
+          "expected": false,
+          "frontMatchesTarget": true
+        },
+        {
+          "phase": "baseline",
+          "enhanced": false,
+          "expected": false,
+          "frontMatchesTarget": true
+        },
+        {
+          "phase": "active",
+          "enhanced": true,
+          "expected": true,
+          "frontMatchesTarget": true
+        },
+        {
+          "phase": "released",
+          "enhanced": false,
+          "expected": false,
+          "frontMatchesTarget": true
+        },
+        {
+          "phase": "baseline",
+          "enhanced": false,
+          "expected": false,
+          "frontMatchesTarget": true
+        },
+        {
+          "phase": "active",
+          "enhanced": true,
+          "expected": true,
+          "frontMatchesTarget": true
+        },
+        {
+          "phase": "released",
+          "enhanced": false,
+          "expected": false,
+          "frontMatchesTarget": true
+        },
+        {
+          "phase": "baseline",
+          "enhanced": false,
+          "expected": false,
+          "frontMatchesTarget": true
+        },
+        {
+          "phase": "active",
+          "enhanced": true,
+          "expected": true,
+          "frontMatchesTarget": true
+        },
+        {
+          "phase": "released",
+          "enhanced": false,
+          "expected": false,
+          "frontMatchesTarget": true
+        },
+        {
+          "phase": "baseline",
+          "enhanced": false,
+          "expected": false,
+          "frontMatchesTarget": true
+        },
+        {
+          "phase": "active",
+          "enhanced": true,
+          "expected": true,
+          "frontMatchesTarget": true
+        },
+        {
+          "phase": "released",
+          "enhanced": false,
+          "expected": false,
+          "frontMatchesTarget": true
+        },
+        {
+          "phase": "baseline",
+          "enhanced": false,
+          "expected": false,
+          "frontMatchesTarget": true
+        },
+        {
+          "phase": "active",
+          "enhanced": true,
+          "expected": true,
+          "frontMatchesTarget": true
+        },
+        {
+          "phase": "released",
+          "enhanced": false,
+          "expected": false,
+          "frontMatchesTarget": true
+        },
+        {
+          "phase": "released",
+          "enhanced": false,
+          "expected": false,
+          "frontMatchesTarget": true
+        }
+      ],
+      "errors": []
+    }
+  ],
+  "cftSteadyIdle": [
+    {
+      "phase": "baseline",
+      "settleSeconds": 0,
+      "sampleSeconds": 10.062702415998501,
+      "cpuPercent": 0.0,
+      "rssMiB": 1404.234375,
+      "enhanced": false
+    },
+    {
+      "phase": "active",
+      "settleSeconds": 10,
+      "sampleSeconds": 20.065972666998277,
+      "cpuPercent": 0.1495068317786562,
+      "rssMiB": 1442.828125,
+      "enhanced": true
+    },
+    {
+      "phase": "released",
+      "settleSeconds": 0,
+      "sampleSeconds": 10.066417665999325,
+      "cpuPercent": 0.09934020554081534,
+      "rssMiB": 1418.5,
+      "enhanced": false
+    }
+  ],
+  "cftIdleCycles": [
+    {
+      "cycle": 1,
+      "onRSSMiB": 1404.265625,
+      "offRSSMiB": 1357.296875,
+      "ax": {
+        "AXEnhancedUserInterface": {
+          "error": 0,
+          "value": false
+        },
+        "AXManualAccessibility": {
+          "error": -25205,
+          "value": null
+        },
+        "trusted": true
+      }
+    },
+    {
+      "cycle": 2,
+      "onRSSMiB": 1440.328125,
+      "offRSSMiB": 1362.953125,
+      "ax": {
+        "AXEnhancedUserInterface": {
+          "error": 0,
+          "value": false
+        },
+        "AXManualAccessibility": {
+          "error": -25205,
+          "value": null
+        },
+        "trusted": true
+      }
+    },
+    {
+      "cycle": 3,
+      "onRSSMiB": 1449.34375,
+      "offRSSMiB": 1384.890625,
+      "ax": {
+        "AXEnhancedUserInterface": {
+          "error": 0,
+          "value": false
+        },
+        "AXManualAccessibility": {
+          "error": -25205,
+          "value": null
+        },
+        "trusted": true
+      }
+    },
+    {
+      "cycle": 4,
+      "onRSSMiB": 1456.203125,
+      "offRSSMiB": 1397.28125,
+      "ax": {
+        "AXEnhancedUserInterface": {
+          "error": 0,
+          "value": false
+        },
+        "AXManualAccessibility": {
+          "error": -25205,
+          "value": null
+        },
+        "trusted": true
+      }
+    },
+    {
+      "cycle": 5,
+      "onRSSMiB": 1438.390625,
+      "offRSSMiB": 1404.28125,
+      "ax": {
+        "AXEnhancedUserInterface": {
+          "error": 0,
+          "value": false
+        },
+        "AXManualAccessibility": {
+          "error": -25205,
+          "value": null
+        },
+        "trusted": true
+      }
+    }
+  ]
+}

@@ -17,6 +17,8 @@
       }
     ],
     "capture_mode_selected": "Recording (microphone only)",
+    "detect_meetings": true,
+    "auto_start": false,
     "hide_from_sharing": true,
     "asr_options": [
       {

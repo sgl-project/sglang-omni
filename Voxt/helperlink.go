@@ -108,6 +108,7 @@ func (a *app) helperChanged(st helper.Status) {
 		a.checkModels() // shell_notices.go: System dictation came or went
 	}
 	a.muteHelperChanged(was, st) // mute_link.go: a new helper undoes an earlier one's mutes first
+	a.micHelperChanged(st)       // meeting_detect.go: the watch of the apps that record
 	if st.State == helper.Ready && was != helper.Ready {
 		a.recheckPermissions() // permissions.go
 		a.hotkeysSent = ""     // a new helper has no shortcuts yet
@@ -160,6 +161,11 @@ func (a *app) helperNotified(m proto.Message) {
 		a.syncCarbon(a.hotkeyPlan()) // the Carbon fallback while the tap is missing
 	case proto.MethodOutputChanged, proto.MethodOutputReleased:
 		a.muteNotified(m) // mute_link.go
+	case proto.MethodMicChanged:
+		var users proto.MicUsers
+		if m.DecodeParams(&users) == nil && a.micWatch {
+			a.micChanged(users) // meeting_detect.go
+		}
 	case proto.MethodAppActivated:
 		var front proto.App
 		if m.DecodeParams(&front) == nil {

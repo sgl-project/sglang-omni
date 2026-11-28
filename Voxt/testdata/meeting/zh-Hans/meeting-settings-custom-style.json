@@ -17,6 +17,8 @@
       }
     ],
     "capture_mode_selected": "完整会议（麦克风与系统音频）",
+    "detect_meetings": true,
+    "auto_start": false,
     "hide_from_sharing": true,
     "asr_options": [
       {

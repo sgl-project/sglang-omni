@@ -69,7 +69,7 @@ func (host *meetingDemoHost) resetSettingsDemo(fixture meetingDemoFixture) {
 	if state := fixture.state.MeetingSettings; state != nil {
 		host.pageUI.setOpen = true
 		host.settingsMeetingUI = meetingSettingsUI{
-			mode: settingsLanguageCode(state.CaptureModeSelected, state.CaptureModeOptions), hide: state.HideFromSharing,
+			mode: settingsLanguageCode(state.CaptureModeSelected, state.CaptureModeOptions), hide: state.HideFromSharing, detect: state.DetectMeetings, auto: state.AutoStart,
 			correction: speechContextState{text: state.CorrectionStyle},
 		}
 	}
@@ -228,6 +228,14 @@ func (host *meetingDemoHost) navigate(path string)      { host.record("navigate 
 func (host *meetingDemoHost) setMeetingCaptureMode(captureMode string) {
 	host.record("setMeetingCaptureMode %s", captureMode)
 }
+func (host *meetingDemoHost) setMeetingAutoStart(auto bool) {
+	host.record("setMeetingAutoStart %t", auto)
+}
+
+func (host *meetingDemoHost) setMeetingDetect(detect bool) {
+	host.record("setMeetingDetect %t", detect)
+}
+
 func (host *meetingDemoHost) setMeetingHideFromSharing(hideFromSharing bool) {
 	host.record("setMeetingHideFromSharing %t", hideFromSharing)
 }

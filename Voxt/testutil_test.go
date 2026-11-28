@@ -177,6 +177,7 @@ func newFakeSupervisor(bus *core.Bus) *fakeSupervisor {
 	f.handlers[proto.MethodCaptureDevices] = func(json.RawMessage) (any, error) {
 		return proto.DevicesResult{Devices: helpertest.Devices()}, nil
 	}
+	f.handlers[proto.MethodMicWatch] = func(json.RawMessage) (any, error) { return proto.MicUsers{Apps: []proto.App{}}, nil }
 	f.out = &helpertest.OutputHelper{Sys: helpertest.NewOutputSystem(), PID: 4242}
 	output := func(method string, fn func(raw json.RawMessage) (any, error)) { f.handlers[method] = fn }
 	output(proto.MethodOutputWatch, func(raw json.RawMessage) (any, error) {

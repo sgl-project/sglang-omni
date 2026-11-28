@@ -12,7 +12,7 @@ package main
 //   - hotkey.status only: no hotkey.configure;
 //   - browser.url only for browsers already running, by pid, three times;
 //     once app.configure lists the app's Chromium browsers, one without a
-//     page tree gets AXManualAccessibility, as in the app (an attribute,
+//     page tree gets its accessibility activation request, as in the app (an attribute,
 //     no change of the app in front).
 //   - app.icons draws icons: no window, no focus.
 //

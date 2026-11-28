@@ -209,17 +209,32 @@ func readURL(ctx context.Context, sup interface {
 // tree turned on (app.configure): the Chromium ones while app
 // enhancement is on, so browser.url finds the tab's web area; none while
 // it is off (a tree costs the browser memory and time).
-func (a *app) syncTrees() {
+func (a *app) syncTrees() { a.sendTrees(nil) }
+
+// sendTrees is syncTrees, and then runs once the helper has the list (at
+// once when it has it already, or does not run). With app enhancement off
+// the list is the one browser that records from the microphone and needs
+// a tree for its tab to be read (meeting_detect.go), while it records.
+func (a *app) sendTrees(then func()) {
+	done := func() {
+		if then != nil {
+			then()
+		}
+	}
 	if !a.helperReady() {
 		a.treesSent = ""
+		done()
 		return
 	}
 	var ids []string
 	if a.prefs.AppEnhancement.Enabled && !a.prefs.Features.IsHidden(settings.HideAppEnhancement) {
 		ids = appctx.TreeOnDemand(a.prefs.AppEnhancement.Browsers)
+	} else if a.tree != "" {
+		ids = []string{a.tree}
 	}
 	key := "[" + strings.Join(ids, ",") + "]"
 	if key == a.treesSent {
+		done()
 		return
 	}
 	a.treesSent = key
@@ -229,6 +244,7 @@ func (a *app) syncTrees() {
 				a.treesSent = ""
 				a.logs.Append(core.LogEntry{Time: time.Now(), Level: core.SeverityWarning, Source: helper.LogSource, Message: "app.configure: " + err.Error()})
 			}
+			done()
 		})
 }
 
@@ -244,6 +260,7 @@ func (a *app) frontChanged(front proto.App) {
 		return
 	}
 	a.lastOther = front
+	a.meetingTabFront(front) // meeting_detect.go
 	if a.currentPage() == "app-enhancement" {
 		a.refreshPreview(false)
 	}

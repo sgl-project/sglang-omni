@@ -31,6 +31,7 @@ type Manager struct {
 	state         State
 	snap          Snapshot
 	timeline      *Timeline
+	heard         time.Duration // the timeline's time at the last sound (Snapshot.Quiet)
 	archive       *Archive
 	cancel        context.CancelFunc
 	runCtx        context.Context
@@ -188,11 +189,12 @@ func (m *Manager) startTracks(ctx context.Context, sources []Source) error {
 // Pause stops capture without ending the meeting.
 func (m *Manager) Pause(_ context.Context, id string) error {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	if err := m.requireID(id); err != nil {
+		m.mu.Unlock()
 		return err
 	}
 	if m.state != StateRecording {
+		m.mu.Unlock()
 		return fmt.Errorf("meeting: not recording")
 	}
 	m.stopAllTracksLocked()
@@ -202,6 +204,9 @@ func (m *Manager) Pause(_ context.Context, id string) error {
 	m.state = StatePaused
 	m.snap.State = StatePaused
 	m.snap.Elapsed = m.timeline.Elapsed()
+	paused := m.snap
+	m.mu.Unlock()
+	m.notify(paused) // it sent nothing: the overlay waited for another change
 	return nil
 }
 
@@ -245,6 +250,10 @@ func (m *Manager) Finish(ctx context.Context, id string) error {
 		m.mu.Unlock()
 		return fmt.Errorf("meeting: not active")
 	}
+	if m.state == StateFinishing || m.state == StateAsking {
+		m.mu.Unlock()
+		return nil // another End already owns the final pass or its Keep/Discard question
+	}
 	if m.state == StateStarting {
 		// Start is still opening the tracks: it sees the cancel, then
 		// stops them and drops the meeting, as nothing was recorded.
@@ -253,6 +262,18 @@ func (m *Manager) Finish(ctx context.Context, id string) error {
 		return nil
 	}
 	keep := m.cfg.Privacy().KeepHistory
+	// The tracks recognise what they still hold before they stop, a few
+	// seconds: meanwhile the meeting shows as ending, not as recording.
+	m.state = StateFinishing // claim End before notifying subscribers or stopping tracks without mu
+	m.snap.State, m.snap.Stage, m.snap.Progress = StateFinishing, StageSaving, 0
+	ending := m.snap
+	m.mu.Unlock()
+	m.notify(ending)
+	m.mu.Lock()
+	if m.id != id || !m.state.Active() { // discarded meanwhile
+		m.mu.Unlock()
+		return ErrNoMeeting
+	}
 	m.stopAllTracksLocked()
 	if m.archive != nil {
 		_ = m.archive.Close()
@@ -267,80 +288,19 @@ func (m *Manager) Finish(ctx context.Context, id string) error {
 		Status: store.MeetingDone, Mode: toStoreMode(m.mode),
 		DurationMS: elapsed.Milliseconds(), Audio: m.id,
 	}
-	if !keep {
+	mistake := m.cfg.ASR != nil && elapsed < MistakeWithin && heardWords(m.snap.Segments, m.snap.Live) < MistakeWords
+	if !keep || mistake {
 		m.state = StateAsking
-		m.snap.State = StateAsking
+		m.snap.State, m.snap.Stage = StateAsking, "" // no longer saving: it asks
+		m.snap.Elapsed = elapsed                     // its length: the question's wait is not the meeting's
+		m.snap.Mistake = mistake
 		mt.Status = store.MeetingAsking
 		m.mu.Unlock()
 		_ = m.cfg.Store.UpdateMeeting(ctx, mt)
 		m.notify(m.Current())
 		return nil
 	}
-	m.snap.Elapsed = elapsed
-	if m.cfg.Settings().NoFinalPass || m.cfg.ASR == nil {
-		m.state = StateDone
-		m.snap.State = StateDone
-		meetingID := m.id
-		auto := !m.cfg.Settings().NoAutoSummary
-		m.mu.Unlock()
-		if err := m.cfg.Store.UpdateMeeting(ctx, mt); err != nil {
-			return err
-		}
-		m.mu.Lock()
-		m.resetAfterDone()
-		s := m.snap
-		m.mu.Unlock()
-		m.notify(s)
-		if auto {
-			go func() {
-				_ = m.GenerateMeetingSummary(context.Background(), meetingID)
-			}()
-		}
-		return nil
-	}
-	m.state = StateFinishing
-	m.snap.State = StateFinishing
-	m.snap.Stage = StageTranscribing
-	m.snap.Progress = 0
-	mt.Status = store.MeetingFinishing
-	m.mu.Unlock()
-	if err := m.cfg.Store.UpdateMeeting(ctx, mt); err != nil {
-		return err
-	}
-	m.notify(m.Current())
-	go m.runFinalize(context.Background(), mt)
-	return nil
-}
-
-// Save keeps an asking-state meeting.
-func (m *Manager) Save(ctx context.Context, id string) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if err := m.requireID(id); err != nil {
-		return err
-	}
-	if m.state != StateAsking {
-		return fmt.Errorf("meeting: not asking")
-	}
-	mt := store.Meeting{
-		Seq: m.seq, ID: m.id, CreatedAt: m.snap.Started, EndedAt: m.cfg.Now(),
-		Status: store.MeetingDone, Mode: toStoreMode(m.mode),
-		DurationMS: m.timeline.Elapsed().Milliseconds(), Audio: m.id,
-	}
-	if err := m.cfg.Store.UpdateMeeting(ctx, mt); err != nil {
-		return err
-	}
-	meetingID := m.id
-	auto := !m.cfg.Settings().NoAutoSummary
-	m.state = StateDone
-	m.snap.State = StateDone
-	m.resetAfterDone()
-	if auto {
-		go func() {
-			_ = m.GenerateMeetingSummary(context.Background(), meetingID)
-		}()
-	}
-	return nil
+	return m.fileLocked(ctx, mt, elapsed)
 }
 
 // Discard drops the meeting and deletes its files. A recording in
@@ -487,6 +447,7 @@ func (m *Manager) resetIdle() {
 		Levels: map[Source][]float64{}, Live: map[Source]string{},
 	}
 	m.timeline = nil
+	m.heard = 0
 	m.archive = nil
 	m.tracks = map[Source]*track{}
 	m.trackFails = map[Source]int{}
@@ -528,11 +489,24 @@ func (m *Manager) stopTracksLocked(sources []Source) {
 	}
 	// Live teardown updates the snapshot and must not run under Manager.mu (Finish holds it).
 	m.mu.Unlock()
+	// Each recognises the audio it still holds: together, the wait is the
+	// longest one's, not their sum.
+	var wg sync.WaitGroup
 	for _, tr := range pending {
-		tr.stop()
+		wg.Go(tr.stop)
 	}
+	wg.Wait()
 	m.segWrites.Wait() // the last words are in the store before the meeting ends
 	m.mu.Lock()
+}
+
+// noteSpeech is a track's Silero hearing someone now (Snapshot.Quiet).
+func (m *Manager) noteSpeech() {
+	m.mu.Lock()
+	if m.timeline != nil {
+		m.heard = m.timeline.Elapsed()
+	}
+	m.mu.Unlock()
 }
 
 func (m *Manager) noteLevel(src Source, level float64) {

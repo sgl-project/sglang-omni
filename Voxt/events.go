@@ -44,6 +44,11 @@ func (a *app) connectEvents() {
 			}
 		},
 		func(_, _ session.Snapshot) { a.overlaySync() }, // overlay.go
+		func(was, s session.Snapshot) {
+			if was.State.Live() && !s.State.Live() {
+				a.meetingAfterDictation() // meeting_detect.go: a meeting found, or asked for, during it
+			}
+		},
 	)
 	a.onSessionEnd = append(a.onSessionEnd,
 		a.learnFromSession,                         // learn_link.go

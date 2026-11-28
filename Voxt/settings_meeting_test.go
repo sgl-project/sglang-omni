@@ -14,8 +14,12 @@ import (
 func TestMeetingSettingsModeKey(t *testing.T) {
 	a, _, _ := newTestApp(t)
 	a.prefs.Features.Meeting.Mode = "subtitles"
-	if a.meetingSettingsKey() != "subtitles|0" {
+	if a.meetingSettingsKey() != "subtitles|0|0|0" {
 		t.Fatalf("mode key %q", a.meetingSettingsKey())
+	}
+	a.prefs.Features.Meeting.NoDetect, a.prefs.Features.Meeting.AutoStart = true, true
+	if a.meetingSettingsKey() != "subtitles|0|1|1" {
+		t.Fatalf("the key does not follow the detection's switches: %q", a.meetingSettingsKey())
 	}
 }
 

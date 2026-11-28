@@ -12,7 +12,7 @@ import (
 
 func (a *app) meetingSettingsKey() string {
 	meeting := a.prefs.Features.Meeting
-	return meeting.Mode + "|" + b2s(meeting.HideFromSharing)
+	return meeting.Mode + "|" + b2s(meeting.HideFromSharing) + "|" + b2s(meeting.NoDetect) + "|" + b2s(meeting.AutoStart)
 }
 
 func (a *app) meetingSettingsSync() {
@@ -34,6 +34,8 @@ func (a *app) meetingSettingsSync() {
 	local.seen = seen
 	local.mode = a.prefs.Features.Meeting.Mode
 	local.hide = a.prefs.Features.Meeting.HideFromSharing
+	local.detect = !a.prefs.Features.Meeting.NoDetect
+	local.auto = a.prefs.Features.Meeting.AutoStart
 }
 
 func (a *app) meetingSettingsModel() settingsMeetingViewState {
@@ -41,6 +43,8 @@ func (a *app) meetingSettingsModel() settingsMeetingViewState {
 	meeting := a.prefs.Features.Meeting
 	meeting.Mode = a.meetingUI.mode
 	meeting.HideFromSharing = a.meetingUI.hide
+	meeting.NoDetect = !a.meetingUI.detect
+	meeting.AutoStart = a.meetingUI.auto
 	readyASR := a.installed(local.ASR)
 	shownASR := slices.DeleteFunc(slices.Clone(readyASR), func(model local.Model) bool { return a.modelHidden(model.ID) })
 	automaticASR, _ := local.Choose(automaticSpeechFor(a.meetingLang(), readyASR), "")
@@ -60,6 +64,28 @@ func (a *app) setMeetingHideFromSharing(hideFromSharing bool) {
 	a.meetingUI.hide = hideFromSharing
 	a.updateSettings(func(current *settings.Settings) { current.Features.Meeting.HideFromSharing = hideFromSharing })
 	a.applyMeetingOverlayProtection()
+	a.syncMeetingAsk() // meeting_ask_window.go: the card follows it too
+}
+
+// setMeetingDetect turns the detection of meetings on or off; off, a
+// question on screen goes too (meeting_detect.go).
+func (a *app) setMeetingDetect(detect bool) {
+	a.meetingSettingsSync()
+	a.meetingUI.detect = detect
+	a.updateSettings(func(current *settings.Settings) { current.Features.Meeting.NoDetect = !detect })
+	if !detect {
+		a.closeMeetingAsk()
+	}
+	a.syncMicWatch()
+}
+
+// setMeetingAutoStart chooses whether a detected meeting starts without
+// asking.
+func (a *app) setMeetingAutoStart(auto bool) {
+	a.meetingSettingsSync()
+	a.meetingUI.auto = auto
+	a.updateSettings(func(current *settings.Settings) { current.Features.Meeting.AutoStart = auto })
+	a.meetingDetectChanged() // meeting_detect.go: a card that asks is answered
 }
 
 func (a *app) setMeetingASR(speechModelID string) {

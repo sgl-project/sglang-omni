@@ -42,6 +42,8 @@ type fakeAudio struct {
 	// onStop runs once, at the next Stop, before the capture stops: a
 	// test acts on the meeting while the manager waits for it.
 	onStop func()
+	// beforeLevel runs before each of levels is sent.
+	beforeLevel func()
 }
 
 func newFakeAudio(pcm []byte) *fakeAudio {
@@ -79,6 +81,9 @@ func (f *fakeAudio) Record(ctx context.Context, id string, _ proto.CaptureParams
 	}
 	fn(session.AudioEvent{PCM: &proto.PCMParams{Job: id, Data: chunk}})
 	for _, db := range f.levels {
+		if f.beforeLevel != nil {
+			f.beforeLevel()
+		}
 		fn(session.AudioEvent{Level: &proto.LevelParams{Job: id, RMS: db}})
 	}
 	if f.levelsSent != nil {

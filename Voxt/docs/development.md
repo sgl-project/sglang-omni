@@ -109,6 +109,7 @@ This table lists every `VOXTNEW_*` variable that the Go code, the Swift helper o
 | `VOXTNEW_LEGACY_HOME` | Home directory where the import of Voxt 1.x data looks, for tests that run the app with a fake home. | Unset: the real home |
 | `VOXTNEW_LIVE_RELEASES` | Any value runs `TestReleaseLive`, which asks api.github.com, read-only, for the newest release as the GitHub update check does. Run it by hand after changing that check (`updates_github.go`). | Unset: the test skips |
 | `VOXTNEW_MAC` | Any value runs the tests that use real macOS services (Keychain, permissions, app activation). | Unset: these tests skip |
+| `VOXTNEW_MEETING_CASE` | Prepared real-app scenario for `TestMacE2EMeetingDetectLive`: `zoom-test`, `zoom-meeting`, `chrome-other`, `chrome-meet`; run by hand before shipping meeting detection, as in [manual-test.md](manual-test.md), 15.3a. | Unset: the live scenario skips |
 | `VOXTNEW_MAC_E2E` | `1` runs the headless end-to-end tests on a real Mac. | Unset: the tests skip |
 | `VOXTNEW_MAC_MIC_CAPTURE` | `1` lets the Mac end-to-end test record from the real microphone. | Unset: the test skips |
 | `VOXTNEW_MAC_SYSTEM_IDLE` | `1` lets the Mac end-to-end test capture real system audio while the output is idle. Run by hand on a Mac with nothing playing, before a release or when the meeting waveform or silence reminder changes; the built helper needs system audio permission. | Unset: the test skips |

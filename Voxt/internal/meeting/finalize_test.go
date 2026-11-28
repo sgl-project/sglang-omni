@@ -327,6 +327,10 @@ func TestManagerFinalizeReleasesRecordingHoldBeforeMTD(t *testing.T) {
 	if err := mgr.Finish(ctx, id); err != nil {
 		t.Fatal(err)
 	}
+	// It ended at once with nothing heard: it asks, and the user keeps it.
+	if err := mgr.Save(ctx, id); err != nil {
+		t.Fatal(err)
+	}
 	select {
 	case <-called:
 	case <-time.After(10 * time.Second):

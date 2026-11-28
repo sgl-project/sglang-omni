@@ -2,7 +2,6 @@ package meeting
 
 import (
 	"context"
-	"strings"
 	"time"
 
 	"github.com/sgl-project/sglang-omni/Voxt/internal/asr"
@@ -205,20 +204,28 @@ func (l *Live) stalePartial(speaking bool) bool {
 	return true
 }
 
-// silenceWordsMax is the longest text taken for the model's words for silence.
-const silenceWordsMax = 12
-
 func (l *Live) emit(seg Segment) {
-	if l.Speech != nil && !l.Speech.SpokeSince(seg.Start) && len([]rune(strings.TrimSpace(seg.Text))) <= silenceWordsMax {
-		// The model's words for silence ("在" on a quiet system track,
-		// 11-15): no speech since the phrase began, nothing was said.
-		// shortcut: longer text is kept, since the VAD may have missed a quiet speaker.
+	if l.Speech != nil && !l.Speech.SpokeSince(seg.Start) {
+		// The model's words for silence or a room's noise ("在" on a quiet
+		// system track, 11-15; "ご視聴ありがとうございました" and long
+		// runs of "Thank you" over a MacBook's -35 dBFS, 11-25): no speech
+		// since the phrase began, nothing was said. The detector follows a
+		// steady noise (meetingVAD); a line it drops by mistake is only the
+		// live one, as the final pass transcribes the recording again.
 		return
 	}
 	seg.Source = l.Source
 	if l.OnCommit != nil {
 		l.OnCommit(seg)
 	}
+}
+
+// spoke is when its speech detector last heard speech (-1: never).
+func (l *Live) spoke() time.Duration {
+	if l.Speech == nil || !l.Speech.hasSpeech {
+		return -1
+	}
+	return l.Speech.lastSpeech
 }
 
 func (l *Live) LiveText() string {
