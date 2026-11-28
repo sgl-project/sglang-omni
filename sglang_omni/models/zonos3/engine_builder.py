@@ -108,6 +108,11 @@ class Zonos3EngineBuilder(SGLangGenerationEngineBuilder[Zonos3RequestData]):
         # The backend replacement only adds the per-bucket static tables a CUDA prefill graph replays.
         if current_platform.is_cuda():
             install_gdn_prefill_graph()
+        elif current_platform.is_npu():
+            # A decode graph bucket carries padding rows on Ascend; keep them out of the real batch.
+            from sglang_omni.models.zonos3.gdn_pad_mask import install_gdn_pad_mask
+
+            install_gdn_pad_mask()
         else:
             pass
 
