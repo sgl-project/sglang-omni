@@ -1401,12 +1401,14 @@ def test_qwen_thinker_cuda_graph_capture_lifecycle(
         speech_enabled=speech_enabled,
         execution_mode=execution_mode,
         enable_async_decode=False,
+        prefill_drain_below_batch_size=3,
     )
 
     is_capturing = speech_enabled and execution_mode == "request"
     assert infrastructure_saw_graph_disabled == [False]
     assert infrastructure_kwargs[0]["enable_async_decode"] is False
     assert scheduler.enable_async_decode is False
+    assert scheduler.prefill_drain_below_batch_size == 3
     assert infrastructure_kwargs[0]["defer_cuda_graph_capture"] is is_capturing
     assert infrastructure_saw_return_hidden == [is_capturing]
     assert graph_init_workers == (

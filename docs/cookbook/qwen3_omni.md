@@ -249,6 +249,7 @@ sgl-omni serve \
   --thinker.engine.speculative_algorithm DFLASH \
   --thinker.engine.speculative_draft_model_path yuekai/qwen3_omni_30b_a3b_instruct_dflash_block8 \
   --thinker.engine.speculative_num_draft_tokens 8 \
+  --preprocessing.factory.max_concurrency 4 \
   --port 8000
 
 # EAGLE3: a 3-step chain
@@ -266,12 +267,28 @@ sgl-omni serve \
 - **Acceptance statistics.** Set `return_spec_tokens_details: true` to include thinker draft statistics in `sglext.spec_tokens_details`.
 - **Context.** These drafts have an 8,192-token context; the prompt, output budget, and speculative reservations must fit. Set `--preprocessing.factory.max_seq_len 8192` to reject oversized prompts early.
 - **Sampling.** Use `repetition_penalty=1`, `frequency_penalty=0`, and `presence_penalty=0`. A sampled request also needs `min_p=0`; a greedy request keeps `min_p`. Disable logprobs and `return_hidden_states`. For `/generate`, set `return_logprob: false`.
-- **Scheduling.** Speculative decoding is synchronous by default. Add `--thinker.factory.enable_async_decode true` to overlap work. With `--thinker.factory.async_decode_min_batch_size` set above 1, a decode batch smaller than it, or a prefill after which fewer requests than it are decoding, has its result processed before the next batch is chosen; other batches overlap. Mixed prefill/decode batches (`enable_mixed_chunk=true`) and weight updates are unsupported with a draft.
-- **Overlap trade-offs.** Overlap can improve decode throughput, but prefill-heavy workloads or short outputs may have higher TTFT and lower throughput.
+- **Scheduling.** With the DFlash draft, a request server overlaps each verify round with host work by default. Add `--thinker.factory.enable_async_decode false` to run the synchronous verify loop instead. EAGLE3 and the session profile are synchronous by default; add `--thinker.factory.enable_async_decode true` to overlap EAGLE3. With `--thinker.factory.async_decode_min_batch_size` set above 1, a decode batch smaller than it, or a prefill after which fewer requests than it are decoding, has its result processed before the next batch is chosen; other batches overlap. Mixed prefill/decode batches (`enable_mixed_chunk=true`) and weight updates are unsupported with a draft.
+- **Prefill drain.** With overlap, the scheduler processes every prefill's result before it chooses the next batch by default, so a new request's first text token does not wait for the verify round launched after its prefill. Decode rounds still overlap. `--thinker.factory.prefill_drain_below_batch_size N` drains a prefill only while fewer than N requests are decoding, and values below 2 never drain. It applies only with the draft and overlap.
+- **Preprocessing.** The DFlash command above and `examples/configs/qwen3_omni_dflash.yaml` set `--preprocessing.factory.max_concurrency 4`. The draft serves requests faster, so with serial preprocessing more of them wait for it, and at 16 requests first text p95 was more than 5% later than the server without a draft in every scheduling mode. With 4 on both servers, the default was within 5% at every load from 1 to 16 requests on one H200. Preprocessing stays serial by default because threaded preprocessing changes how requests are batched in the thinker, which changed greedy answers in the Video-MME CI ([#1958](https://github.com/sgl-project/sglang-omni/pull/1958)); on MMMU, two serial runs already disagreed on as many answers as a serial and a threaded run.
+- **Overlap trade-offs.** Overlap can improve decode throughput, but prefill-heavy workloads or short outputs may have higher TTFT and lower throughput. The table below shows both on one H200.
 - **Prefill boundary.** Set `SGLANG_DISABLE_CONSECUTIVE_PREFILL_OVERLAP=1` before launch to process the previous prefill batch's result before launching the next consecutive prefill batch. This can lower TTFT at a throughput cost; decode rounds still follow `async_decode_min_batch_size`.
 - **Execution failure.** A failure during speculative overlap stops the pipeline and fails pending requests.
 - **Speech output.** A request server needs `--text-only` with a draft. The session profile keeps speech output with either draft.
 - **Sessions.** The session profile takes either draft with synchronous decoding. The draft's 8,192-token context bounds the whole conversation, so add `--thinker.factory.max_seq_len 8192 --preprocessing.factory.max_seq_len 8192` to the session command along with the draft flags above.
+
+DFlash against the same server without a draft, on one H200 with SGLang 0.5.23, streamed text, serial preprocessing and the prefix cache off (`python -m benchmarks.eval.speculative_sweep` with `examples/configs/qwen3_omni_dflash.yaml` before it set `max_concurrency: 4`). Each cell is the throughput ratio, then the first-text p95 difference. MMMU uses its first 200 samples and MMSU the 2,000 samples of `zhaochenyang20/mmsu-ci-2000`. Each cell is the mean of 4 runs; MMMU at 8 and 16 requests is the mean of 8 runs over two rounds. The synchronous row sets `enable_async_decode: false`, the overlap row `enable_async_decode: true`, and the default row also `prefill_drain_below_batch_size: 4096`, which drains every prefill at these loads.
+
+| Dataset | Scheduling | Concurrency 1 | 4 | 8 | 16 |
+|---|---|---:|---:|---:|---:|
+| MMMU | Synchronous | 1.29x, -41 ms | 1.31x, -16 ms | 1.34x, +101 ms | 1.44x, +68 ms |
+| MMMU | Overlap | 1.43x, +29 ms | 1.48x, +3 ms | 1.49x, +62 ms | 1.65x, +214 ms |
+| MMMU | Default (overlap and drain) | 1.43x, +2 ms | 1.43x, -46 ms | 1.48x, +29 ms | 1.60x, +118 ms |
+| MMSU | Synchronous | 0.91x, +0 ms | 0.89x, +6 ms | 0.85x, +14 ms | 0.77x, +29 ms |
+| MMSU | Overlap | 0.88x, +3 ms | 0.88x, +6 ms | 0.85x, +15 ms | 0.77x, +36 ms |
+| MMSU | Default (overlap and drain) | 0.86x, +1 ms | 0.86x, +2 ms | 0.84x, +14 ms | 0.76x, +30 ms |
+
+- **MMMU.** First-text differences between the three modes were within run-to-run noise: the standard deviation of per-run p95 was usually 10-80 ms, and a few single runs took 1.0-1.7 s. At 16 requests the default's delay was beyond that noise; Preprocessing above gives the cause and the setting that removes it.
+- **MMSU.** The answers are short, so the draft does not pay off in any scheduling mode.
 
 On a single H20, EAGLE3 delivered lower request throughput than the no-draft baseline on both MMMU and MMSU. Use `qwen3_omni_eagle3.yaml` to benchmark EAGLE3.
 
