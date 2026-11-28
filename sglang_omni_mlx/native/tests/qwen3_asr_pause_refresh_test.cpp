@@ -224,6 +224,14 @@ void DrainWorker(TranscriptionWorker &worker, TestSignal &drained) {
   drained.Wait("worker did not drain after the pause-refresh scenario");
 }
 
+void DrainWorkerOnce(TranscriptionWorker &worker, TestSignal &drained) {
+  worker.Submit([](const std::atomic<bool> &) { return TranscriptionResult{}; },
+                NewCancelFlag(),
+                [drained](std::optional<TranscriptionResult>,
+                          std::exception_ptr error) { drained.Notify(error); });
+  drained.Wait("worker did not drain after the close scenario");
+}
+
 struct PauseRefreshFixture {
   TranscriptionWorker worker{[] {}, [] {}};
   std::shared_ptr<RealtimeSession> session;
@@ -719,6 +727,7 @@ void TestPauseRefreshFinalOrdering(bool queue_behind_blocker,
   TestSignal blocker_started;
   TestSignal pause_started;
   TestSignal final_finished;
+  TestSignal worker_drained;
   std::atomic<int> decoded_samples = 0;
   std::atomic<int> segment_events = 0;
   std::atomic<bool> saw_pause_reuse = false;
@@ -796,9 +805,8 @@ void TestPauseRefreshFinalOrdering(bool queue_behind_blocker,
   } else {
   }
   if (close_during_pause) {
-    static_cast<void>(worker.Transcribe(
-        [](const std::atomic<bool> &) { return TranscriptionResult{}; },
-        NewCancelFlag()));
+    release_pause.Release();
+    DrainWorkerOnce(worker, worker_drained);
     Require(decoded_samples.load() ==
                     (queue_behind_blocker
                          ? 0
