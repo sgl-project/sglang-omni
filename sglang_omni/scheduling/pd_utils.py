@@ -105,6 +105,8 @@ class DecodeContinuation:
     return_indexer_topk: bool = False
     multimodal_resume: dict[str, object] | None = None
     priority: int | None = None
+    extra_key: str | None = None
+    cache_salt: str | None = None
     version: int = CONTINUATION_VERSION
 
     def __post_init__(self) -> None:
@@ -128,6 +130,12 @@ class DecodeContinuation:
             raise ValueError("decode continuation priority must be an integer or None")
         else:
             pass
+        for name in ("extra_key", "cache_salt"):
+            value = getattr(self, name)
+            if value is not None and not isinstance(value, str):
+                raise ValueError(f"decode continuation {name} must be a string or None")
+            else:
+                pass
         for name in ("sampling_params", "stage_payload"):
             if not isinstance(getattr(self, name), dict):
                 raise TypeError(f"decode continuation {name} must be a mapping")
@@ -240,6 +248,8 @@ def continuation_from_req(
     return DecodeContinuation(
         request_id=req.rid,
         priority=req.priority,
+        extra_key=req.extra_key,
+        cache_salt=req.cache_salt,
         transfer_id=transfer_id,
         origin_input_ids=origin_input_ids,
         origin_input_ids_unpadded=(
@@ -301,6 +311,8 @@ def req_from_continuation(
     req = Req(
         rid=continuation.request_id,
         priority=continuation.priority,
+        extra_key=continuation.extra_key,
+        cache_salt=continuation.cache_salt,
         origin_input_text="",
         origin_input_ids=array("q", continuation.origin_input_ids),
         origin_input_ids_unpadded=(
