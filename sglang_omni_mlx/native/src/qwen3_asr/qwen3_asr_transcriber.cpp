@@ -37,6 +37,7 @@ constexpr const char *kAsrTextMarker = "<asr_text>";
 constexpr const char *kAudioPad = "<|audio_pad|>";
 constexpr int kOutputTokensPerAudioSecond = 10;
 constexpr int kMinDefaultOutputTokens = 128;
+constexpr size_t kCandidateTokenStride = 4;
 // The last mel frames, whose STFT windows take the reflected tail, change as
 // realtime audio arrives.
 constexpr int kReflectedTailFrames = 2;
@@ -561,18 +562,44 @@ TranscriptionResult Qwen3ASRTranscriber::TranscribeChunk(
   std::vector<int> output_ids;
   FinishReason finish_reason = FinishReason::kLength;
   bool stopped_on_token_loop = false;
+  size_t last_candidate_token_count = 0;
   // Adds a token to the output; true once the output is complete.
   const auto commit = [&](int token_id) {
     output_ids.push_back(token_id);
-    if (is_stop(token_id)) {
+    const bool stop_token = is_stop(token_id);
+    const bool token_loop =
+        !stop_token && options.stop_on_token_loop && IsTokenLoop(output_ids);
+    const bool token_budget_reached =
+        !stop_token && !token_loop &&
+        static_cast<int>(output_ids.size()) >= max_new_tokens;
+    if (options.candidate_publisher && !stop_token && !token_loop &&
+        !token_budget_reached &&
+        output_ids.size() - last_candidate_token_count >=
+            kCandidateTokenStride) {
+      last_candidate_token_count = output_ids.size();
+      const std::optional<size_t> marker =
+          FindSubsequence(output_ids, asr_text_ids_);
+      if (options.language.has_value() ||
+          (marker.has_value() &&
+           output_ids.size() > *marker + asr_text_ids_.size())) {
+        const std::string text = SplitOutput(output_ids, options).first;
+        if (!text.empty() && text.find("\xEF\xBF\xBD") == std::string::npos) {
+          options.candidate_publisher(options.prefix_text + text);
+        } else {
+        }
+      } else {
+      }
+    } else {
+    }
+    if (stop_token) {
       finish_reason = FinishReason::kStop;
       return true;
-    } else if (options.stop_on_token_loop && IsTokenLoop(output_ids)) {
+    } else if (token_loop) {
       finish_reason = FinishReason::kStop;
       stopped_on_token_loop = true;
       return true;
     } else {
-      return static_cast<int>(output_ids.size()) >= max_new_tokens;
+      return token_budget_reached;
     }
   };
   DraftStatistics draft_statistics;

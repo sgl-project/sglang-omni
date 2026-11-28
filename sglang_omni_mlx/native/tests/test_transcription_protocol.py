@@ -103,6 +103,7 @@ def test_speaker_segments_come_with_the_text(
         ({}, silent_wav(FRAME_COUNT, sample_rate=8000), "audio must be 16 kHz mono"),
         ({}, silent_wav(FRAME_COUNT, channel_count=2), "audio must be 16 kHz mono"),
         ({"include_generation_metadata": "true"}, silent_wav(FRAME_COUNT), "include_generation_metadata requires stream=true"),
+        ({"include_transcript_candidates": "true"}, silent_wav(FRAME_COUNT), "include_transcript_candidates requires stream=true"),
         ({"max_new_tokens": "ten"}, silent_wav(FRAME_COUNT), "max_new_tokens must be an integer"),
     ],
 )  # fmt: skip
@@ -139,7 +140,12 @@ def test_a_disconnected_stream_cancels_its_transcription(
 ) -> None:
     """A client that leaves a streamed request must not hold the worker."""
     boundary, body = multipart_form(
-        {"outcome": "block", "stream": "true"}, silent_wav(FRAME_COUNT)
+        {
+            "outcome": "block",
+            "stream": "true",
+            "include_transcript_candidates": "true",
+        },
+        silent_wav(FRAME_COUNT),
     )
     client = asr_server.open_request(
         "/v1/audio/transcriptions", f"multipart/form-data; boundary={boundary}", body
@@ -153,6 +159,43 @@ def test_a_disconnected_stream_cancels_its_transcription(
     queued.close()
     asr_server.wait_for_request_states({})
     assert asr_server.post_form({}, silent_wav(FRAME_COUNT)).status == 200
+
+
+def test_a_candidate_is_sent_before_the_authoritative_final(
+    asr_server: SupervisedServer,
+) -> None:
+    boundary, body = multipart_form(
+        {
+            "outcome": "candidate_gate",
+            "stream": "true",
+            "include_transcript_candidates": "true",
+        },
+        silent_wav(FRAME_COUNT),
+    )
+    client = asr_server.open_request(
+        "/v1/audio/transcriptions", f"multipart/form-data; boundary={boundary}", body
+    )
+    response = bytearray()
+    while b"transcript.text.candidate" not in response:
+        chunk = client.recv(4096)
+        assert chunk
+        response.extend(chunk)
+    assert b"transcript.text.done" not in response
+    assert asr_server.request("POST", "/test/release-candidate").status == 200
+    while b"data: [DONE]" not in response:
+        chunk = client.recv(4096)
+        assert chunk
+        response.extend(chunk)
+    client.close()
+
+    body = bytes(response).split(b"\r\n\r\n", 1)[1]
+    payloads = sse_payloads(body)
+    assert json.loads(payloads[0]) == {
+        "type": "transcript.text.candidate",
+        "text": "provisional transcript",
+    }
+    assert json.loads(payloads[1])["type"] == "transcript.text.done"
+    assert payloads[2] == "[DONE]"
 
 
 def test_shutdown_cancels_a_running_transcription(

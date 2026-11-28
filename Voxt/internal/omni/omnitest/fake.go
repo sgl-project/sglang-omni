@@ -101,6 +101,10 @@ type Opts struct {
 	SegmentTags bool
 	// TokenLimit ends the Final at the generation budget.
 	TokenLimit bool
+	// Candidate is emitted only when a Final request opts into candidate events.
+	Candidate string
+	// MalformedCandidate emits an invalid advisory text before the authoritative Final.
+	MalformedCandidate bool
 	// LiveMarkup sends MOSS's diarization markup in the live segments and
 	// the completed text, as the real model sometimes does on its
 	// plain-text instruction.
@@ -126,6 +130,8 @@ func Env(o Opts) []string {
 	v.Set("segments", strconv.FormatBool(o.Segments))
 	v.Set("segmenttags", strconv.FormatBool(o.SegmentTags))
 	v.Set("tokenlimit", strconv.FormatBool(o.TokenLimit))
+	v.Set("candidate", o.Candidate)
+	v.Set("malformedcandidate", strconv.FormatBool(o.MalformedCandidate))
 	v.Set("echo", strconv.FormatBool(o.Echo))
 	v.Set("audio", strconv.FormatBool(o.RecordAudio))
 	v.Set("livedrop", strconv.FormatBool(o.LiveDrop))
@@ -146,6 +152,8 @@ func opts() Opts {
 	o.Load, _ = time.ParseDuration(v.Get("load"))
 	o.FailFrom, _ = strconv.Atoi(v.Get("failfrom"))
 	o.FailAt, _ = strconv.Atoi(v.Get("failat"))
+	o.Candidate = v.Get("candidate")
+	o.MalformedCandidate, _ = strconv.ParseBool(v.Get("malformedcandidate"))
 	o.GateURL = v.Get("gate")
 	o.Older, _ = strconv.ParseBool(v.Get("older"))
 	o.NoDraft, _ = strconv.ParseBool(v.Get("nodraft"))

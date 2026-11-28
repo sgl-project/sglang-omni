@@ -12,6 +12,7 @@
 #include <optional>
 #include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "common/form.h"
@@ -40,6 +41,11 @@ public:
   // std::invalid_argument for a field it does not accept.
   virtual Transcription Prepare(std::vector<float> samples,
                                 const FormFields &form) const = 0;
+  virtual Transcription
+  PrepareWithCandidates(std::vector<float> samples, const FormFields &form,
+                        omni_common::CandidatePublisher) const {
+    return Prepare(std::move(samples), form);
+  }
   // Adds handlers beyond the transcription API once the server listens.
   virtual void AddHandlers(mg_context *, omni_server::TranscriptionWorker &) {}
   // False for a model that serves no transcriptions.

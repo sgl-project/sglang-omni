@@ -19,6 +19,7 @@
 // completion tokens and the reference's 44.1 kHz sample count as its prompt
 // tokens.
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <filesystem>
@@ -90,14 +91,41 @@ public:
   asr_service::Transcription
   Prepare(std::vector<float> samples,
           const asr_service::FormFields &form) const override {
+    return PrepareWithCandidates(std::move(samples), form, {});
+  }
+
+  asr_service::Transcription PrepareWithCandidates(
+      std::vector<float> samples, const asr_service::FormFields &form,
+      omni_common::CandidatePublisher candidate_publisher) const override {
     const std::string outcome =
         asr_service::TextField(form, "outcome").value_or("text");
     const std::optional<std::string> language =
         asr_service::TextField(form, "language");
     const int max_new_tokens =
         asr_service::IntegerField(form, "max_new_tokens").value_or(0);
-    return [outcome, language, max_new_tokens,
+    return [this, outcome, language, max_new_tokens,
+            candidate_publisher = std::move(candidate_publisher),
             sample_count = samples.size()](const std::atomic<bool> &cancel) {
+      if (outcome == "candidate_gate") {
+        std::lock_guard<std::mutex> lock(candidate_mutex_);
+        candidate_released_ = false;
+      } else {
+      }
+      if (candidate_publisher) {
+        candidate_publisher("provisional transcript");
+        if (outcome == "candidate_gate") {
+          std::unique_lock<std::mutex> lock(candidate_mutex_);
+          while (!candidate_released_.load() && !cancel.load()) {
+            candidate_condition_.wait_for(lock, kBlockPollInterval);
+          }
+          if (cancel.load()) {
+            throw omni_common::GenerationCancelled();
+          } else {
+          }
+        } else {
+        }
+      } else {
+      }
       if (outcome == "fail") {
         throw std::runtime_error("stub transcription failed");
       } else if (outcome == "block") {
@@ -130,13 +158,28 @@ public:
   void AddHandlers(mg_context *context,
                    omni_server::TranscriptionWorker &) override {
     asr_service::AddRealtimeHandler(context, realtime_factory_);
+    mg_set_request_handler(context, "/test/release-candidate$",
+                           ReleaseCandidate, this);
   }
 
 private:
+  static int ReleaseCandidate(mg_connection *connection, void *data) {
+    auto *model = static_cast<StubAsrModel *>(data);
+    {
+      std::lock_guard<std::mutex> lock(model->candidate_mutex_);
+      model->candidate_released_ = true;
+    }
+    model->candidate_condition_.notify_all();
+    return omni_server::WriteJson(connection, 200, {{"released", true}});
+  }
+
   const asr_service::RealtimeFactory realtime_factory_ =
       [](omni_server::RealtimeConnection::Sender sender) {
         return std::make_shared<StubRealtimeConnection>(std::move(sender));
       };
+  mutable std::mutex candidate_mutex_;
+  mutable std::condition_variable candidate_condition_;
+  mutable std::atomic<bool> candidate_released_ = false;
 };
 
 class StubSpeechModel : public speech_service::SpeechServedModel {

@@ -146,7 +146,7 @@ func (a *ASR) Transcribe(ctx context.Context, req asr.FileRequest) (asr.Result, 
 	}
 	defer l.release()
 	start := time.Now()
-	text, language, err := a.final(ctx, l, pcm, a.spec.languageHint(req.Lang), a.finalBias(a.spec.ASR.contextBias(req.Hints, req.Prompt)), prior{})
+	text, language, err := a.final(ctx, l, pcm, a.spec.languageHint(req.Lang), a.finalBias(a.spec.ASR.contextBias(req.Hints, req.Prompt)), prior{}, nil)
 	if err != nil {
 		return asr.Result{}, err
 	}
@@ -230,7 +230,7 @@ func (a *ASR) finalBias(b bias) bias {
 // for Qwen3-ASR and one budget per Whisper window. The first detected
 // language, when available, is passed to subsequent requests. known is of
 // the recording's start: the chunks after the first have no part of it.
-func (a *ASR) final(ctx context.Context, l *lease, pcm []byte, language string, b bias, known prior) (string, string, error) {
+func (a *ASR) final(ctx context.Context, l *lease, pcm []byte, language string, b bias, known prior, candidatePublisher func(string)) (string, string, error) {
 	t := a.spec.ASR
 	budget := t.tokenBudget(asr.Duration(pcm, sampleRate))
 	shared := t.TokensPerSecond > 0 // else each request has the whole budget
@@ -238,6 +238,10 @@ func (a *ASR) final(ctx context.Context, l *lease, pcm []byte, language string, 
 	chunks := t.splitChunks(pcm)
 	if a.spec.Kind == kindWhisper {
 		chunks = trimWhisperSilenceTail(chunks)
+	}
+	if a.spec.Kind != kindQwen3ASR || len(chunks) != 1 {
+		candidatePublisher = nil
+	} else {
 	}
 	if len(chunks) > 1 {
 		known.text = "" // the text is of all the chunks: none of them is all of it
@@ -278,7 +282,7 @@ func (a *ASR) final(ctx context.Context, l *lease, pcm []byte, language string, 
 		if !ok {
 			continue
 		}
-		req := finalRequest{pcm: pcm, language: language, context: b.context, maxTokens: budget, layout: t.AudioLayout, known: start}
+		req := finalRequest{pcm: pcm, language: language, context: b.context, maxTokens: budget, layout: t.AudioLayout, known: start, onCandidate: candidatePublisher}
 		r, err := transcribeTimed(ctx, l, req, a.rt.cfg.StallTimeout, requestID)
 		if err != nil {
 			return "", "", err

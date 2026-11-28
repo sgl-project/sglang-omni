@@ -40,6 +40,39 @@ struct ServerState {
   std::string model_name;
 };
 
+class LatestCandidateMailbox {
+public:
+  void Publish(const std::string &text) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!finished_) {
+      candidate_ = text;
+    } else {
+    }
+  }
+
+  std::optional<std::string> TakeLatest() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (finished_ || !candidate_.has_value()) {
+      return std::nullopt;
+    } else {
+    }
+    std::optional<std::string> candidate = std::move(candidate_);
+    candidate_.reset();
+    return candidate;
+  }
+
+  void Finish() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    finished_ = true;
+    candidate_.reset();
+  }
+
+private:
+  std::mutex mutex_;
+  std::optional<std::string> candidate_;
+  bool finished_ = false;
+};
+
 // Speaker segments, for models that produce them.
 void AddSegments(Json &body, const TranscriptionResult &result) {
   if (!result.segments.empty()) {
@@ -113,35 +146,55 @@ int HandleTranscriptions(mg_connection *connection, void *data) {
     return BadRequest(connection, "file is required");
   } else {
   }
+  const bool stream = omni_common::FormFlag(TextField(*form, "stream"));
+  const bool include_generation_metadata =
+      omni_common::FormFlag(TextField(*form, "include_generation_metadata"));
+  const bool include_candidates =
+      omni_common::FormFlag(TextField(*form, "include_transcript_candidates"));
+  if (include_generation_metadata && !stream) {
+    return BadRequest(connection,
+                      "include_generation_metadata requires stream=true");
+  } else if (include_candidates && !stream) {
+    return BadRequest(connection,
+                      "include_transcript_candidates requires stream=true");
+  } else {
+  }
+
   Transcription transcription;
+  std::shared_ptr<LatestCandidateMailbox> mailbox;
   try {
-    transcription = state->model->Prepare(
-        omni_common::DecodeWav(form->at("file").value), *form);
+    std::vector<float> samples = omni_common::DecodeWav(form->at("file").value);
+    if (include_candidates) {
+      mailbox = std::make_shared<LatestCandidateMailbox>();
+      omni_common::CandidatePublisher candidate_publisher =
+          [mailbox](const std::string &text) { mailbox->Publish(text); };
+      transcription = state->model->PrepareWithCandidates(
+          std::move(samples), *form, std::move(candidate_publisher));
+    } else {
+      transcription = state->model->Prepare(std::move(samples), *form);
+    }
   } catch (const std::invalid_argument &error) {
     return BadRequest(connection, error.what());
   } catch (const std::out_of_range &) {
     return BadRequest(connection, "a numeric field is out of range");
   }
-  const bool stream = omni_common::FormFlag(TextField(*form, "stream"));
-  const bool include_generation_metadata =
-      omni_common::FormFlag(TextField(*form, "include_generation_metadata"));
-  if (include_generation_metadata && !stream) {
-    return BadRequest(connection,
-                      "include_generation_metadata requires stream=true");
-  } else {
-  }
   const CancelFlag cancel = omni_server::NewCancelFlag();
   auto promise = std::make_shared<std::promise<TranscriptionResult>>();
   std::future<TranscriptionResult> future = promise->get_future();
-  state->worker->Submit(std::move(transcription), cancel,
-                        [promise](std::optional<TranscriptionResult> result,
-                                  std::exception_ptr error) {
-                          if (error) {
-                            promise->set_exception(error);
-                          } else {
-                            promise->set_value(std::move(*result));
-                          }
-                        });
+  state->worker->Submit(
+      std::move(transcription), cancel,
+      [promise, mailbox](std::optional<TranscriptionResult> result,
+                         std::exception_ptr error) {
+        if (mailbox != nullptr) {
+          mailbox->Finish();
+        } else {
+        }
+        if (error) {
+          promise->set_exception(error);
+        } else {
+          promise->set_value(std::move(*result));
+        }
+      });
   if (!stream) {
     try {
       const TranscriptionResult result = future.get();
@@ -163,8 +216,24 @@ int HandleTranscriptions(mg_connection *connection, void *data) {
           ? kPreviewHeartbeatInterval
           : kHeartbeatInterval;
   while (future.wait_for(heartbeat_interval) != std::future_status::ready) {
+    if (mailbox != nullptr) {
+      const std::optional<std::string> candidate = mailbox->TakeLatest();
+      if (candidate.has_value() &&
+          !WriteSse(connection, Json{{"type", "transcript.text.candidate"},
+                                     {"text", *candidate}}
+                                    .dump())) {
+        cancel->store(true);
+        mailbox->Finish();
+      } else {
+      }
+    } else {
+    }
     if (mg_write(connection, ":\n\n", 3) <= 0) {
       cancel->store(true);
+      if (mailbox != nullptr) {
+        mailbox->Finish();
+      } else {
+      }
     } else {
     }
   }
