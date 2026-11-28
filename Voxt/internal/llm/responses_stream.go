@@ -41,10 +41,12 @@ type rsResponse struct {
 // rsEvent is a stream event; the error event has its code and message at
 // the top level.
 type rsEvent struct {
-	Type     string     `json:"type"`
-	Delta    string     `json:"delta"`
-	Text     string     `json:"text"`
-	Response rsResponse `json:"response"`
+	Type         string     `json:"type"`
+	Delta        string     `json:"delta"`
+	Text         string     `json:"text"`
+	OutputIndex  int        `json:"output_index"`
+	ContentIndex int        `json:"content_index"`
+	Response     rsResponse `json:"response"`
 	rsError
 }
 
@@ -135,6 +137,7 @@ func (o *OpenAI) readResponse(ctx context.Context, body io.Reader, timeout time.
 func (o *OpenAI) readResponseStream(ctx context.Context, body io.Reader, onDelta func(string), timeout time.Duration) (Response, error) {
 	var out Response
 	var text strings.Builder
+	emittedParts := make(map[[2]int]bool)
 	var perr error
 	done := false
 	err := readSSE(body, func(data string) bool {
@@ -147,12 +150,15 @@ func (o *OpenAI) readResponseStream(ctx context.Context, body io.Reader, onDelta
 		case "response.output_text.delta":
 			if ev.Delta != "" {
 				text.WriteString(ev.Delta)
+				emittedParts[[2]int{ev.OutputIndex, ev.ContentIndex}] = true
 				onDelta(ev.Delta)
 			}
 		case "response.output_text.done":
-			// The whole text, without deltas before it on some streams.
-			if text.Len() == 0 && ev.Text != "" {
+			// Some streams send a part's whole text without deltas before it.
+			part := [2]int{ev.OutputIndex, ev.ContentIndex}
+			if !emittedParts[part] && ev.Text != "" {
 				text.WriteString(ev.Text)
+				emittedParts[part] = true
 				onDelta(ev.Text)
 			}
 		case "response.completed", "response.incomplete":
