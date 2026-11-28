@@ -84,6 +84,22 @@ def test_backlog_still_coalesces_into_one_batch() -> None:
     assert max(seen_batches) > 1, f"backlog was not coalesced: {seen_batches}"
 
 
+def test_cost_error_only_fails_the_request_with_invalid_cost() -> None:
+    """Requests already in the batch still complete when a later cost lookup fails."""
+    scheduler = batching_scheduler(request_cost_fn=int, max_batch_cost=6)
+    results, _ = run(scheduler, [msg("1"), msg("2"), msg("invalid"), msg("3")], 4)
+
+    completed = [
+        (result.request_id, result.data)
+        for result in results
+        if result.type == "result"
+    ]
+    assert completed == [("1", "1"), ("2", "2"), ("3", "3")]
+    (error,) = [result for result in results if result.type == "error"]
+    assert error.request_id == "invalid"
+    assert isinstance(error.data, ValueError)
+
+
 def test_late_arrival_joins_batch_once_a_backlog_exists() -> None:
     seen_batches: list[int] = []
 

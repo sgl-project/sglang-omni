@@ -178,7 +178,17 @@ class SimpleScheduler(Generic[ComputeInput, ComputeResult]):
 
             if msg.type == "new_request":
                 if self.max_batch_cost is not None:
-                    msg_cost = self.message_cost(msg)
+                    try:
+                        msg_cost = self.message_cost(msg)
+                    except Exception as exc:
+                        if self.consume_if_aborted(msg.request_id):
+                            continue
+                        else:
+                            logger.exception(
+                                f"SimpleScheduler: request cost failed for {msg.request_id}"
+                            )
+                            self.emit_error(msg.request_id, exc, self.outbox)
+                            continue
                     if batch and batch_cost + msg_cost > self.max_batch_cost:
                         self.pending_messages.appendleft(msg)
                         break
