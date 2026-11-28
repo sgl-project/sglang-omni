@@ -14,6 +14,8 @@ from sglang_omni.models.personaplex.architecture import TEMPORAL_TRANSFORMER, TE
 
 PERSONAPLEX_ARCH = "PersonaPlexForCausalLM"
 DEFAULT_CONTEXT_LENGTH = 8192
+# Note (ZaneZhang-67): Budget for 45,000 one-hour session units plus the prompt.
+DEFAULT_SESSION_CONTEXT_LENGTH = 65_536
 
 
 def build_backbone_config(
