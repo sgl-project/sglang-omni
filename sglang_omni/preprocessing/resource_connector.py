@@ -16,7 +16,7 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from pathlib import Path
 from typing import TYPE_CHECKING, Awaitable, TypeVar
-from urllib.parse import ParseResult, urlparse
+from urllib.parse import ParseResult, unquote, urlparse
 from urllib.request import url2pathname
 
 import httpx
@@ -418,7 +418,9 @@ class MultiModalResourceConnector:
         else:
             pass
         media_type = spec.split(";")[0].lstrip("/")
-        return media_io.load_base64(media_type, data)
+        # Data URLs use percent escapes, not form encoding: a literal "+"
+        # remains part of the base64 alphabet.
+        return media_io.load_base64(media_type, unquote(data))
 
     def load_file_url(self, url_spec: ParseResult, media_io: MediaIO[_M]) -> _M:
         """Load media from a file URL."""

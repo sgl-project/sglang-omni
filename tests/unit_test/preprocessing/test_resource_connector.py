@@ -14,18 +14,84 @@ zero load_file calls.
 from __future__ import annotations
 
 import asyncio
+import base64
+import io
 import sys
 import threading
 from pathlib import Path
+from urllib.parse import quote
 
+import numpy as np
 import pytest
+from PIL import Image
 
+from sglang_omni.client.audio import encode_wav
 from sglang_omni.preprocessing import resource_connector
 from sglang_omni.preprocessing.audio import ensure_audio_list_async
 from sglang_omni.preprocessing.base import MediaIO
 from sglang_omni.preprocessing.image import ensure_image_list_async
 from sglang_omni.preprocessing.resource_connector import MultiModalResourceConnector
 from sglang_omni.preprocessing.video import ensure_video_list_async
+
+
+class BytesMediaIO(MediaIO[bytes]):
+    def load_bytes(self, data: bytes) -> bytes:
+        return data
+
+    def load_base64(self, media_type: str, data: str) -> bytes:
+        return base64.b64decode(data, validate=True)
+
+    def load_file(self, filepath: Path) -> bytes:
+        return filepath.read_bytes()
+
+
+@pytest.mark.parametrize(
+    ("payload", "expected"),
+    [
+        ("%2Bw%3D%3D", b"\xfb"),
+        ("%2Fw%3D%3D", b"\xff"),
+        ("%2b%2f8%3d", b"\xfb\xff"),
+        ("+/8=", b"\xfb\xff"),
+        ("+%2F8%3D", b"\xfb\xff"),
+    ],
+)
+@pytest.mark.parametrize("asynchronous", [False, True])
+def test_data_url_percent_encoding_reaches_base64_decoder(
+    payload, expected, asynchronous
+):
+    connector = MultiModalResourceConnector()
+    url = f"data:application/octet-stream;base64,{payload}"
+    if asynchronous:
+        result = asyncio.run(connector.load_resource_async(url, BytesMediaIO()))
+    else:
+        result = connector.load_resource(url, BytesMediaIO())
+    assert result == expected
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("escaped", [False, True])
+async def test_real_image_and_audio_data_urls_keep_decoded_content(escaped):
+    image = Image.new("RGB", (3, 2), (251, 127, 63))
+    image_bytes = io.BytesIO()
+    image.save(image_bytes, format="PNG")
+    audio = np.array([-0.5, 0.0, 0.5], dtype=np.float32)
+    wav = encode_wav(audio, 16000)
+
+    def data_url(media_type, content):
+        encoded = base64.b64encode(content).decode("ascii")
+        if escaped:
+            encoded = quote(encoded, safe="")
+        else:
+            pass
+        return f"data:{media_type};base64,{encoded}"
+
+    images = await ensure_image_list_async(
+        [data_url("image/png", image_bytes.getvalue())]
+    )
+    audios = await ensure_audio_list_async([data_url("audio/wav", wav)])
+    assert images[0].size == image.size
+    assert images[0].tobytes() == image.tobytes()
+    np.testing.assert_allclose(audios[0], audio, atol=1 / 32768)
 
 
 @pytest.mark.skipif(sys.platform != "linux", reason="comm names live in /proc")
