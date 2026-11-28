@@ -13,6 +13,7 @@ from sglang.srt.model_executor.forward_batch_info import ForwardBatch
 from torch import nn
 
 from sglang_omni.models.zonos3.hf_config import Zonos3Config
+from sglang_omni.platforms import current_platform
 
 QUERY_KEY_NORM_EPSILON = 1e-6
 
@@ -140,7 +141,8 @@ class Zonos3GatedDeltaNet(nn.Module):
             dim=-1,
         )
         # note (zhaochenyang20): the decode convolution and recurrence kernels read the projection's columns by row stride, which dropped 27 copy kernels from each decode step; prefill keeps its packed copies.
-        if forward_batch.forward_mode.is_decode():
+        # Ascend's fused convolution rejects a non-contiguous projection slice at decode batches larger than one, so only Ascend takes the copies.
+        if forward_batch.forward_mode.is_decode() and not current_platform.is_npu():
             core_output = self.attn(
                 forward_batch, mixed_qkv=mixed_qkv, a=decay_logits, b=beta_logits
             )
@@ -151,9 +153,15 @@ class Zonos3GatedDeltaNet(nn.Module):
                 a=decay_logits.contiguous(),
                 b=beta_logits.contiguous(),
             )
-        # The gated norm reads each token's head gates by row stride, so the gate stays a view of the projection.
-        gated_output = self.norm(
-            core_output.reshape(-1, self.head_dimension),
-            output_gate.view(token_count, self.head_count, self.head_dimension),
-        )
+        # The gated norm reads each token's head gates by row stride, so the gate stays a view of the projection. Ascend's fused gated norm wants a flat (token x head, dim) gate, while every other backend reads the 3D view directly.
+        if current_platform.is_npu():
+            gated_output = self.norm(
+                core_output.reshape(-1, self.head_dimension),
+                output_gate.reshape(token_count * self.head_count, self.head_dimension),
+            )
+        else:
+            gated_output = self.norm(
+                core_output.reshape(-1, self.head_dimension),
+                output_gate.view(token_count, self.head_count, self.head_dimension),
+            )
         return self.wo(gated_output.reshape(token_count, self.key_dimension))
