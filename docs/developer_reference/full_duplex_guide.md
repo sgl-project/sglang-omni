@@ -788,6 +788,20 @@ The benchmark client keeps its 80 ms input pacing up to about 128 sessions in on
 
 On one H100 80 GB, a short v1.5 cohort (128 sessions of at most 16 s) met a strict gate, under 1% late units with no failed session, at 4 concurrent sessions in five runs, with a unit-lag p95 of about 420 ms. 8 sessions passed once and failed once, 16 failed, and 32 or more ran out of memory. The server ran `--max_sessions 64` with explicit memory budgets at commit `3ae4c24`; [#2869](https://github.com/sgl-project/sglang-omni/pull/2869) has the commands and the full record.
 
+(qwen3-omni-on-one-h200)=
+
+**Qwen3-Omni on one H200**
+
+On one H200 (143,771 MiB), the Qwen3-Omni session graph (`examples/qwen3_omni/session_h200.yaml` with `max_sessions` 160) at commit `376ad68c6` plus [#3623](https://github.com/sgl-project/sglang-omni/pull/3623) met the targets at N=112 and N=128 on v1.5 with the `turn-based` profile, four sessions per slot, after an unscored N=128 warm-up. Two runs recorded each level twice: in the run with 4 recorder processes all four repeats met the targets; in the run with one recorder process, one N=128 repeat had 4 input pacing violations and the other three met them. N=128 averaged 105–114 open sessions with an RTF p90 of 0.86–0.88.
+
+The targets do not cover playback. At N=128, 13–20% of replies underrun at the default 80 ms reserve and first audio p90 is 1.1–1.7 s; at N=64 no reply underruns. The same level does better the later it runs after the warm-up, so record levels in a symmetric order such as 112, 128, 128, 112.
+
+Above N=128 the limit is the talker's KV admission, not memory: the session capacity check reserves the talker's `max_new_tokens` (4096) for every reply in flight, and at every refusal 128–129 talker replies were in flight while 1.1% of the talker pool was in use. [#4007](https://github.com/sgl-project/sglang-omni/pull/4007) changes that reservation, so this limit holds for the build above only.
+
+`nvidia-smi` read 137,052–137,062 MiB on an idle fresh server and a steady peak of 141,406–141,640 MiB at N=112 and N=128, leaving 2,131–2,365 MiB free. Most of the 4,588 MiB growth is code2wav (+2,014) and the thinker's `thinker_relay` CUDA-IPC pool (+1,340 at the first request).
+
+In the 4-process run, each level was split over 4 recorder processes with disjoint `--sample-id` sets, each pinned to its own cores, and merged into one run directory for `report`; they still share the container's 20-core CPU quota with the server. A client on a separate RunPod pod was limited by the network between the pods (about 100 Mbit/s of reply audio, against 142–183 Mbit/s co-located), so those runs did not measure the server. [#3488](https://github.com/sgl-project/sglang-omni/pull/3488) has the per-level tables and the full record.
+
 (turn-latency)=
 
 **Turn latency**
